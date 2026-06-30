@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/taills/moduless/core/auth"
 	"github.com/taills/moduless/core/db"
 	sqlc "github.com/taills/moduless/core/db/sqlc"
 	"github.com/taills/moduless/core/event"
@@ -66,6 +67,24 @@ func main() {
 		pb.RegisterFileServiceServer(grpcSrv, tunnel.NewFileServer(queries))
 		log.Println("[core] CMDS DatabaseService + FileService enabled")
 
+		// Real authentication: verify against system_users, seed a default
+		// admin, and let the gateway inject the authenticated identity.
+		authStore := auth.NewStore(queries)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if seeded, err := authStore.SeedDefaultAdmin(ctx, env("ADMIN_USERNAME", "admin"), env("ADMIN_PASSWORD", "admin123")); err != nil {
+			log.Printf("[core] seed admin failed: %v", err)
+		} else if seeded {
+			log.Printf("[core] seeded default admin user %q (set ADMIN_PASSWORD to override)", env("ADMIN_USERNAME", "admin"))
+		}
+		cancel()
+		gw.Auth = authStore
+
+		authHandler := gateway.NewAuthHandler(authStore)
+		gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/auth/login" }, authHandler.Login)
+		gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/auth/me" }, authHandler.Me)
+		gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/auth/logout" }, authHandler.Logout)
+		log.Println("[core] auth endpoints enabled (/api/system/auth/*)")
+
 		if rustfs := buildStorage(); rustfs != nil {
 			fileHandler := gateway.NewFileHandler(rustfs, queries)
 			gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/files/upload" }, fileHandler.Upload)
@@ -113,7 +132,11 @@ func main() {
 	// System routes available regardless of DB (triggering air reload).
 	gw.RegisterSystemRoute(func(p string) bool { return p == "/healthz" }, healthz)
 	gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/ui/slots" }, slots.Handler)
+	gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/ui/apps" }, gw.AppsHandler)
 	gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/diagnostics" }, gateway.GetDiagnostics(manager))
+
+	// Serve the qiankun host app (and its SPA routes) at the web root.
+	gw.Host = gateway.NewHostHandler(env("HOST_FRONTEND_DIR", "./core/frontend/dist"))
 
 	// Wrap the gateway with the audit middleware when a recorder is available.
 	var httpHandler http.Handler = gw

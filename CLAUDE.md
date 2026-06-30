@@ -33,13 +33,21 @@ Generate the gRPC and Protobuf stubs before running any compiler:
 ### 2. Running Core Gateway
 * **Run in Dev Mode**: `go run core/main.go` (listens to HTTP :80 and gRPC :9000 by default)
 
+Core serves the **qiankun host app (console)** at `/`. Build it once with
+`cd core/frontend && npm install && npm run build` (Core reads it from
+`HOST_FRONTEND_DIR`, default `./core/frontend/dist`), or run its dev server with
+`npm run dev` (proxies `/api` and `/extensions` to a running Core). With a
+database configured, Core seeds a default admin on first start — `admin` /
+`admin123` (override via `ADMIN_USERNAME` / `ADMIN_PASSWORD`). Login issues a
+session token; the gateway enforces it on `/api/extensions/*`.
+
 ### 3. Running Extensions
 Extensions do not listen to ports. Run them in IDEs or terminals by passing the `CORE_URL` or configuration:
 * **Go Extension**: `go run extension-example/go/backend/main.go`
 * **Python Extension**: `python3 extension-example/python/backend/main.py`
 * **Java Extension**: `mvn spring-boot:run -pl extension-example/java/backend`
 
-In dev mode the micro-frontend runs from its own Vite dev server (`npm run dev`). In **production** the built `dist/` is bundled into the backend image and the SDK uploads it to Core on startup — set `FRONTEND_DIR` to the dist path (the examples read this env var). Each example ships a multi-stage `Dockerfile`; `docker compose up --build` runs Core + PostgreSQL + all three examples. See [docs/deployment.md](docs/deployment.md) for container, Kubernetes, and systemd deployment.
+In dev mode the micro-frontend runs from its own Vite dev server (`npm run dev`). In **production** the built `dist/` is bundled into the backend image and the SDK uploads it to Core on startup — set `FRONTEND_DIR` to the dist path (the examples read this env var). Each example frontend uses `vite-plugin-qiankun` so the console can load it as a micro-app. Each example ships a multi-stage `Dockerfile`; `docker compose up --build` runs Core + PostgreSQL + all three examples. See [docs/deployment.md](docs/deployment.md) for container, Kubernetes, and systemd deployment.
 
 ---
 

@@ -9,8 +9,11 @@ import (
 )
 
 type Querier interface {
+	CountUsers(ctx context.Context) (int64, error)
+	CreateUser(ctx context.Context, arg CreateUserParams) error
 	GetExtensionVersion(ctx context.Context, extensionKey string) (string, error)
 	GetFile(ctx context.Context, id string) (SystemFile, error)
+	GetUserByUsername(ctx context.Context, username string) (GetUserByUsernameRow, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	InsertDownloadToken(ctx context.Context, arg InsertDownloadTokenParams) error
 	InsertFile(ctx context.Context, arg InsertFileParams) error

@@ -6,9 +6,11 @@ import (
 	"mime"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/taills/moduless/core/auth"
 	"github.com/taills/moduless/core/tunnel"
 	pb "github.com/taills/moduless/proto/tunnel"
 )
@@ -22,6 +24,20 @@ type GatewayHandler struct {
 	// systemRoutes holds optional extra handlers (files, slots, diagnostics)
 	// registered by later phases. Checked before extension routing.
 	systemRoutes []systemRoute
+
+	// Auth, when set, resolves the session token on extension calls and injects
+	// the real identity. When nil (tunnel-only demo / tests), a mock identity is
+	// used instead so Core can run without a database.
+	Auth UserResolver
+
+	// Host, when set, serves the qiankun host app (and its SPA routes) for any
+	// non-API path that does not match an extension or system route.
+	Host http.Handler
+}
+
+// UserResolver maps a session token to an authenticated user.
+type UserResolver interface {
+	Resolve(token string) (auth.User, bool)
 }
 
 type systemRoute struct {
@@ -49,13 +65,21 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Static asset routing (/extensions/<key>/...).
 	if strings.HasPrefix(r.URL.Path, "/extensions/") {
-		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/extensions/"), "/", 2)
-		if len(parts) < 2 {
+		rest := strings.TrimPrefix(r.URL.Path, "/extensions/")
+		extKey, sub := rest, ""
+		if i := strings.IndexByte(rest, '/'); i >= 0 {
+			extKey, sub = rest[:i], rest[i+1:]
+		}
+		if extKey == "" {
 			http.NotFound(w, r)
 			return
 		}
-		extKey := parts[0]
-		filePath := "/" + parts[1]
+		// The micro-frontend entry (directory root) maps to index.html so the
+		// qiankun host can load /extensions/<key>/ as the sub-app entry.
+		filePath := "/" + sub
+		if sub == "" {
+			filePath = "/index.html"
+		}
 
 		content, ok := h.Manager.GetUiFile(extKey, filePath)
 		if !ok {
@@ -74,6 +98,18 @@ func (h *GatewayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 2. API proxy routing (/api/extensions/<key>/...).
 	if strings.HasPrefix(r.URL.Path, "/api/extensions/") {
 		h.proxyToExtension(w, r)
+		return
+	}
+
+	// Unmatched API paths must not fall through to the SPA host.
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	// 3. Host app (qiankun master) for everything else, with SPA fallback.
+	if h.Host != nil {
+		h.Host.ServeHTTP(w, r)
 		return
 	}
 
@@ -108,8 +144,18 @@ func (h *GatewayHandler) proxyToExtension(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Inject mock auth context (replaced by the Auth/RBAC interceptor in prod).
-	if headers["X-User-Id"] == "" {
+	// Resolve the authenticated identity. When auth is enabled, unauthenticated
+	// extension calls are rejected; otherwise (tunnel-only demo / tests) a mock
+	// identity is injected so Core can run without a database.
+	if h.Auth != nil {
+		user, ok := h.Auth.Resolve(SessionToken(r))
+		if !ok {
+			http.Error(w, "unauthenticated", http.StatusUnauthorized)
+			return
+		}
+		headers["X-User-Id"] = strconv.Itoa(int(user.ID))
+		headers["X-User-Roles"] = user.Role
+	} else if headers["X-User-Id"] == "" {
 		headers["X-User-Id"] = "10001"
 		headers["X-User-Roles"] = "admin"
 	}

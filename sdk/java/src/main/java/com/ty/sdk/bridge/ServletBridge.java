@@ -3,6 +3,7 @@ package com.ty.sdk.bridge;
 import com.google.protobuf.ByteString;
 import com.ty.sdk.Config;
 import com.ty.sdk.context.UserContext;
+import com.ty.sdk.manifest.ManifestLoader;
 import com.ty.sdk.proto.ExtensionTunnelGrpc;
 import com.ty.sdk.proto.FileChunk;
 import com.ty.sdk.proto.HttpRequestChunk;
@@ -18,6 +19,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.ApplicationContext;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockServletConfig;
+import org.springframework.mock.web.MockServletContext;
+import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.servlet.DispatcherServlet;
 
 import java.io.ByteArrayOutputStream;
@@ -43,7 +47,17 @@ public class ServletBridge {
     private static final int FRONTEND_CHUNK_SIZE = 256 * 1024;
 
     public static void start(ApplicationContext ctx, Config config) {
-        DispatcherServlet dispatcher = ctx.getBean(DispatcherServlet.class);
+        // Build a DispatcherServlet bound to the Spring context and initialise it
+        // with a mock servlet config. Without init() the servlet has no handler
+        // mappings and getServletConfig() is null, so dispatching every request
+        // would 404. (server.port=-1 means no real container does this for us.)
+        DispatcherServlet dispatcher = new DispatcherServlet((WebApplicationContext) ctx);
+        try {
+            dispatcher.init(new MockServletConfig(new MockServletContext(), "moduless"));
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to initialise DispatcherServlet: " + e.getMessage(), e);
+        }
+
         ManagedChannel channel = ManagedChannelBuilder
                 .forTarget(config.getCoreGrpcUrl())
                 .usePlaintext()
@@ -100,15 +114,22 @@ public class ServletBridge {
         StreamObserver<TunnelMessage> requestObserver = stub.connect(responseObserver);
         requestObserverHolder[0] = requestObserver;
 
-        requestObserver.onNext(TunnelMessage.newBuilder()
-                .setRegisterReq(RegisterRequest.newBuilder()
-                        .setExtensionKey(config.getExtensionKey())
-                        .setVersion(config.getVersion())
-                        .setIsDev(registerAsDev)
-                        .setZipFileSize(zipBytes.length)
-                        .setZipSha256(zipSha256)
-                        .build())
-                .build());
+        RegisterRequest.Builder reg = RegisterRequest.newBuilder()
+                .setExtensionKey(config.getExtensionKey())
+                .setVersion(config.getVersion())
+                .setIsDev(registerAsDev)
+                .setZipFileSize(zipBytes.length)
+                .setZipSha256(zipSha256);
+        // Send declared collections/indexes/slots so Core provisions CMDS tables.
+        if (config.getManifestPath() != null && !config.getManifestPath().isEmpty()) {
+            try {
+                ManifestLoader.apply(config.getManifestPath(), reg);
+            } catch (Exception e) {
+                System.err.println("warning: failed to load manifest " + config.getManifestPath() + ": " + e.getMessage());
+            }
+        }
+
+        requestObserver.onNext(TunnelMessage.newBuilder().setRegisterReq(reg.build()).build());
 
         // Stream the bundled frontend then signal completion so Core extracts
         // it and replies with the registration result.

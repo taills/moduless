@@ -18,6 +18,7 @@ from typing import Any
 import grpc
 
 from .context import UserContext, _user_context
+from .manifest import apply_manifest, load_manifest
 from .proto import tunnel_pb2, tunnel_pb2_grpc
 
 # Each FileChunk payload stays well under gRPC's 4MB default message limit.
@@ -33,6 +34,7 @@ class Config:
         version: str = "1.0.0",
         dev_frontend_url: str = "",
         frontend_dir: str = "",
+        manifest_path: str = "",
     ):
         self.extension_key = extension_key
         self.core_grpc_url = core_grpc_url
@@ -43,6 +45,9 @@ class Config:
         # built micro-frontend directory. The SDK zips it and streams it to Core
         # during registration so Core serves the assets from its gateway.
         self.frontend_dir = frontend_dir
+        # manifest_path, when set, makes the SDK load manifest.yaml and send the
+        # declared collections/indexes/slots so Core provisions CMDS tables.
+        self.manifest_path = manifest_path
 
 
 def _build_frontend_zip(directory: str) -> tuple[bytes, str]:
@@ -88,19 +93,24 @@ async def _run(app: Any, config: Config) -> None:
                 stub = tunnel_pb2_grpc.ExtensionTunnelStub(channel)
                 out_queue: "asyncio.Queue[tunnel_pb2.TunnelMessage]" = asyncio.Queue()
 
-                # First outgoing message registers the extension.
-                await out_queue.put(
-                    tunnel_pb2.TunnelMessage(
-                        register_req=tunnel_pb2.RegisterRequest(
-                            extension_key=config.extension_key,
-                            version=config.version,
-                            is_dev=register_is_dev,
-                            dev_frontend_url=config.dev_frontend_url,
-                            zip_file_size=len(frontend_zip),
-                            zip_sha256=zip_sha256,
-                        )
-                    )
+                # Build the registration request, applying the manifest so Core
+                # provisions CMDS tables and registers UI slots.
+                register_req = tunnel_pb2.RegisterRequest(
+                    extension_key=config.extension_key,
+                    version=config.version,
+                    is_dev=register_is_dev,
+                    dev_frontend_url=config.dev_frontend_url,
+                    zip_file_size=len(frontend_zip),
+                    zip_sha256=zip_sha256,
                 )
+                if config.manifest_path:
+                    try:
+                        apply_manifest(register_req, load_manifest(config.manifest_path))
+                    except Exception as e:  # noqa: BLE001
+                        print(f"warning: failed to load manifest {config.manifest_path}: {e}")
+
+                # First outgoing message registers the extension.
+                await out_queue.put(tunnel_pb2.TunnelMessage(register_req=register_req))
 
                 # Stream the bundled frontend, then signal completion so Core
                 # extracts it and replies with the registration result.

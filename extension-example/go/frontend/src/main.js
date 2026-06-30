@@ -1,6 +1,8 @@
 // Vanilla micro-frontend for the Go extension example: a full CRUD UI for the
 // "items" collection, served by Core and proxied to the Go backend over the
 // gRPC tunnel.
+import { renderWithQiankun, qiankunWindow } from "vite-plugin-qiankun/dist/helper";
+
 const API = "/api/extensions/go_example";
 
 async function api(path, options = {}) {
@@ -38,7 +40,7 @@ function renderApp(root) {
           <option value="inactive">inactive</option>
         </select>
         <button type="submit" style="padding:6px 14px">保存</button>
-        <button type="button" id="reset" style="padding:6px 14px">清空</button>
+        <button type="button" id="reset-btn" style="padding:6px 14px">清空</button>
       </form>
       <div style="margin-bottom:8px">
         筛选状态：
@@ -55,7 +57,7 @@ function renderApp(root) {
     </div>`;
 
   root.querySelector("#form").addEventListener("submit", onSubmit);
-  root.querySelector("#reset").addEventListener("click", resetForm);
+  root.querySelector("#reset-btn").addEventListener("click", resetForm);
   root.querySelector("#filter").addEventListener("change", (e) => {
     state.filter = e.target.value;
     refresh().catch(showError);
@@ -146,22 +148,26 @@ function escapeHtml(s) {
   );
 }
 
-async function start() {
-  const root = document.getElementById("app");
+async function start(container) {
+  const root = (container || document).querySelector("#app");
   renderApp(root);
   await refresh().catch(showError);
 }
 
-// Qiankun lifecycle hooks.
-export async function bootstrap() {}
-export async function mount() {
-  await start();
-}
-export async function unmount() {
-  const root = document.getElementById("app");
-  if (root) root.innerHTML = "";
-}
+// Qiankun lifecycle (via vite-plugin-qiankun) so the host can mount this app.
+renderWithQiankun({
+  bootstrap() {},
+  mount(props) {
+    start(props.container);
+  },
+  unmount(props) {
+    const root = (props.container || document).querySelector("#app");
+    if (root) root.innerHTML = "";
+  },
+  update() {},
+});
 
-if (!window.__POWERED_BY_QIANKUN__) {
+// Standalone mode (opened directly, not inside the host).
+if (!qiankunWindow.__POWERED_BY_QIANKUN__) {
   start();
 }

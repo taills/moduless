@@ -28,3 +28,12 @@ VALUES ($1, $2, $3, $4, $5);
 
 -- name: ListAuditLogs :many
 SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+
+-- name: GetUserByUsername :one
+SELECT id, username, password_hash, role FROM system_users WHERE username = $1;
+
+-- name: CountUsers :one
+SELECT COUNT(*) FROM system_users;
+
+-- name: CreateUser :exec
+INSERT INTO system_users (username, password_hash, role) VALUES ($1, $2, $3);

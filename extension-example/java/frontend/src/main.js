@@ -1,5 +1,6 @@
 import { createApp } from "vue";
 import App from "./App.vue";
+import { renderWithQiankun, qiankunWindow } from "vite-plugin-qiankun/dist/helper";
 
 let app = null;
 
@@ -11,18 +12,21 @@ function render(container) {
   app.mount(el);
 }
 
-// Qiankun micro-frontend lifecycle hooks.
-export async function bootstrap() {}
-export async function mount(props) {
-  render(props && props.container);
-}
-export async function unmount() {
-  if (app) {
-    app.unmount();
-    app = null;
-  }
-}
+// Qiankun lifecycle (via vite-plugin-qiankun) so the host can mount this app.
+renderWithQiankun({
+  bootstrap() {},
+  mount(props) {
+    render(props.container);
+  },
+  unmount() {
+    if (app) {
+      app.unmount();
+      app = null;
+    }
+  },
+  update() {},
+});
 
-if (!window.__POWERED_BY_QIANKUN__) {
+if (!qiankunWindow.__POWERED_BY_QIANKUN__) {
   render();
 }

@@ -10,6 +10,32 @@ import (
 	"time"
 )
 
+const countUsers = `-- name: CountUsers :one
+SELECT COUNT(*) FROM system_users
+`
+
+func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countUsers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const createUser = `-- name: CreateUser :exec
+INSERT INTO system_users (username, password_hash, role) VALUES ($1, $2, $3)
+`
+
+type CreateUserParams struct {
+	Username     string `json:"username"`
+	PasswordHash string `json:"password_hash"`
+	Role         string `json:"role"`
+}
+
+func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
+	_, err := q.db.ExecContext(ctx, createUser, arg.Username, arg.PasswordHash, arg.Role)
+	return err
+}
+
 const getExtensionVersion = `-- name: GetExtensionVersion :one
 SELECT version FROM extension_versions WHERE extension_key = $1
 `
@@ -37,6 +63,29 @@ func (q *Queries) GetFile(ctx context.Context, id string) (SystemFile, error) {
 		&i.UploaderID,
 		&i.Status,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getUserByUsername = `-- name: GetUserByUsername :one
+SELECT id, username, password_hash, role FROM system_users WHERE username = $1
+`
+
+type GetUserByUsernameRow struct {
+	ID           int32  `json:"id"`
+	Username     string `json:"username"`
+	PasswordHash string `json:"password_hash"`
+	Role         string `json:"role"`
+}
+
+func (q *Queries) GetUserByUsername(ctx context.Context, username string) (GetUserByUsernameRow, error) {
+	row := q.db.QueryRowContext(ctx, getUserByUsername, username)
+	var i GetUserByUsernameRow
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.PasswordHash,
+		&i.Role,
 	)
 	return i, err
 }

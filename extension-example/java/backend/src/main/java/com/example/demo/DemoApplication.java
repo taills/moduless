@@ -37,7 +37,8 @@ public class DemoApplication {
         ApplicationContext ctx = SpringApplication.run(DemoApplication.class, args);
 
         String frontendDir = System.getenv().getOrDefault("FRONTEND_DIR", "");
+        String manifestPath = System.getenv().getOrDefault("MANIFEST_PATH", "../manifest.yaml");
         boolean dev = frontendDir.isEmpty();
-        ServletBridge.start(ctx, new Config(EXTENSION_KEY, coreUrl(), dev, "1.0.0", frontendDir));
+        ServletBridge.start(ctx, new Config(EXTENSION_KEY, coreUrl(), dev, "1.0.0", frontendDir, manifestPath));
     }
 }

@@ -1,5 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
+import { renderWithQiankun, qiankunWindow } from "vite-plugin-qiankun/dist/helper";
 
 const API = "/api/extensions/python_example";
 
@@ -142,15 +143,21 @@ function render(container) {
   root.render(<App />);
 }
 
-// Qiankun micro-frontend lifecycle hooks.
-export async function bootstrap() {}
-export async function mount(props) {
-  render(props && props.container);
-}
-export async function unmount() {
-  if (root) root.unmount();
-}
+// Qiankun lifecycle (via vite-plugin-qiankun) so the host can mount this app.
+renderWithQiankun({
+  bootstrap() {},
+  mount(props) {
+    render(props.container);
+  },
+  unmount() {
+    if (root) {
+      root.unmount();
+      root = null;
+    }
+  },
+  update() {},
+});
 
-if (!window.__POWERED_BY_QIANKUN__) {
+if (!qiankunWindow.__POWERED_BY_QIANKUN__) {
   render();
 }

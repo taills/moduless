@@ -87,6 +87,37 @@ func (m *TunnelManager) ListTunnels() map[string]time.Time {
 	return out
 }
 
+// ExtensionInfo is the registration metadata the host app needs to build its
+// menu and register qiankun micro-apps.
+type ExtensionInfo struct {
+	Key         string
+	DisplayName string
+	MenuIcon    string
+	MenuPath    string
+	Online      bool
+}
+
+// ListExtensions returns metadata for all currently-registered extensions.
+func (m *TunnelManager) ListExtensions() []ExtensionInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]ExtensionInfo, 0, len(m.metadata))
+	for key, meta := range m.metadata {
+		// A live tunnel is kept only while the extension is connected (the
+		// gracefulUnregister window drops stale ones), so its presence is the
+		// online signal — extensions do not send periodic heartbeats yet.
+		_, online := m.tunnels[key]
+		info := ExtensionInfo{Key: key, Online: online}
+		if meta != nil {
+			info.DisplayName = meta.DisplayName
+			info.MenuIcon = meta.MenuIcon
+			info.MenuPath = meta.MenuPath
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 func (m *TunnelManager) GetUiFile(key, path string) ([]byte, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

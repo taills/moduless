@@ -23,6 +23,27 @@ docker compose up --build
 
 `restart: unless-stopped` plus the `/healthz` healthcheck cover crash recovery.
 
+## Console & login
+
+Core serves the **qiankun host app (console)** at the web root `/`. It is a Vue 3
+master app: a login page, a sidebar menu built from `GET /api/system/ui/apps`,
+and a qiankun container that loads each extension as a micro-frontend.
+
+Authentication is real: `POST /api/system/auth/login` verifies credentials
+against `system_users` (bcrypt) and issues an in-memory session token. The
+gateway resolves the token (Authorization header or `moduless_token` cookie) and
+injects the authenticated identity into extension requests; unauthenticated
+`/api/extensions/*` calls are rejected with 401.
+
+On first start with an empty `system_users` table, Core seeds a default admin:
+
+- username `admin`, password `admin123` — override with `ADMIN_USERNAME` /
+  `ADMIN_PASSWORD`. **Change the default before exposing Core.**
+
+The console is bundled into the Core image (built from `core/frontend`) and
+served from `HOST_FRONTEND_DIR` (default `/app/host` in the image). When the
+build is absent, Core serves a placeholder page.
+
 ## Kubernetes (single replica)
 
 ```yaml

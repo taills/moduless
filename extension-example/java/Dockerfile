@@ -28,5 +28,6 @@ COPY --from=backend /src/extension-example/java/backend/target/java-extension-ex
 COPY --from=frontend /fe/dist /app/frontend
 COPY extension-example/java/manifest.yaml /app/manifest.yaml
 ENV CORE_URL=core:9000 \
-    FRONTEND_DIR=/app/frontend
+    FRONTEND_DIR=/app/frontend \
+    MANIFEST_PATH=/app/manifest.yaml
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

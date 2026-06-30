@@ -96,6 +96,10 @@ def delete_item(item_id: str):
 
 if __name__ == "__main__":
     frontend_dir = os.getenv("FRONTEND_DIR", "")
+    manifest_path = os.getenv(
+        "MANIFEST_PATH",
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../manifest.yaml")),
+    )
     start_sdk(
         app,
         Config(
@@ -104,5 +108,6 @@ if __name__ == "__main__":
             is_dev=frontend_dir == "",
             dev_frontend_url=os.getenv("DEV_FE_URL", "http://localhost:7101"),
             frontend_dir=frontend_dir,
+            manifest_path=manifest_path,
         ),
     )

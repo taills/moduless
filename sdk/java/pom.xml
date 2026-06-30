@@ -63,6 +63,12 @@
             <artifactId>spring-test</artifactId>
             <version>6.0.13</version>
         </dependency>
+        <!-- Parse the extension manifest.yaml to declare CMDS collections. -->
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>2.2</version>
+        </dependency>
     </dependencies>
 
     <build>

@@ -7,6 +7,7 @@ package sqlc
 
 import (
 	"context"
+	"time"
 )
 
 const getExtensionVersion = `-- name: GetExtensionVersion :one
@@ -18,6 +19,74 @@ func (q *Queries) GetExtensionVersion(ctx context.Context, extensionKey string) 
 	var version string
 	err := row.Scan(&version)
 	return version, err
+}
+
+const getFile = `-- name: GetFile :one
+SELECT id, filename, size, mime_type, storage_key, uploader_id, status, created_at FROM system_files WHERE id = $1
+`
+
+func (q *Queries) GetFile(ctx context.Context, id string) (SystemFile, error) {
+	row := q.db.QueryRowContext(ctx, getFile, id)
+	var i SystemFile
+	err := row.Scan(
+		&i.ID,
+		&i.Filename,
+		&i.Size,
+		&i.MimeType,
+		&i.StorageKey,
+		&i.UploaderID,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertDownloadToken = `-- name: InsertDownloadToken :exec
+INSERT INTO file_download_tokens (token, file_id, user_id, expires_at)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertDownloadTokenParams struct {
+	Token     string    `json:"token"`
+	FileID    string    `json:"file_id"`
+	UserID    string    `json:"user_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (q *Queries) InsertDownloadToken(ctx context.Context, arg InsertDownloadTokenParams) error {
+	_, err := q.db.ExecContext(ctx, insertDownloadToken,
+		arg.Token,
+		arg.FileID,
+		arg.UserID,
+		arg.ExpiresAt,
+	)
+	return err
+}
+
+const insertFile = `-- name: InsertFile :exec
+INSERT INTO system_files (id, filename, size, mime_type, storage_key, uploader_id)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertFileParams struct {
+	ID         string `json:"id"`
+	Filename   string `json:"filename"`
+	Size       int64  `json:"size"`
+	MimeType   string `json:"mime_type"`
+	StorageKey string `json:"storage_key"`
+	UploaderID string `json:"uploader_id"`
+}
+
+func (q *Queries) InsertFile(ctx context.Context, arg InsertFileParams) error {
+	_, err := q.db.ExecContext(ctx, insertFile,
+		arg.ID,
+		arg.Filename,
+		arg.Size,
+		arg.MimeType,
+		arg.StorageKey,
+		arg.UploaderID,
+	)
+	return err
 }
 
 const updateExtensionVersion = `-- name: UpdateExtensionVersion :exec
@@ -35,4 +104,16 @@ type UpdateExtensionVersionParams struct {
 func (q *Queries) UpdateExtensionVersion(ctx context.Context, arg UpdateExtensionVersionParams) error {
 	_, err := q.db.ExecContext(ctx, updateExtensionVersion, arg.ExtensionKey, arg.Version)
 	return err
+}
+
+const verifyDownloadToken = `-- name: VerifyDownloadToken :one
+SELECT file_id FROM file_download_tokens
+WHERE token = $1 AND expires_at > NOW()
+`
+
+func (q *Queries) VerifyDownloadToken(ctx context.Context, token string) (string, error) {
+	row := q.db.QueryRowContext(ctx, verifyDownloadToken, token)
+	var file_id string
+	err := row.Scan(&file_id)
+	return file_id, err
 }

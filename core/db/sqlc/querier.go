@@ -10,7 +10,11 @@ import (
 
 type Querier interface {
 	GetExtensionVersion(ctx context.Context, extensionKey string) (string, error)
+	GetFile(ctx context.Context, id string) (SystemFile, error)
+	InsertDownloadToken(ctx context.Context, arg InsertDownloadTokenParams) error
+	InsertFile(ctx context.Context, arg InsertFileParams) error
 	UpdateExtensionVersion(ctx context.Context, arg UpdateExtensionVersionParams) error
+	VerifyDownloadToken(ctx context.Context, token string) (string, error)
 }
 
 var _ Querier = (*Queries)(nil)

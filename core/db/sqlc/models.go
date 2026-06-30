@@ -6,12 +6,31 @@ package sqlc
 
 import (
 	"database/sql"
+	"time"
 )
 
 type ExtensionVersion struct {
 	ExtensionKey string       `json:"extension_key"`
 	Version      string       `json:"version"`
 	UpdatedAt    sql.NullTime `json:"updated_at"`
+}
+
+type FileDownloadToken struct {
+	Token     string    `json:"token"`
+	FileID    string    `json:"file_id"`
+	UserID    string    `json:"user_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type SystemFile struct {
+	ID         string         `json:"id"`
+	Filename   string         `json:"filename"`
+	Size       int64          `json:"size"`
+	MimeType   string         `json:"mime_type"`
+	StorageKey string         `json:"storage_key"`
+	UploaderID string         `json:"uploader_id"`
+	Status     sql.NullString `json:"status"`
+	CreatedAt  sql.NullTime   `json:"created_at"`
 }
 
 type SystemUser struct {

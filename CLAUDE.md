@@ -41,6 +41,27 @@ database configured, Core seeds a default admin on first start — `admin` /
 `admin123` (override via `ADMIN_USERNAME` / `ADMIN_PASSWORD`). Login issues a
 session token; the gateway enforces it on `/api/extensions/*`.
 
+The console includes **baseline admin features** (admin role only): **用户管理**
+(`/api/system/users/*`) and **扩展管理** (`/api/system/extensions/*`).
+
+#### Extension registration & approval
+
+Extensions are **not** auto-trusted. Registration follows an admin approval flow
+(enforced whenever `DATABASE_URL` is set; open registration without it):
+
+1. An extension dials Core with no secret → recorded as **`待注册` (pending)**,
+   connection held open but **not routed**.
+2. Admin clicks **批准** in 扩展管理 → Core mints a per-instance secret, pushes it
+   over the tunnel (the SDK persists it into `manifest.yaml` as `secret:`),
+   provisions schema/slots, and routes it (**`已注册`**).
+3. Reconnects replay the persisted secret for immediate routing.
+4. **拒绝** revokes secrets + disconnects; **删除** lets the extension re-apply.
+
+One extension key may own **multiple secrets** (one per instance). Generate extra
+secrets in the console and pass them to replicas via the `EXTENSION_SECRET` env;
+a no-secret dial to an approved key is rejected, preventing key hijacking. See
+[docs/deployment.md](docs/deployment.md) for secret persistence in containers.
+
 ### 3. Running Extensions
 Extensions do not listen to ports. Run them in IDEs or terminals by passing the `CORE_URL` or configuration:
 * **Go Extension**: `go run extension-example/go/backend/main.go`

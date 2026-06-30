@@ -15,6 +15,7 @@ import (
 	"github.com/taills/moduless/core/db"
 	sqlc "github.com/taills/moduless/core/db/sqlc"
 	"github.com/taills/moduless/core/event"
+	"github.com/taills/moduless/core/extension"
 	"github.com/taills/moduless/core/gateway"
 	"github.com/taills/moduless/core/middleware"
 	"github.com/taills/moduless/core/storage"
@@ -38,21 +39,22 @@ func main() {
 	manager := tunnel.NewTunnelManager()
 	bus := event.NewEventBus()
 	slots := gateway.NewSlotRegistry()
-
-	// gRPC server with per-extension identity interceptor.
-	grpcSrv := grpc.NewServer(grpc.UnaryInterceptor(tunnel.ExtensionKeyUnaryInterceptor))
 	tunnelSrv := tunnel.NewTunnelServer(manager)
-	pb.RegisterExtensionTunnelServer(grpcSrv, tunnelSrv)
-	pb.RegisterEventBusServiceServer(grpcSrv, tunnel.NewEventServer(bus))
-
 	gw := gateway.NewGatewayHandler(manager)
+
+	// provision reconciles CMDS schema and registers UI slots from a manifest. It
+	// runs both when an approved extension (re)connects and when an admin approves
+	// a pending one, so the tunnel server and the approval coordinator share it.
+	provision := func(req *pb.RegisterRequest) error { return nil }
 
 	var queries *sqlc.Queries
 	var conn *sql.DB
 	var cmds *db.CMDSManager
+	var extStore *extension.Store
+	var coordinator *extension.Coordinator
 
-	// Database-backed services (CMDS, files, audit) are optional so Core can
-	// run a pure tunnel demo without PostgreSQL/RustFS.
+	// Database-backed services (CMDS, files, audit, approval) are optional so Core
+	// can run a pure tunnel demo without PostgreSQL/RustFS.
 	if databaseURL != "" {
 		var err error
 		conn, err = db.InitDB(databaseURL)
@@ -61,43 +63,13 @@ func main() {
 		}
 		defer conn.Close()
 		queries = sqlc.New(conn)
-
 		cmds = db.NewCMDSManager(conn)
-		pb.RegisterDatabaseServiceServer(grpcSrv, tunnel.NewDbServer(cmds))
-		pb.RegisterFileServiceServer(grpcSrv, tunnel.NewFileServer(queries))
-		log.Println("[core] CMDS DatabaseService + FileService enabled")
-
-		// Real authentication: verify against system_users, seed a default
-		// admin, and let the gateway inject the authenticated identity.
-		authStore := auth.NewStore(queries)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if seeded, err := authStore.SeedDefaultAdmin(ctx, env("ADMIN_USERNAME", "admin"), env("ADMIN_PASSWORD", "admin123")); err != nil {
-			log.Printf("[core] seed admin failed: %v", err)
-		} else if seeded {
-			log.Printf("[core] seeded default admin user %q (set ADMIN_PASSWORD to override)", env("ADMIN_USERNAME", "admin"))
-		}
-		cancel()
-		gw.Auth = authStore
-
-		authHandler := gateway.NewAuthHandler(authStore)
-		gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/auth/login" }, authHandler.Login)
-		gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/auth/me" }, authHandler.Me)
-		gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/auth/logout" }, authHandler.Logout)
-		log.Println("[core] auth endpoints enabled (/api/system/auth/*)")
-
-		if rustfs := buildStorage(); rustfs != nil {
-			fileHandler := gateway.NewFileHandler(rustfs, queries)
-			gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/files/upload" }, fileHandler.Upload)
-			gw.RegisterSystemRoute(func(p string) bool { return hasPrefix(p, "/api/system/files/download/") }, fileHandler.Download)
-			log.Println("[core] RustFS file upload/download routes enabled")
-		}
 	} else {
-		log.Println("[core] DATABASE_URL not set; running tunnel + event bus only")
+		log.Println("[core] DATABASE_URL not set; running tunnel + event bus only (open registration)")
 	}
 
-	// On registration: provision CMDS schema from the manifest and register UI
-	// slots. On unregister: drop the slots.
-	tunnelSrv.OnRegister = func(req *pb.RegisterRequest) error {
+	// The schema/slot provisioning closure (no-op without a database).
+	provision = func(req *pb.RegisterRequest) error {
 		if cmds != nil && len(req.Collections) > 0 {
 			cols := make([]db.CollectionSchema, 0, len(req.Collections))
 			for _, c := range req.Collections {
@@ -125,8 +97,70 @@ func main() {
 		}
 		return nil
 	}
-	tunnelSrv.OnUnregister = func(extKey string) {
-		slots.Unregister(extKey)
+	tunnelSrv.OnRegister = provision
+	tunnelSrv.OnUnregister = slots.Unregister
+
+	// The data-plane interceptor gates DB/File/Event calls; when a registry is
+	// available it also rejects calls from keys that are not approved.
+	if queries != nil {
+		extStore = extension.NewStore(queries)
+		tunnelSrv.Auth = extStore
+		coordinator = &extension.Coordinator{
+			Store:        extStore,
+			Manager:      manager,
+			Provision:    provision,
+			OnUnregister: slots.Unregister,
+		}
+	}
+
+	var grpcInterceptor grpc.UnaryServerInterceptor = tunnel.ExtensionKeyUnaryInterceptor
+	if extStore != nil {
+		grpcInterceptor = tunnel.ApprovedKeyUnaryInterceptor(extStore)
+	}
+	grpcSrv := grpc.NewServer(grpc.UnaryInterceptor(grpcInterceptor))
+	pb.RegisterExtensionTunnelServer(grpcSrv, tunnelSrv)
+	pb.RegisterEventBusServiceServer(grpcSrv, tunnel.NewEventServer(bus))
+
+	if queries != nil {
+		pb.RegisterDatabaseServiceServer(grpcSrv, tunnel.NewDbServer(cmds))
+		pb.RegisterFileServiceServer(grpcSrv, tunnel.NewFileServer(queries))
+		log.Println("[core] CMDS DatabaseService + FileService enabled")
+
+		// Real authentication: verify against system_users, seed a default admin,
+		// and let the gateway inject the authenticated identity.
+		authStore := auth.NewStore(queries)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if seeded, err := authStore.SeedDefaultAdmin(ctx, env("ADMIN_USERNAME", "admin"), env("ADMIN_PASSWORD", "admin123")); err != nil {
+			log.Printf("[core] seed admin failed: %v", err)
+		} else if seeded {
+			log.Printf("[core] seeded default admin user %q (set ADMIN_PASSWORD to override)", env("ADMIN_USERNAME", "admin"))
+		}
+		cancel()
+		gw.Auth = authStore
+
+		authHandler := gateway.NewAuthHandler(authStore)
+		gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/auth/login" }, authHandler.Login)
+		gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/auth/me" }, authHandler.Me)
+		gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/auth/logout" }, authHandler.Logout)
+		log.Println("[core] auth endpoints enabled (/api/system/auth/*)")
+
+		// Admin baseline: user management and extension approval management.
+		usersHandler := gateway.NewUsersHandler(authStore)
+		gw.RegisterSystemRoute(func(p string) bool {
+			return p == "/api/system/users" || hasPrefix(p, "/api/system/users/")
+		}, usersHandler.Serve)
+		extHandler := gateway.NewExtensionsHandler(authStore, coordinator)
+		gw.RegisterSystemRoute(func(p string) bool {
+			return p == "/api/system/extensions" || hasPrefix(p, "/api/system/extensions/")
+		}, extHandler.Serve)
+		log.Println("[core] admin endpoints enabled (/api/system/users/*, /api/system/extensions/*)")
+
+		if rustfs := buildStorage(); rustfs != nil {
+			fileHandler := gateway.NewFileHandler(rustfs, queries)
+			gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/files/upload" }, fileHandler.Upload)
+			gw.RegisterSystemRoute(func(p string) bool { return hasPrefix(p, "/api/system/files/download/") }, fileHandler.Download)
+			log.Println("[core] RustFS file upload/download routes enabled")
+		}
 	}
 
 	// System routes available regardless of DB (triggering air reload).

@@ -21,3 +21,6 @@ audit:
   paths:
     - method: "POST"
       path: "/items/*"
+
+# Issued by Core on approval and persisted here by the SDK. Leave empty.
+secret: ""

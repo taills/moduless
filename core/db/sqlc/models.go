@@ -19,6 +19,28 @@ type AuditLog struct {
 	CreatedAt    sql.NullTime `json:"created_at"`
 }
 
+type Extension struct {
+	Key         string       `json:"key"`
+	DisplayName string       `json:"display_name"`
+	Version     string       `json:"version"`
+	MenuIcon    string       `json:"menu_icon"`
+	MenuPath    string       `json:"menu_path"`
+	Status      string       `json:"status"`
+	CreatedAt   sql.NullTime `json:"created_at"`
+	ApprovedAt  sql.NullTime `json:"approved_at"`
+	UpdatedAt   sql.NullTime `json:"updated_at"`
+}
+
+type ExtensionSecret struct {
+	ID           int64        `json:"id"`
+	ExtensionKey string       `json:"extension_key"`
+	SecretHash   string       `json:"secret_hash"`
+	Label        string       `json:"label"`
+	CreatedAt    sql.NullTime `json:"created_at"`
+	LastUsedAt   sql.NullTime `json:"last_used_at"`
+	RevokedAt    sql.NullTime `json:"revoked_at"`
+}
+
 type ExtensionVersion struct {
 	ExtensionKey string       `json:"extension_key"`
 	Version      string       `json:"version"`

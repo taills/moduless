@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { api, auth } from "../api";
 import { setupMicroApps } from "../microApps";
@@ -9,6 +9,7 @@ const route = useRoute();
 const apps = ref([]);
 const error = ref("");
 const user = ref(JSON.parse(localStorage.getItem("moduless_user") || "null"));
+const isAdmin = computed(() => user.value && user.value.role === "admin");
 
 onMounted(async () => {
   try {
@@ -53,6 +54,12 @@ async function logout() {
           <span class="dot" :class="{ on: app.online }"></span>{{ app.display_name }}
         </a>
         <div v-if="apps.length === 0" class="empty">暂无在线扩展</div>
+
+        <template v-if="isAdmin">
+          <div class="nav-label">系统管理</div>
+          <router-link class="nav-item" to="/system/extensions" :class="{ active: route.path === '/system/extensions' }">扩展管理</router-link>
+          <router-link class="nav-item" to="/system/users" :class="{ active: route.path === '/system/users' }">用户管理</router-link>
+        </template>
       </nav>
     </aside>
 

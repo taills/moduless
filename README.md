@@ -26,8 +26,12 @@ Browser ──HTTP──▶ Core Gateway (:80) ──reverse gRPC tunnel (:9000)
 Core principles enforced by the implementation:
 
 - **Zero-port extensions** — extensions only dial out to Core's gRPC port.
+- **Approval-gated registration** — a new extension is parked as `待注册` (pending)
+  until an admin approves it in the console; Core then issues a per-instance secret
+  (one key may hold many) that the SDK persists to `manifest.yaml`. Unauthorized or
+  unapproved keys cannot route. See [docs/deployment.md](docs/deployment.md).
 - **CMDS** — extensions never touch PostgreSQL; collections/indexes are declared in
-  `manifest.yaml` and Core provisions `ext_<key>_<collection>` tables on registration.
+  `manifest.yaml` and Core provisions `ext_<key>_<collection>` tables on approval.
 - **Core-managed files** — uploads go straight to Core/RustFS returning a `file_id`;
   downloads use clean path params `/api/system/files/download/<file_id>/<token>` (no `?`).
 - **In-memory FE cache** — frontend zips stream to Core and are served from memory.

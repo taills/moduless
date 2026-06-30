@@ -9,6 +9,10 @@ import org.yaml.snakeyaml.Yaml;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -20,6 +24,44 @@ import java.util.Map;
 public final class ManifestLoader {
 
     private ManifestLoader() {}
+
+    /** Reads the persisted approval secret from manifest.yaml, or "" if absent. */
+    @SuppressWarnings("unchecked")
+    public static String loadSecret(String path) throws IOException {
+        Map<String, Object> manifest;
+        try (InputStream in = new FileInputStream(path)) {
+            manifest = new Yaml().load(in);
+        }
+        if (manifest == null) {
+            return "";
+        }
+        Object secret = manifest.get("secret");
+        return secret == null ? "" : secret.toString();
+    }
+
+    /**
+     * Persists the Core-issued secret back into manifest.yaml, rewriting only the
+     * top-level {@code secret:} line (replaced or appended) so comments and the
+     * rest of the file are preserved.
+     */
+    public static void saveSecret(String path, String secret) throws IOException {
+        Path file = Path.of(path);
+        List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+        List<String> out = new ArrayList<>(lines.size() + 1);
+        boolean replaced = false;
+        for (String line : lines) {
+            if (line.startsWith("secret:")) {
+                out.add("secret: \"" + secret + "\"");
+                replaced = true;
+            } else {
+                out.add(line);
+            }
+        }
+        if (!replaced) {
+            out.add("secret: \"" + secret + "\"");
+        }
+        Files.write(file, (String.join("\n", out) + "\n").getBytes(StandardCharsets.UTF_8));
+    }
 
     @SuppressWarnings("unchecked")
     public static void apply(String path, RegisterRequest.Builder req) throws IOException {

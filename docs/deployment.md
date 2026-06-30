@@ -44,6 +44,39 @@ The console is bundled into the Core image (built from `core/frontend`) and
 served from `HOST_FRONTEND_DIR` (default `/app/host` in the image). When the
 build is absent, Core serves a placeholder page.
 
+## Extension approval & secrets
+
+Registration is gated by an admin approval workflow (enforced whenever Core has a
+database; without `DATABASE_URL` registration stays open for demos).
+
+1. An extension dials Core with **no secret**. Core records it as **`待注册`
+   (pending)** and holds the connection open without routing it.
+2. An admin opens **扩展管理** in the console and clicks **批准**. Core mints a
+   per-instance secret, pushes it down the tunnel (the SDK persists it into the
+   extension's `manifest.yaml` as `secret:`), provisions the extension's CMDS
+   schema/UI slots, and routes it. The extension is now **`已注册` (approved)**.
+3. On every reconnect the SDK replays the persisted secret, so Core re-routes it
+   immediately without re-approval.
+4. **拒绝** marks an extension `已拒绝`, revokes its secrets and disconnects it.
+   **删除** removes the record entirely, so the extension's next dial starts a
+   fresh pending request.
+
+**Multi-replica / one key, many secrets.** A key may own several secrets, one per
+instance. To scale an already-approved extension without re-approving each
+replica, generate an extra secret in the console (扩展管理 → 密钥 → 生成新密钥,
+shown once) and pass it to the new replica via the **`EXTENSION_SECRET`** env. A
+no-secret connection to an approved key is rejected (it must be approved or carry
+a valid secret), which is what prevents another process from hijacking the key.
+
+**Secret persistence.** The SDK writes the issued secret back to `manifest.yaml`.
+In containers the manifest is baked into the image, so a rebuild/restart loses it
+and the extension returns to `待注册`. For restart-safe deployments either pin the
+secret with `EXTENSION_SECRET`, or mount the manifest directory on a persistent
+volume.
+
+**Data-plane gate.** When a registry is present, Core also rejects DB/File/Event
+calls whose extension key is not approved.
+
 ## Kubernetes (single replica)
 
 ```yaml

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/taills/moduless/proto/tunnel"
@@ -22,6 +23,14 @@ type ActiveTunnel struct {
 	ResponseChans sync.Map // Map[stream_id]chan *pb.HttpResponseChunk
 	LastPing      time.Time
 	sendMu        sync.Mutex // serialize Stream.Send across goroutines
+
+	// Meta is the registration request that opened this tunnel, retained so an
+	// approval that arrives later (for a pending tunnel) can provision schema and
+	// build menu metadata without the original RegisterReq still in scope.
+	Meta *pb.RegisterRequest
+	// Approved flips to true once an admin approves a pending tunnel. The Connect
+	// loop reads it to decide whether an uploaded frontend may be activated.
+	Approved atomic.Bool
 }
 
 // Send writes a message to the tunnel stream in a goroutine-safe manner.
@@ -36,7 +45,8 @@ func (t *ActiveTunnel) Send(msg *pb.TunnelMessage) error {
 // Each extension key maps to a set of replica tunnels, balanced by weight.
 type TunnelManager struct {
 	mu          sync.RWMutex
-	tunnels     map[string][]*ActiveTunnel     // ExtensionKey -> replicas
+	tunnels     map[string][]*ActiveTunnel     // ExtensionKey -> routable replicas
+	pending     map[string][]*ActiveTunnel     // ExtensionKey -> tunnels awaiting approval
 	uiCache     map[string]map[string][]byte   // ExtensionKey -> FilePath -> Content
 	pendingZips map[string]*bytes.Buffer       // InstanceID -> uploading zip buffer
 	metadata    map[string]*pb.RegisterRequest // ExtensionKey -> latest register info
@@ -46,9 +56,97 @@ type TunnelManager struct {
 func NewTunnelManager() *TunnelManager {
 	return &TunnelManager{
 		tunnels:     make(map[string][]*ActiveTunnel),
+		pending:     make(map[string][]*ActiveTunnel),
 		uiCache:     make(map[string]map[string][]byte),
 		pendingZips: make(map[string]*bytes.Buffer),
 		metadata:    make(map[string]*pb.RegisterRequest),
+	}
+}
+
+// newTunnel builds an ActiveTunnel with a unique instance id. Callers hold mu.
+func (m *TunnelManager) newTunnel(key string, stream pb.ExtensionTunnel_ConnectServer, meta *pb.RegisterRequest) *ActiveTunnel {
+	weight := 1
+	if meta != nil && meta.Weight > 0 {
+		weight = int(meta.Weight)
+	}
+	m.instanceSeq++
+	return &ActiveTunnel{
+		ExtensionKey: key,
+		InstanceID:   fmt.Sprintf("%s-%d", key, m.instanceSeq),
+		Weight:       weight,
+		Stream:       stream,
+		LastPing:     time.Now(),
+		Meta:         meta,
+	}
+}
+
+// AddPending records a tunnel awaiting admin approval. Pending tunnels are held
+// open but never routed, so PickTunnel and ListExtensions ignore them.
+func (m *TunnelManager) AddPending(key string, stream pb.ExtensionTunnel_ConnectServer, meta *pb.RegisterRequest) *ActiveTunnel {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t := m.newTunnel(key, stream, meta)
+	m.pending[key] = append(m.pending[key], t)
+	return t
+}
+
+// RemovePending drops a single pending tunnel (e.g. it disconnected before an
+// admin decision).
+func (m *TunnelManager) RemovePending(key string, target *ActiveTunnel) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dropPending(key, target)
+}
+
+func (m *TunnelManager) dropPending(key string, target *ActiveTunnel) {
+	if target != nil {
+		delete(m.pendingZips, target.InstanceID)
+	}
+	replicas := m.pending[key]
+	kept := replicas[:0]
+	for _, r := range replicas {
+		if r != target {
+			kept = append(kept, r)
+		}
+	}
+	if len(kept) == 0 {
+		delete(m.pending, key)
+		return
+	}
+	m.pending[key] = kept
+}
+
+// TakePending removes and returns every pending tunnel for key, used when an
+// admin approves or rejects the extension.
+func (m *TunnelManager) TakePending(key string) []*ActiveTunnel {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	taken := m.pending[key]
+	delete(m.pending, key)
+	return taken
+}
+
+// IsPending reports whether the given tunnel is still parked as pending.
+func (m *TunnelManager) IsPending(key string, target *ActiveTunnel) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, r := range m.pending[key] {
+		if r == target {
+			return true
+		}
+	}
+	return false
+}
+
+// Adopt promotes a previously-pending tunnel into the routable set, making it
+// eligible for request load-balancing. Metadata is refreshed from the tunnel.
+func (m *TunnelManager) Adopt(t *ActiveTunnel) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := t.ExtensionKey
+	m.tunnels[key] = append(m.tunnels[key], t)
+	if t.Meta != nil {
+		m.metadata[key] = t.Meta
 	}
 }
 
@@ -115,6 +213,22 @@ func (m *TunnelManager) HasTunnel(key string, target *ActiveTunnel) bool {
 	return false
 }
 
+// RemoveAllForKey drops every routable replica for key (used when an admin
+// rejects or deletes an extension) and returns them so the caller can notify
+// each over its tunnel. Shared key-scoped state (UI cache, metadata) is cleared.
+func (m *TunnelManager) RemoveAllForKey(key string) []*ActiveTunnel {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	removed := m.tunnels[key]
+	for _, t := range removed {
+		delete(m.pendingZips, t.InstanceID)
+	}
+	delete(m.tunnels, key)
+	delete(m.uiCache, key)
+	delete(m.metadata, key)
+	return removed
+}
+
 // GetTunnel returns the first replica for key (existence check / single-replica
 // callers). Use PickTunnel for request routing.
 func (m *TunnelManager) GetTunnel(key string) (*ActiveTunnel, bool) {
@@ -125,6 +239,20 @@ func (m *TunnelManager) GetTunnel(key string) (*ActiveTunnel, bool) {
 		return nil, false
 	}
 	return replicas[0], true
+}
+
+// CountReplicas returns the number of routable replicas for key.
+func (m *TunnelManager) CountReplicas(key string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.tunnels[key])
+}
+
+// CountPending returns the number of tunnels for key awaiting approval.
+func (m *TunnelManager) CountPending(key string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.pending[key])
 }
 
 // PickTunnel selects a replica for key using smooth weighted round-robin

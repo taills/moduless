@@ -3,7 +3,6 @@ package sdk
 import (
 	"bytes"
 	"context"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -76,11 +75,19 @@ func Start(handler http.Handler, cfg Config) {
 			log.Printf("warning: failed to load manifest %s: %v", cfg.ManifestPath, err)
 		} else {
 			applyManifest(registerReq, m)
+			// The approval secret persisted from a previous run lets Core skip the
+			// approval workflow and route this instance immediately. An explicit
+			// Config/env value takes precedence over the manifest copy.
+			if cfg.ExtensionSecret == "" {
+				cfg.ExtensionSecret = m.Secret
+			}
 		}
 	}
+	registerReq.ExtensionSecret = cfg.ExtensionSecret
 
 	// In production mode the SDK ships the built micro-frontend to Core so the
-	// gateway can serve it. The zip is built once and re-streamed on reconnect.
+	// gateway can serve it. The zip is built once and uploaded only after Core
+	// approves the extension (signalled by a RegisterDecision).
 	var frontendZip []byte
 	if !cfg.IsDev {
 		if cfg.FrontendDir != "" {
@@ -116,21 +123,26 @@ func Start(handler http.Handler, cfg Config) {
 			continue
 		}
 
-		// Stream the bundled micro-frontend, then signal completion so Core
-		// extracts it and replies with the registration result.
-		if len(frontendZip) > 0 {
-			if err := uploadFrontendZip(cs, frontendZip); err != nil {
-				log.Printf("frontend upload failed: %v, reconnecting in 2s...", err)
-				time.Sleep(2 * time.Second)
-				continue
-			}
+		sess := &tunnelSession{cs: cs, handler: handler, cfg: cfg, frontendZip: frontendZip}
+		backoff := handleTunnel(sess)
+		// Adopt any secret Core issued during this session so the next reconnect
+		// authenticates immediately.
+		if sess.issuedSecret != "" {
+			registerReq.ExtensionSecret = sess.issuedSecret
 		}
-
-		if err := handleTunnel(cs, handler); err != nil {
-			log.Printf("tunnel connection lost: %v. Reconnecting in 2s...", err)
-			time.Sleep(2 * time.Second)
-		}
+		log.Printf("tunnel connection ended. Reconnecting in %s...", backoff)
+		time.Sleep(backoff)
 	}
+}
+
+// tunnelSession carries the per-connection state the message loop needs to drive
+// the approval workflow (secret persistence, deferred frontend upload).
+type tunnelSession struct {
+	cs           *clientStream
+	handler      http.Handler
+	cfg          Config
+	frontendZip  []byte
+	issuedSecret string
 }
 
 // applyManifest copies manifest collection/slot declarations into the
@@ -166,26 +178,68 @@ func applyManifest(req *pb.RegisterRequest, m *manifest.Manifest) {
 	}
 }
 
-func handleTunnel(cs *clientStream, handler http.Handler) error {
+// handleTunnel runs the per-connection message loop and returns the backoff to
+// wait before reconnecting. It drives the approval workflow: a pending decision
+// is awaited, an approval persists the issued secret and (in production) uploads
+// the frontend, and a rejection backs off harder to avoid hammering Core.
+func handleTunnel(sess *tunnelSession) time.Duration {
+	const (
+		normalBackoff   = 2 * time.Second
+		rejectedBackoff = 30 * time.Second
+	)
 	for {
-		msg, err := cs.stream.Recv()
+		msg, err := sess.cs.stream.Recv()
 		if err != nil {
-			return err
+			return normalBackoff
 		}
 
 		switch payload := msg.Payload.(type) {
+		case *pb.TunnelMessage_RegisterDecision:
+			d := payload.RegisterDecision
+			switch d.Status {
+			case "pending":
+				log.Printf("registration pending administrator approval...")
+			case "approved":
+				sess.onApproved(d)
+			case "rejected":
+				log.Printf("registration rejected by administrator; backing off")
+				return rejectedBackoff
+			}
+
 		case *pb.TunnelMessage_RegisterResp:
 			if !payload.RegisterResp.Success {
-				log.Printf("registration rejected: %s", payload.RegisterResp.ErrorMessage)
-				return io.EOF
+				log.Printf("registration failed: %s", payload.RegisterResp.ErrorMessage)
+				return normalBackoff
 			}
 			log.Printf("registration success")
 
 		case *pb.TunnelMessage_HttpReqChunk:
-			go serveBridgedRequest(cs, payload.HttpReqChunk, handler)
+			go serveBridgedRequest(sess.cs, payload.HttpReqChunk, sess.handler)
 
 		case *pb.TunnelMessage_Pong:
 			// Heartbeat acknowledged.
+		}
+	}
+}
+
+// onApproved persists the issued secret and, when Core asks for it, uploads the
+// bundled micro-frontend.
+func (sess *tunnelSession) onApproved(d *pb.RegisterDecision) {
+	if d.IssuedSecret != "" {
+		sess.issuedSecret = d.IssuedSecret
+		if sess.cfg.ManifestPath != "" {
+			if err := manifest.SaveSecret(sess.cfg.ManifestPath, d.IssuedSecret); err != nil {
+				log.Printf("warning: failed to persist issued secret to %s: %v", sess.cfg.ManifestPath, err)
+			} else {
+				log.Printf("approved; persisted issued secret to %s", sess.cfg.ManifestPath)
+			}
+		} else {
+			log.Printf("approved; no ManifestPath set, secret held in memory only (re-approval needed after restart)")
+		}
+	}
+	if d.UploadFrontend && len(sess.frontendZip) > 0 {
+		if err := uploadFrontendZip(sess.cs, sess.frontendZip); err != nil {
+			log.Printf("frontend upload failed: %v", err)
 		}
 	}
 }

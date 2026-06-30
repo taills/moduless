@@ -18,7 +18,7 @@ from typing import Any
 import grpc
 
 from .context import UserContext, _user_context
-from .manifest import apply_manifest, load_manifest
+from .manifest import apply_manifest, load_manifest, save_secret
 from .proto import tunnel_pb2, tunnel_pb2_grpc
 
 # Each FileChunk payload stays well under gRPC's 4MB default message limit.
@@ -35,6 +35,7 @@ class Config:
         dev_frontend_url: str = "",
         frontend_dir: str = "",
         manifest_path: str = "",
+        extension_secret: str = "",
     ):
         self.extension_key = extension_key
         self.core_grpc_url = core_grpc_url
@@ -43,11 +44,15 @@ class Config:
         self.dev_frontend_url = dev_frontend_url
         # frontend_dir, when set in production mode (is_dev=False), points at the
         # built micro-frontend directory. The SDK zips it and streams it to Core
-        # during registration so Core serves the assets from its gateway.
+        # after approval so Core serves the assets from its gateway.
         self.frontend_dir = frontend_dir
         # manifest_path, when set, makes the SDK load manifest.yaml and send the
         # declared collections/indexes/slots so Core provisions CMDS tables.
         self.manifest_path = manifest_path
+        # extension_secret authenticates an already-approved extension. Usually
+        # loaded from manifest.yaml; may be pinned explicitly (e.g. via env) for
+        # an additional replica. Empty on first registration (parked as pending).
+        self.extension_secret = extension_secret
 
 
 def _build_frontend_zip(directory: str) -> tuple[bytes, str]:
@@ -87,6 +92,29 @@ async def _run(app: Any, config: Config) -> None:
             print("no frontend_dir set with is_dev=False; registering without a micro-frontend")
             register_is_dev = True
 
+    # Resolve the approval secret: an explicit config value wins, else the one
+    # persisted in manifest.yaml after a previous approval.
+    secret = config.extension_secret
+    if not secret and config.manifest_path:
+        try:
+            secret = (load_manifest(config.manifest_path) or {}).get("secret", "") or ""
+        except Exception as e:  # noqa: BLE001
+            print(f"warning: failed to read manifest secret: {e}")
+
+    async def upload_frontend(out_queue: "asyncio.Queue") -> None:
+        for index in range(0, len(frontend_zip), _FRONTEND_CHUNK_SIZE):
+            await out_queue.put(
+                tunnel_pb2.TunnelMessage(
+                    file_chunk=tunnel_pb2.FileChunk(
+                        content=frontend_zip[index : index + _FRONTEND_CHUNK_SIZE],
+                        chunk_index=index // _FRONTEND_CHUNK_SIZE,
+                    )
+                )
+            )
+        await out_queue.put(
+            tunnel_pb2.TunnelMessage(register_complete=tunnel_pb2.RegisterComplete())
+        )
+
     while True:
         try:
             async with grpc.aio.insecure_channel(config.core_grpc_url) as channel:
@@ -102,6 +130,7 @@ async def _run(app: Any, config: Config) -> None:
                     dev_frontend_url=config.dev_frontend_url,
                     zip_file_size=len(frontend_zip),
                     zip_sha256=zip_sha256,
+                    extension_secret=secret,
                 )
                 if config.manifest_path:
                     try:
@@ -109,26 +138,9 @@ async def _run(app: Any, config: Config) -> None:
                     except Exception as e:  # noqa: BLE001
                         print(f"warning: failed to load manifest {config.manifest_path}: {e}")
 
-                # First outgoing message registers the extension.
+                # First outgoing message registers the extension. The frontend is
+                # uploaded only after Core approves (RegisterDecision).
                 await out_queue.put(tunnel_pb2.TunnelMessage(register_req=register_req))
-
-                # Stream the bundled frontend, then signal completion so Core
-                # extracts it and replies with the registration result.
-                if frontend_zip:
-                    for index in range(0, len(frontend_zip), _FRONTEND_CHUNK_SIZE):
-                        await out_queue.put(
-                            tunnel_pb2.TunnelMessage(
-                                file_chunk=tunnel_pb2.FileChunk(
-                                    content=frontend_zip[index : index + _FRONTEND_CHUNK_SIZE],
-                                    chunk_index=index // _FRONTEND_CHUNK_SIZE,
-                                )
-                            )
-                        )
-                    await out_queue.put(
-                        tunnel_pb2.TunnelMessage(
-                            register_complete=tunnel_pb2.RegisterComplete()
-                        )
-                    )
 
                 async def request_iter():
                     while True:
@@ -137,9 +149,30 @@ async def _run(app: Any, config: Config) -> None:
 
                 call = stub.Connect(request_iter())
                 async for msg in call:
-                    if msg.HasField("register_resp"):
+                    if msg.HasField("register_decision"):
+                        d = msg.register_decision
+                        if d.status == "pending":
+                            print("registration pending administrator approval...")
+                        elif d.status == "approved":
+                            if d.issued_secret:
+                                secret = d.issued_secret
+                                if config.manifest_path:
+                                    try:
+                                        save_secret(config.manifest_path, secret)
+                                        print(f"approved; persisted issued secret to {config.manifest_path}")
+                                    except Exception as e:  # noqa: BLE001
+                                        print(f"warning: failed to persist secret: {e}")
+                                else:
+                                    print("approved; no manifest_path set, secret held in memory only")
+                            if d.upload_frontend and frontend_zip:
+                                await upload_frontend(out_queue)
+                        elif d.status == "rejected":
+                            print("registration rejected by administrator; backing off")
+                            await asyncio.sleep(30)
+                            break
+                    elif msg.HasField("register_resp"):
                         if not msg.register_resp.success:
-                            print(f"registration rejected: {msg.register_resp.error_message}")
+                            print(f"registration failed: {msg.register_resp.error_message}")
                             break
                         print("registration success")
                     elif msg.HasField("http_req_chunk"):

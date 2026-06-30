@@ -109,5 +109,6 @@ if __name__ == "__main__":
             dev_frontend_url=os.getenv("DEV_FE_URL", "http://localhost:7101"),
             frontend_dir=frontend_dir,
             manifest_path=manifest_path,
+            extension_secret=os.getenv("EXTENSION_SECRET", ""),
         ),
     )

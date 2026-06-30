@@ -1,0 +1,167 @@
+package sdk
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+)
+
+// Shared client handles initialised by Start, reusable by DB / Files / Events.
+var (
+	conn   *grpc.ClientConn
+	DB     *DBClient
+	Files  *FilesClient
+	Events *EventClient
+)
+
+// clientStream serializes concurrent Send calls on the gRPC client stream.
+type clientStream struct {
+	stream pb.ExtensionTunnel_ConnectClient
+	mu     sync.Mutex
+}
+
+func (c *clientStream) Send(msg *pb.TunnelMessage) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stream.Send(msg)
+}
+
+// Start dials Core, registers the extension, and bridges tunnelled HTTP
+// requests into the supplied handler. It blocks and reconnects forever.
+func Start(handler http.Handler, cfg Config) {
+	var err error
+	conn, err = grpc.NewClient(cfg.CoreGrpcURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("failed to dial Core gRPC: %v", err)
+	}
+	defer conn.Close()
+
+	// Initialise auxiliary service clients over the shared connection.
+	DB = NewDBClient(conn)
+	Files = NewFilesClient(conn)
+	Events = NewEventClient(conn)
+
+	client := pb.NewExtensionTunnelClient(conn)
+	version := cfg.Version
+	if version == "" {
+		version = "1.0.0"
+	}
+
+	for {
+		stream, err := client.Connect(context.Background())
+		if err != nil {
+			log.Printf("tunnel connect failed: %v, retrying in 2s...", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		cs := &clientStream{stream: stream}
+		if err := cs.Send(&pb.TunnelMessage{
+			Payload: &pb.TunnelMessage_RegisterReq{
+				RegisterReq: &pb.RegisterRequest{
+					ExtensionKey:   cfg.ExtensionKey,
+					Version:        version,
+					IsDev:          cfg.IsDev,
+					DevFrontendUrl: cfg.DevFEUrl,
+				},
+			},
+		}); err != nil {
+			log.Printf("registration send failed: %v", err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		if err := handleTunnel(cs, handler); err != nil {
+			log.Printf("tunnel connection lost: %v. Reconnecting in 2s...", err)
+			time.Sleep(2 * time.Second)
+		}
+	}
+}
+
+func handleTunnel(cs *clientStream, handler http.Handler) error {
+	for {
+		msg, err := cs.stream.Recv()
+		if err != nil {
+			return err
+		}
+
+		switch payload := msg.Payload.(type) {
+		case *pb.TunnelMessage_RegisterResp:
+			if !payload.RegisterResp.Success {
+				log.Printf("registration rejected: %s", payload.RegisterResp.ErrorMessage)
+				return io.EOF
+			}
+			log.Printf("registration success")
+
+		case *pb.TunnelMessage_HttpReqChunk:
+			go serveBridgedRequest(cs, payload.HttpReqChunk, handler)
+
+		case *pb.TunnelMessage_Pong:
+			// Heartbeat acknowledged.
+		}
+	}
+}
+
+func serveBridgedRequest(cs *clientStream, reqChunk *pb.HttpRequestChunk, handler http.Handler) {
+	target := reqChunk.Path
+	if reqChunk.Query != "" {
+		target += "?" + reqChunk.Query
+	}
+	req, err := http.NewRequest(reqChunk.Method, target, bytes.NewReader(reqChunk.BodyChunk))
+	if err != nil {
+		log.Printf("failed to reconstruct request: %v", err)
+		return
+	}
+	for k, v := range reqChunk.Headers {
+		req.Header.Set(k, v)
+	}
+
+	// Parse user headers and inject context.
+	if userID := req.Header.Get("X-User-Id"); userID != "" {
+		userCtx := &UserContext{
+			UserID:      userID,
+			Roles:       splitNonEmpty(req.Header.Get("X-User-Roles")),
+			Permissions: splitNonEmpty(req.Header.Get("X-User-Permissions")),
+		}
+		req = req.WithContext(context.WithValue(req.Context(), userContextKey, userCtx))
+	}
+
+	w := newMockResponseWriter()
+	handler.ServeHTTP(w, req)
+
+	headers := make(map[string]string)
+	for k, v := range w.Header() {
+		if len(v) > 0 {
+			headers[k] = v[0]
+		}
+	}
+
+	_ = cs.Send(&pb.TunnelMessage{
+		Payload: &pb.TunnelMessage_HttpRespChunk{
+			HttpRespChunk: &pb.HttpResponseChunk{
+				StreamId:   reqChunk.StreamId,
+				IsFirst:    true,
+				IsLast:     true,
+				StatusCode: int32(w.statusCode),
+				Headers:    headers,
+				BodyChunk:  w.body.Bytes(),
+			},
+		},
+	})
+}
+
+func splitNonEmpty(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Split(s, ",")
+}

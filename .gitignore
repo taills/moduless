@@ -28,3 +28,7 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Air hot-reload artifacts
+/tmp/
+/air.log

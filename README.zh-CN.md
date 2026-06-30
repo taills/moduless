@@ -45,11 +45,11 @@ Go 编写的**核心网关（Core Gateway）**统一承载所有 HTTP 流量并�
 ## 获取源码
 
 ```bash
-git clone git@github.com:taills/moduleless.git
+git clone git@github.com:taills/moduless.git
 cd moduleless
 ```
 
-Go 模块路径为 `github.com/taills/moduleless`。
+Go 模块路径为 `github.com/taills/moduless`。
 
 ## 代码生成
 

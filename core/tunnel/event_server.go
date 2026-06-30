@@ -2,8 +2,8 @@ package tunnel
 
 import (
 	"context"
-	"github.com/taills/moduleless/core/event"
-	pb "github.com/taills/moduleless/proto/tunnel"
+	"github.com/taills/moduless/core/event"
+	pb "github.com/taills/moduless/proto/tunnel"
 )
 
 // EventServer implements the EventBusService gRPC API.

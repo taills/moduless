@@ -3,7 +3,7 @@ package sdk
 import (
 	"context"
 
-	pb "github.com/taills/moduleless/proto/tunnel"
+	pb "github.com/taills/moduless/proto/tunnel"
 	"google.golang.org/grpc"
 )
 

@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/taills/moduleless/core/gateway"
-	"github.com/taills/moduleless/core/tunnel"
-	pb "github.com/taills/moduleless/proto/tunnel"
-	sdk "github.com/taills/moduleless/sdk/go"
+	"github.com/taills/moduless/core/gateway"
+	"github.com/taills/moduless/core/tunnel"
+	pb "github.com/taills/moduless/proto/tunnel"
+	sdk "github.com/taills/moduless/sdk/go"
 	"google.golang.org/grpc"
 )
 

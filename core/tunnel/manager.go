@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/taills/moduleless/proto/tunnel"
+	pb "github.com/taills/moduless/proto/tunnel"
 )
 
 // ActiveTunnel represents a single live extension connection.

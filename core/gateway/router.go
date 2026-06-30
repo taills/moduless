@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/taills/moduleless/core/tunnel"
-	pb "github.com/taills/moduleless/proto/tunnel"
+	"github.com/taills/moduless/core/tunnel"
+	pb "github.com/taills/moduless/proto/tunnel"
 )
 
 // GatewayHandler is the public HTTP reverse proxy in Core. It serves

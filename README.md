@@ -46,11 +46,11 @@ Core principles enforced by the implementation:
 ## Getting the source
 
 ```bash
-git clone git@github.com:taills/moduleless.git
+git clone git@github.com:taills/moduless.git
 cd moduleless
 ```
 
-The Go module path is `github.com/taills/moduleless`.
+The Go module path is `github.com/taills/moduless`.
 
 ## Code generation
 

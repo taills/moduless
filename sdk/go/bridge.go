@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/taills/moduleless/manifest"
-	pb "github.com/taills/moduleless/proto/tunnel"
+	"github.com/taills/moduless/manifest"
+	pb "github.com/taills/moduless/proto/tunnel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"

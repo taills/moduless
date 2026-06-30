@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	pb "github.com/taills/moduleless/proto/tunnel"
+	pb "github.com/taills/moduless/proto/tunnel"
 )
 
 // TunnelServer implements the ExtensionTunnel gRPC service.

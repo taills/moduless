@@ -7,7 +7,7 @@ import (
 	"net"
 	"testing"
 
-	pb "github.com/taills/moduleless/proto/tunnel"
+	pb "github.com/taills/moduless/proto/tunnel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

@@ -45,11 +45,11 @@
 ## 取得原始碼
 
 ```bash
-git clone git@github.com:taills/moduleless.git
+git clone git@github.com:taills/moduless.git
 cd moduleless
 ```
 
-Go 模組路徑為 `github.com/taills/moduleless`。
+Go 模組路徑為 `github.com/taills/moduless`。
 
 ## 程式碼產生
 

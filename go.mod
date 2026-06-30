@@ -1,4 +1,4 @@
-module github.com/taills/moduleless
+module github.com/taills/moduless
 
 go 1.25.0
 

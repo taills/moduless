@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/taills/moduleless/core/tunnel"
+	"github.com/taills/moduless/core/tunnel"
 )
 
 // DiagnosticsReport is one row of the developer diagnostics dashboard.

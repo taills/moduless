@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"time"
 
-	sqlc "github.com/taills/moduleless/core/db/sqlc"
-	pb "github.com/taills/moduleless/proto/tunnel"
+	sqlc "github.com/taills/moduless/core/db/sqlc"
+	pb "github.com/taills/moduless/proto/tunnel"
 )
 
 // FileServer implements the inner FileService gRPC API used by extensions to

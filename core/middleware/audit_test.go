@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	sqlc "github.com/taills/moduleless/core/db/sqlc"
+	sqlc "github.com/taills/moduless/core/db/sqlc"
 )
 
 type fakeRecorder struct {

@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	sqlc "github.com/taills/moduleless/core/db/sqlc"
-	"github.com/taills/moduleless/core/storage"
+	sqlc "github.com/taills/moduless/core/db/sqlc"
+	"github.com/taills/moduless/core/storage"
 )
 
 // maxUploadBytes caps a single multipart upload to 100 MiB.

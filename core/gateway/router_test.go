@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/taills/moduleless/core/tunnel"
+	"github.com/taills/moduless/core/tunnel"
 )
 
 func TestGatewayStaticFileCache(t *testing.T) {

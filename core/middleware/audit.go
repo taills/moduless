@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	sqlc "github.com/taills/moduleless/core/db/sqlc"
+	sqlc "github.com/taills/moduless/core/db/sqlc"
 )
 
 // AuditRecorder is the minimal persistence surface the middleware needs,

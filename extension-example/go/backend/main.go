@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/gin-gonic/gin"
-	sdk "github.com/taills/moduleless/sdk/go"
+	sdk "github.com/taills/moduless/sdk/go"
 )
 
 // Go extension example. Opens no port — the SDK dials Core's gRPC tunnel.

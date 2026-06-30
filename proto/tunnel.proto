@@ -4,6 +4,10 @@ package tunnel;
 
 option go_package = "github.com/ty-lab/go-web-module/proto/tunnel";
 
+option java_multiple_files = true;
+option java_package = "com.ty.sdk.proto";
+option java_outer_classname = "TunnelProto";
+
 // ExtensionTunnel maintains the reverse bidirectional HTTP-over-gRPC tunnel.
 service ExtensionTunnel {
   rpc Connect(stream TunnelMessage) returns (stream TunnelMessage);

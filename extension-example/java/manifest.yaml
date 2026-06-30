@@ -1,0 +1,20 @@
+key: java_example
+display_name: "Java 示例扩展"
+version: "1.0.0"
+menu:
+  icon: "java"
+  path: "/java-example"
+frontend:
+  entry: "/extensions/java_example/index.html"
+database:
+  collections:
+    - name: "items"
+      indexes:
+        - fields: ["status"]
+ui_slots:
+  - slot_name: "dashboard.widget"
+    component_entry: "/extensions/java_example/widget.js"
+audit:
+  paths:
+    - method: "POST"
+      path: "/items/*"

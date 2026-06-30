@@ -1,0 +1,19 @@
+{
+  "name": "python-example-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Qiankun React micro-frontend for the Python extension example",
+  "scripts": {
+    "dev": "vite --port 7101",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.0.0",
+    "vite": "^4.4.0"
+  }
+}

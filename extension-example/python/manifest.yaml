@@ -1,0 +1,22 @@
+key: python_example
+display_name: "Python 示例扩展"
+version: "1.0.0"
+menu:
+  icon: "python"
+  path: "/python-example"
+frontend:
+  entry: "/extensions/python_example/index.html"
+database:
+  collections:
+    - name: "items"
+      indexes:
+        - fields: ["status"]
+        - fields: ["code"]
+          unique: true
+ui_slots:
+  - slot_name: "dashboard.widget"
+    component_entry: "/extensions/python_example/widget.js"
+audit:
+  paths:
+    - method: "POST"
+      path: "/items/*"

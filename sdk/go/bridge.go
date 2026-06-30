@@ -79,6 +79,26 @@ func Start(handler http.Handler, cfg Config) {
 		}
 	}
 
+	// In production mode the SDK ships the built micro-frontend to Core so the
+	// gateway can serve it. The zip is built once and re-streamed on reconnect.
+	var frontendZip []byte
+	if !cfg.IsDev {
+		if cfg.FrontendDir != "" {
+			data, sum, err := buildFrontendZip(cfg.FrontendDir)
+			if err != nil {
+				log.Fatalf("failed to bundle frontend: %v", err)
+			}
+			frontendZip = data
+			registerReq.ZipFileSize = uint64(len(data))
+			registerReq.ZipSha256 = sum
+		} else {
+			// No frontend bundled: register as dev so Core completes immediately
+			// instead of waiting for a zip that will never arrive.
+			log.Printf("no FrontendDir set with IsDev=false; registering without a micro-frontend")
+			registerReq.IsDev = true
+		}
+	}
+
 	for {
 		stream, err := client.Connect(context.Background())
 		if err != nil {
@@ -94,6 +114,16 @@ func Start(handler http.Handler, cfg Config) {
 			log.Printf("registration send failed: %v", err)
 			time.Sleep(2 * time.Second)
 			continue
+		}
+
+		// Stream the bundled micro-frontend, then signal completion so Core
+		// extracts it and replies with the registration result.
+		if len(frontendZip) > 0 {
+			if err := uploadFrontendZip(cs, frontendZip); err != nil {
+				log.Printf("frontend upload failed: %v, reconnecting in 2s...", err)
+				time.Sleep(2 * time.Second)
+				continue
+			}
 		}
 
 		if err := handleTunnel(cs, handler); err != nil {

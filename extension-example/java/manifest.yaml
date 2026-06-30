@@ -11,6 +11,8 @@ database:
     - name: "items"
       indexes:
         - fields: ["status"]
+        - fields: ["code"]
+          unique: true
 ui_slots:
   - slot_name: "dashboard.widget"
     component_entry: "/extensions/java_example/widget.js"

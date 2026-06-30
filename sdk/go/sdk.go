@@ -38,6 +38,11 @@ type Config struct {
 	// declared collections/indexes/slots to Core on registration so Core can
 	// provision tables and register UI slots automatically.
 	ManifestPath string
+	// FrontendDir, when set in production mode (IsDev=false), points at the
+	// built micro-frontend directory (e.g. dist). The SDK zips it in memory and
+	// streams it to Core during registration so Core serves the assets from its
+	// own gateway. Ignored when IsDev is true (Core then proxies DevFEUrl).
+	FrontendDir string
 }
 
 // mockResponseWriter captures handler output so it can be marshalled into a

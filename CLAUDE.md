@@ -39,6 +39,8 @@ Extensions do not listen to ports. Run them in IDEs or terminals by passing the 
 * **Python Extension**: `python3 extension-example/python/backend/main.py`
 * **Java Extension**: `mvn spring-boot:run -pl extension-example/java/backend`
 
+In dev mode the micro-frontend runs from its own Vite dev server (`npm run dev`). In **production** the built `dist/` is bundled into the backend image and the SDK uploads it to Core on startup — set `FRONTEND_DIR` to the dist path (the examples read this env var). Each example ships a multi-stage `Dockerfile`; `docker compose up --build` runs Core + PostgreSQL + all three examples. See [docs/deployment.md](docs/deployment.md) for container, Kubernetes, and systemd deployment.
+
 ---
 
 ## Testing Commands

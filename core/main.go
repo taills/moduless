@@ -110,7 +110,8 @@ func main() {
 		slots.Unregister(extKey)
 	}
 
-	// System routes available regardless of DB.
+	// System routes available regardless of DB (triggering air reload).
+	gw.RegisterSystemRoute(func(p string) bool { return p == "/healthz" }, healthz)
 	gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/ui/slots" }, slots.Handler)
 	gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/diagnostics" }, gateway.GetDiagnostics(manager))
 
@@ -174,4 +175,12 @@ func buildStorage() *storage.RustFSClient {
 
 func hasPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+}
+
+// healthz is a liveness/readiness probe for process supervisors (k8s, systemd,
+// Docker HEALTHCHECK). It reports OK as soon as the HTTP gateway is serving.
+func healthz(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }

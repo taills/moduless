@@ -1,0 +1,73 @@
+# Single-instance deployment of Core + PostgreSQL + the three example extensions.
+# Core is intentionally single-instance (see DEPLOYMENT.md): resilience comes
+# from the supervisor restarting it and the SDK reconnecting forever, not from
+# multi-instance HA. Extensions open no ports; they dial core:9000.
+#
+#   docker compose up --build
+#   open http://localhost:8080/extensions/go_example/index.html
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: moduless
+      POSTGRES_PASSWORD: moduless
+      POSTGRES_DB: moduless
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moduless"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  core:
+    build:
+      context: .
+      dockerfile: core/Dockerfile
+    environment:
+      HTTP_ADDR: ":80"
+      GRPC_ADDR: ":9000"
+      DATABASE_URL: "postgres://moduless:moduless@postgres:5432/moduless?sslmode=disable"
+    ports:
+      - "8080:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  go-example:
+    build:
+      context: .
+      dockerfile: extension-example/go/Dockerfile
+    environment:
+      CORE_URL: "core:9000"
+    depends_on:
+      core:
+        condition: service_healthy
+    restart: unless-stopped
+
+  python-example:
+    build:
+      context: .
+      dockerfile: extension-example/python/Dockerfile
+    environment:
+      CORE_URL: "core:9000"
+    depends_on:
+      core:
+        condition: service_healthy
+    restart: unless-stopped
+
+  java-example:
+    build:
+      context: .
+      dockerfile: extension-example/java/Dockerfile
+    environment:
+      CORE_URL: "core:9000"
+    depends_on:
+      core:
+        condition: service_healthy
+    restart: unless-stopped

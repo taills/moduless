@@ -1,0 +1,11 @@
+# Keep the Docker build context lean; these are rebuilt inside the images.
+.git
+**/node_modules
+**/dist
+**/target
+**/__pycache__
+**/.pytest_cache
+*.log
+.DS_Store
+.idea
+.vscode

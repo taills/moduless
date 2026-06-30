@@ -41,6 +41,30 @@ func (q *Queries) GetFile(ctx context.Context, id string) (SystemFile, error) {
 	return i, err
 }
 
+const insertAuditLog = `-- name: InsertAuditLog :exec
+INSERT INTO audit_logs (user_id, action, extension_key, http_path, client_ip)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertAuditLogParams struct {
+	UserID       string `json:"user_id"`
+	Action       string `json:"action"`
+	ExtensionKey string `json:"extension_key"`
+	HttpPath     string `json:"http_path"`
+	ClientIp     string `json:"client_ip"`
+}
+
+func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error {
+	_, err := q.db.ExecContext(ctx, insertAuditLog,
+		arg.UserID,
+		arg.Action,
+		arg.ExtensionKey,
+		arg.HttpPath,
+		arg.ClientIp,
+	)
+	return err
+}
+
 const insertDownloadToken = `-- name: InsertDownloadToken :exec
 INSERT INTO file_download_tokens (token, file_id, user_id, expires_at)
 VALUES ($1, $2, $3, $4)
@@ -87,6 +111,46 @@ func (q *Queries) InsertFile(ctx context.Context, arg InsertFileParams) error {
 		arg.UploaderID,
 	)
 	return err
+}
+
+const listAuditLogs = `-- name: ListAuditLogs :many
+SELECT id, user_id, action, extension_key, http_path, client_ip, created_at FROM audit_logs ORDER BY created_at DESC LIMIT $1 OFFSET $2
+`
+
+type ListAuditLogsParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error) {
+	rows, err := q.db.QueryContext(ctx, listAuditLogs, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuditLog
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Action,
+			&i.ExtensionKey,
+			&i.HttpPath,
+			&i.ClientIp,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateExtensionVersion = `-- name: UpdateExtensionVersion :exec

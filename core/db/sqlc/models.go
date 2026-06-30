@@ -9,6 +9,16 @@ import (
 	"time"
 )
 
+type AuditLog struct {
+	ID           int32        `json:"id"`
+	UserID       string       `json:"user_id"`
+	Action       string       `json:"action"`
+	ExtensionKey string       `json:"extension_key"`
+	HttpPath     string       `json:"http_path"`
+	ClientIp     string       `json:"client_ip"`
+	CreatedAt    sql.NullTime `json:"created_at"`
+}
+
 type ExtensionVersion struct {
 	ExtensionKey string       `json:"extension_key"`
 	Version      string       `json:"version"`

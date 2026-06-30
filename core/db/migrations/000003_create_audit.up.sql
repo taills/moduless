@@ -1,0 +1,9 @@
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(100) NOT NULL,
+    action VARCHAR(255) NOT NULL,
+    extension_key VARCHAR(100) NOT NULL,
+    http_path VARCHAR(255) NOT NULL,
+    client_ip VARCHAR(50) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);

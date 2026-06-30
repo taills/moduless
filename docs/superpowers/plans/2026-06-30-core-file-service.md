@@ -174,8 +174,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/ty-lab/go-web-module/core/storage"
-	db "github.com/ty-lab/go-web-module/core/db/sqlc"
+	"github.com/ty-lab/moduleless/core/storage"
+	db "github.com/ty-lab/moduleless/core/db/sqlc"
 )
 
 type FileHandler struct {
@@ -301,8 +301,8 @@ import (
 	"encoding/hex"
 	"time"
 
-	db "github.com/ty-lab/go-web-module/core/db/sqlc"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	db "github.com/ty-lab/moduleless/core/db/sqlc"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 )
 
 type FileServer struct {
@@ -342,7 +342,7 @@ package sdk
 import (
 	"context"
 
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 	"google.golang.org/grpc"
 )
 

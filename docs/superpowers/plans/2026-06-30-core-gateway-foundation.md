@@ -31,7 +31,7 @@ Setup the gRPC and Protobuf contract for the HTTP-over-gRPC tunnel, database cli
 - [ ] **Step 1: Create `go.mod` at the root**
 
 ```go
-module github.com/ty-lab/go-web-module
+module github.com/ty-lab/moduleless
 
 go 1.20
 
@@ -46,9 +46,9 @@ require (
 ```protobuf
 syntax = "proto3";
 
-package tunnel;
+package moduleless;
 
-option go_package = "github.com/ty-lab/go-web-module/proto/tunnel";
+option go_package = "github.com/ty-lab/moduleless/proto/tunnel";
 
 service ExtensionTunnel {
   rpc Connect(stream TunnelMessage) returns (stream TunnelMessage);
@@ -169,7 +169,7 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 )
 
 type ActiveTunnel struct {
@@ -290,7 +290,7 @@ import (
 	"log"
 	"time"
 
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 	"google.golang.org/grpc"
 )
 
@@ -400,7 +400,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -531,8 +531,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ty-lab/go-web-module/core/tunnel"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	"github.com/ty-lab/moduleless/core/tunnel"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 )
 
 type GatewayHandler struct {
@@ -668,7 +668,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ty-lab/go-web-module/core/tunnel"
+	"github.com/ty-lab/moduleless/core/tunnel"
 )
 
 func TestGatewayStaticFileCache(t *testing.T) {
@@ -798,7 +798,7 @@ import (
 	"strings"
 	"time"
 
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -987,10 +987,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ty-lab/go-web-module/core/gateway"
-	"github.com/ty-lab/go-web-module/core/tunnel"
-	"github.com/ty-lab/go-web-module/sdk/go"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	"github.com/ty-lab/moduleless/core/gateway"
+	"github.com/ty-lab/moduleless/core/tunnel"
+	"github.com/ty-lab/moduleless/sdk/go"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 	"google.golang.org/grpc"
 )
 

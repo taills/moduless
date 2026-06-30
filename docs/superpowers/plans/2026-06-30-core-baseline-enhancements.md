@@ -92,8 +92,8 @@ package tunnel
 import (
 	"context"
 
-	"github.com/ty-lab/go-web-module/core/event"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	"github.com/ty-lab/moduleless/core/event"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 )
 
 type EventServer struct {
@@ -146,7 +146,7 @@ package sdk
 import (
 	"context"
 
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 	"google.golang.org/grpc"
 )
 
@@ -226,8 +226,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ty-lab/go-web-module/core/tunnel"
-	db "github.com/ty-lab/go-web-module/core/db/sqlc"
+	"github.com/ty-lab/moduleless/core/tunnel"
+	db "github.com/ty-lab/moduleless/core/db/sqlc"
 )
 
 func AuditLogger(queries *db.Queries, mgr *tunnel.TunnelManager) func(http.Handler) http.Handler {
@@ -325,7 +325,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/ty-lab/go-web-module/core/tunnel"
+	"github.com/ty-lab/moduleless/core/tunnel"
 )
 
 type DiagnosticsReport struct {

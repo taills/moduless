@@ -307,8 +307,8 @@ package tunnel
 import (
 	"context"
 
-	"github.com/ty-lab/go-web-module/core/db"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	"github.com/ty-lab/moduleless/core/db"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 )
 
 type DbServer struct {
@@ -387,7 +387,7 @@ import (
 	"context"
 	"encoding/json"
 
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	pb "github.com/ty-lab/moduleless/proto/tunnel"
 	"google.golang.org/grpc"
 )
 

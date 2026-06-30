@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	pb "github.com/taills/moduleless/proto/tunnel"
 )
 
 // ActiveTunnel represents a single live extension connection.

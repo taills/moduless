@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ty-lab/go-web-module/manifest"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	"github.com/taills/moduleless/manifest"
+	pb "github.com/taills/moduleless/proto/tunnel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"

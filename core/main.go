@@ -11,14 +11,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ty-lab/go-web-module/core/db"
-	sqlc "github.com/ty-lab/go-web-module/core/db/sqlc"
-	"github.com/ty-lab/go-web-module/core/event"
-	"github.com/ty-lab/go-web-module/core/gateway"
-	"github.com/ty-lab/go-web-module/core/middleware"
-	"github.com/ty-lab/go-web-module/core/storage"
-	"github.com/ty-lab/go-web-module/core/tunnel"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	"github.com/taills/moduleless/core/db"
+	sqlc "github.com/taills/moduleless/core/db/sqlc"
+	"github.com/taills/moduleless/core/event"
+	"github.com/taills/moduleless/core/gateway"
+	"github.com/taills/moduleless/core/middleware"
+	"github.com/taills/moduleless/core/storage"
+	"github.com/taills/moduleless/core/tunnel"
+	pb "github.com/taills/moduleless/proto/tunnel"
 	"google.golang.org/grpc"
 )
 

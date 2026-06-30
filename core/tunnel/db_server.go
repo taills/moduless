@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/ty-lab/go-web-module/core/db"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	"github.com/taills/moduleless/core/db"
+	pb "github.com/taills/moduleless/proto/tunnel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )

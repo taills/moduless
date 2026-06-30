@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/ty-lab/go-web-module/core/tunnel"
+	"github.com/taills/moduleless/core/tunnel"
 )
 
 // DiagnosticsReport is one row of the developer diagnostics dashboard.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	sqlc "github.com/ty-lab/go-web-module/core/db/sqlc"
+	sqlc "github.com/taills/moduleless/core/db/sqlc"
 )
 
 type fakeRecorder struct {

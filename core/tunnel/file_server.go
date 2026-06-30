@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"time"
 
-	sqlc "github.com/ty-lab/go-web-module/core/db/sqlc"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	sqlc "github.com/taills/moduleless/core/db/sqlc"
+	pb "github.com/taills/moduleless/proto/tunnel"
 )
 
 // FileServer implements the inner FileService gRPC API used by extensions to

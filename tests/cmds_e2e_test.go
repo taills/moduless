@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ty-lab/go-web-module/core/db"
-	"github.com/ty-lab/go-web-module/core/gateway"
-	"github.com/ty-lab/go-web-module/core/tunnel"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
-	sdk "github.com/ty-lab/go-web-module/sdk/go"
+	"github.com/taills/moduleless/core/db"
+	"github.com/taills/moduleless/core/gateway"
+	"github.com/taills/moduleless/core/tunnel"
+	pb "github.com/taills/moduleless/proto/tunnel"
+	sdk "github.com/taills/moduleless/sdk/go"
 	"google.golang.org/grpc"
 )
 

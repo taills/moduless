@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	sqlc "github.com/ty-lab/go-web-module/core/db/sqlc"
+	sqlc "github.com/taills/moduleless/core/db/sqlc"
 )
 
 // AuditRecorder is the minimal persistence surface the middleware needs,

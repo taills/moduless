@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	sqlc "github.com/ty-lab/go-web-module/core/db/sqlc"
-	"github.com/ty-lab/go-web-module/core/storage"
+	sqlc "github.com/taills/moduleless/core/db/sqlc"
+	"github.com/taills/moduleless/core/storage"
 )
 
 // maxUploadBytes caps a single multipart upload to 100 MiB.

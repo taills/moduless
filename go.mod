@@ -1,4 +1,4 @@
-module github.com/ty-lab/go-web-module
+module github.com/taills/moduleless
 
 go 1.25.0
 

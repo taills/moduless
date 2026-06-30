@@ -1,4 +1,8 @@
-# Multi-Language Modular Framework
+# moduleless
+
+**English** · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md)
+
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 A low-friction, highly-isolated, container-friendly modular development framework.
 A Go **Core Gateway** fronts all HTTP traffic and hosts micro-frontends in memory;
@@ -38,6 +42,15 @@ Core principles enforced by the implementation:
 | `extension-example/{go,python,java}` | Runnable example extensions (backend + frontend + manifest) |
 | `db/` | sqlc config + queries; migrations live in `core/db/migrations` (embedded) |
 | `scripts/` | Protobuf code-gen scripts |
+
+## Getting the source
+
+```bash
+git clone git@github.com:taills/moduleless.git
+cd moduleless
+```
+
+The Go module path is `github.com/taills/moduleless`.
 
 ## Code generation
 
@@ -87,3 +100,11 @@ points at a PostgreSQL instance:
 ```bash
 TEST_DATABASE_URL='postgres://postgres:pass@localhost:5432/app?sslmode=disable' go test ./...
 ```
+
+## License
+
+Licensed under the **Apache License, Version 2.0** — see [`LICENSE`](LICENSE).
+
+All upstream dependencies compiled into the distributed artifacts use permissive
+licenses (Apache-2.0 / MIT / BSD-3-Clause / ISC) compatible with Apache-2.0. The full
+dependency-license review is in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

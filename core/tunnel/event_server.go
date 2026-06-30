@@ -2,8 +2,8 @@ package tunnel
 
 import (
 	"context"
-	"github.com/ty-lab/go-web-module/core/event"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	"github.com/taills/moduleless/core/event"
+	pb "github.com/taills/moduleless/proto/tunnel"
 )
 
 // EventServer implements the EventBusService gRPC API.

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ty-lab/go-web-module/core/tunnel"
-	pb "github.com/ty-lab/go-web-module/proto/tunnel"
+	"github.com/taills/moduleless/core/tunnel"
+	pb "github.com/taills/moduleless/proto/tunnel"
 )
 
 // GatewayHandler is the public HTTP reverse proxy in Core. It serves

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ty-lab/go-web-module/core/tunnel"
+	"github.com/taills/moduleless/core/tunnel"
 )
 
 func TestGatewayStaticFileCache(t *testing.T) {

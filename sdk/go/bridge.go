@@ -13,7 +13,11 @@ import (
 	pb "github.com/ty-lab/go-web-module/proto/tunnel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 )
+
+// extKeyMetadataField mirrors the Core interceptor's expected metadata key.
+const extKeyMetadataField = "x-extension-key"
 
 // Shared client handles initialised by Start, reusable by DB / Files / Events.
 var (
@@ -39,7 +43,11 @@ func (c *clientStream) Send(msg *pb.TunnelMessage) error {
 // requests into the supplied handler. It blocks and reconnects forever.
 func Start(handler http.Handler, cfg Config) {
 	var err error
-	conn, err = grpc.NewClient(cfg.CoreGrpcURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err = grpc.NewClient(cfg.CoreGrpcURL,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithUnaryInterceptor(extKeyUnaryInterceptor(cfg.ExtensionKey)),
+		grpc.WithStreamInterceptor(extKeyStreamInterceptor(cfg.ExtensionKey)),
+	)
 	if err != nil {
 		log.Fatalf("failed to dial Core gRPC: %v", err)
 	}
@@ -164,4 +172,20 @@ func splitNonEmpty(s string) []string {
 		return nil
 	}
 	return strings.Split(s, ",")
+}
+
+// extKeyUnaryInterceptor attaches the extension identity to outgoing unary RPCs.
+func extKeyUnaryInterceptor(extKey string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		ctx = metadata.AppendToOutgoingContext(ctx, extKeyMetadataField, extKey)
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
+
+// extKeyStreamInterceptor attaches the extension identity to outgoing streams.
+func extKeyStreamInterceptor(extKey string) grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		ctx = metadata.AppendToOutgoingContext(ctx, extKeyMetadataField, extKey)
+		return streamer(ctx, desc, cc, method, opts...)
+	}
 }

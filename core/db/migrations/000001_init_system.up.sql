@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS system_users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(50) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS extension_versions (
+    extension_key VARCHAR(100) PRIMARY KEY,
+    version VARCHAR(50) NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);

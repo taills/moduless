@@ -1,4 +1,4 @@
-# Moduleless 跨语言模块化开发框架设计方案 (Multi-Language Modular Framework Spec)
+# Moduless 跨语言模块化开发框架设计方案 (Multi-Language Modular Framework Spec)
 
 ## 1. 概述与设计理念
 

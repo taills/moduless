@@ -1,6 +1,6 @@
 # Third-Party Notices / 第三方依赖许可证 / 第三方相依授權
 
-`moduleless` is released under the **Apache License, Version 2.0**. This document
+`moduless` is released under the **Apache License, Version 2.0**. This document
 records the upstream-dependency license review performed for that release.
 
 本项目以 **Apache License 2.0** 发布。本文件记录了为该发布所做的上游依赖许可证核查结论。
@@ -57,7 +57,7 @@ module graph but never imported are **not** part of the distributed work.
 
 `golang-migrate` declares many database drivers in its module graph (MySQL, Mongo,
 Spanner, ClickHouse, etc.). One of these, `github.com/go-sql-driver/mysql`, is
-**MPL-2.0**. moduleless imports only the **PostgreSQL** source/driver, so the MySQL
+**MPL-2.0**. moduless imports only the **PostgreSQL** source/driver, so the MySQL
 driver and other optional drivers are **not compiled into the binary** and are not
 redistributed. Packagers who choose to vendor the entire module graph (rather than
 running a standard `go build`) should be aware that the vendored tree would then
@@ -100,12 +100,12 @@ compatible for distribution, but standard builds avoid it entirely.
 `jakarta.servlet-api` is the standard Servlet specification API, dual-licensed under
 EPL-2.0 and GPL-2.0-with-Classpath-Exception. It is declared with Maven **`provided`**
 scope — it is a compile-time interface supplied at runtime by the servlet container
-(Tomcat) and is **not bundled or redistributed** by moduleless. Using a spec API at
+(Tomcat) and is **not bundled or redistributed** by moduless. Using a spec API at
 compile time under these terms does not impose copyleft obligations on this project.
 
 `jakarta.servlet-api` 是标准 Servlet 规范 API，采用 EPL-2.0 与 GPL-2.0（含 Classpath 例外）
 双重许可。它以 Maven **`provided`** 作用域声明——属于编译期接口，运行时由 Servlet 容器（Tomcat）
-提供，moduleless **不打包、不分发**它。在此条款下于编译期使用规范 API 不会对本项目施加 copyleft 义务。
+提供，moduless **不打包、不分发**它。在此条款下于编译期使用规范 API 不会对本项目施加 copyleft 义务。
 
 ---
 

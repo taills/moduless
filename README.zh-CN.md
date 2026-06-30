@@ -1,4 +1,4 @@
-# moduleless
+# moduless
 
 [English](README.md) · **简体中文** · [繁體中文](README.zh-TW.md)
 
@@ -46,7 +46,7 @@ Go 编写的**核心网关（Core Gateway）**统一承载所有 HTTP 流量并�
 
 ```bash
 git clone git@github.com:taills/moduless.git
-cd moduleless
+cd moduless
 ```
 
 Go 模块路径为 `github.com/taills/moduless`。

@@ -1,4 +1,4 @@
-# moduleless
+# moduless
 
 [English](README.md) · [简体中文](README.zh-CN.md) · **繁體中文**
 
@@ -46,7 +46,7 @@
 
 ```bash
 git clone git@github.com:taills/moduless.git
-cd moduleless
+cd moduless
 ```
 
 Go 模組路徑為 `github.com/taills/moduless`。

@@ -1,4 +1,4 @@
-# moduleless
+# moduless
 
 **English** · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md)
 
@@ -47,7 +47,7 @@ Core principles enforced by the implementation:
 
 ```bash
 git clone git@github.com:taills/moduless.git
-cd moduleless
+cd moduless
 ```
 
 The Go module path is `github.com/taills/moduless`.

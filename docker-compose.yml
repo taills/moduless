@@ -4,7 +4,15 @@
 # multi-instance HA. Extensions open no ports; they dial core:9000.
 #
 #   docker compose up --build
-#   open http://localhost:8080/extensions/go_example/index.html
+#   # log in at http://localhost:8080  (admin / admin123)
+#   # extensions appear under 扩展管理 as 待注册 — click 批准 to approve each.
+#   # On approval Core issues a secret the SDK persists into its manifest.yaml.
+#
+# Secret persistence note: the manifest lives inside each example image, so a
+# container rebuild/restart loses the persisted secret and the extension returns
+# to 待注册 (just re-approve). For restart-safe production deployments pin the
+# approved secret via the EXTENSION_SECRET env (see docs/deployment.md), or mount
+# the manifest directory on a named volume.
 
 services:
   postgres:

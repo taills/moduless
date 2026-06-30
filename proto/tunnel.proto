@@ -44,6 +44,7 @@ message TunnelMessage {
     HttpResponseChunk http_resp_chunk = 7;
     Ping ping = 8;
     Pong pong = 9;
+    RegisterDecision register_decision = 10;
   }
 }
 
@@ -135,6 +136,11 @@ message RegisterRequest {
   repeated CollectionSchema collections = 10;
   repeated SlotSchema slots = 11;
   int32 weight = 12; // load-balancing weight for this replica (default 1)
+  // extension_secret is empty on a first-time registration request. Once Core
+  // approves the extension it issues a secret which the SDK persists (e.g. into
+  // manifest.yaml) and replays here on every reconnect. A key may have many
+  // valid secrets (one per instance) to support multi-replica deployments.
+  string extension_secret = 13;
 }
 
 message CollectionSchema {
@@ -158,6 +164,17 @@ message FileChunk {
 }
 
 message RegisterComplete {}
+
+// RegisterDecision is pushed from Core to the extension to drive the approval
+// workflow. A freshly-seen extension is parked in "pending" with its tunnel held
+// open (not routed) until an admin approves it. On approval Core issues a secret
+// (issued_secret) that the SDK persists and replays on future reconnects, and —
+// in production mode — signals the SDK to upload its micro-frontend bundle.
+message RegisterDecision {
+  string status = 1;          // "pending" | "approved" | "rejected"
+  string issued_secret = 2;   // non-empty only when Core mints a new secret on approval
+  bool   upload_frontend = 3; // true in production once approved: SDK should now stream its zip
+}
 
 message RegisterResponse {
   bool success = 1;

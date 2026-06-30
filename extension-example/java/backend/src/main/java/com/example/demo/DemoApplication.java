@@ -38,7 +38,8 @@ public class DemoApplication {
 
         String frontendDir = System.getenv().getOrDefault("FRONTEND_DIR", "");
         String manifestPath = System.getenv().getOrDefault("MANIFEST_PATH", "../manifest.yaml");
+        String extensionSecret = System.getenv().getOrDefault("EXTENSION_SECRET", "");
         boolean dev = frontendDir.isEmpty();
-        ServletBridge.start(ctx, new Config(EXTENSION_KEY, coreUrl(), dev, "1.0.0", frontendDir, manifestPath));
+        ServletBridge.start(ctx, new Config(EXTENSION_KEY, coreUrl(), dev, "1.0.0", frontendDir, manifestPath, extensionSecret));
     }
 }

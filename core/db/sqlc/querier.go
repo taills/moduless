@@ -9,16 +9,32 @@ import (
 )
 
 type Querier interface {
+	CountAdmins(ctx context.Context) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
+	CreateExtensionSecret(ctx context.Context, arg CreateExtensionSecretParams) (ExtensionSecret, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) error
+	DeleteExtension(ctx context.Context, key string) error
+	DeleteUser(ctx context.Context, id int32) error
+	GetExtension(ctx context.Context, key string) (Extension, error)
 	GetExtensionVersion(ctx context.Context, extensionKey string) (string, error)
 	GetFile(ctx context.Context, id string) (SystemFile, error)
+	GetUserByID(ctx context.Context, id int32) (SystemUser, error)
 	GetUserByUsername(ctx context.Context, username string) (GetUserByUsernameRow, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
 	InsertDownloadToken(ctx context.Context, arg InsertDownloadTokenParams) error
 	InsertFile(ctx context.Context, arg InsertFileParams) error
+	ListActiveExtensionSecrets(ctx context.Context, extensionKey string) ([]ExtensionSecret, error)
 	ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([]AuditLog, error)
+	ListExtensionSecrets(ctx context.Context, extensionKey string) ([]ExtensionSecret, error)
+	ListExtensions(ctx context.Context) ([]Extension, error)
+	ListUsers(ctx context.Context) ([]ListUsersRow, error)
+	RevokeExtensionSecret(ctx context.Context, arg RevokeExtensionSecretParams) error
+	SetExtensionStatus(ctx context.Context, arg SetExtensionStatusParams) error
+	TouchExtensionSecret(ctx context.Context, id int64) error
 	UpdateExtensionVersion(ctx context.Context, arg UpdateExtensionVersionParams) error
+	UpdateUserPassword(ctx context.Context, arg UpdateUserPasswordParams) error
+	UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) error
+	UpsertPendingExtension(ctx context.Context, arg UpsertPendingExtensionParams) (Extension, error)
 	VerifyDownloadToken(ctx context.Context, token string) (string, error)
 }
 

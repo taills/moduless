@@ -34,6 +34,12 @@ type Config struct {
 	IsDev        bool
 	DevFEUrl     string
 	Version      string
+	// ExtensionSecret authenticates an already-approved extension. It is usually
+	// loaded from manifest.yaml (persisted there after the first approval), but
+	// may be set explicitly (e.g. from an EXTENSION_SECRET env var) to pin a
+	// pre-generated secret for an additional replica. Empty on a first-time
+	// registration, which Core parks as pending for admin approval.
+	ExtensionSecret string
 	// ManifestPath, when set, makes the SDK load manifest.yaml and send the
 	// declared collections/indexes/slots to Core on registration so Core can
 	// provision tables and register UI slots automatically.

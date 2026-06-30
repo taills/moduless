@@ -15,6 +15,30 @@ def load_manifest(path: str) -> Dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
+def save_secret(path: str, secret: str) -> None:
+    """Persist the Core-issued secret back into manifest.yaml.
+
+    Only the top-level ``secret:`` line is rewritten (replaced or appended),
+    leaving the rest of the file — including comments — untouched.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    out = []
+    replaced = False
+    for line in lines:
+        if line.startswith("secret:"):
+            out.append(f'secret: "{secret}"')
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f'secret: "{secret}"')
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+
+
 def apply_manifest(req: "tunnel_pb2.RegisterRequest", manifest: Dict[str, Any]) -> None:
     weight = manifest.get("weight")
     if weight:

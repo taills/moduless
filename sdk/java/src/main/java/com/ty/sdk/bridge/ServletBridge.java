@@ -83,15 +83,30 @@ public class ServletBridge {
         }
         final byte[] zipBytes = frontendZip;
 
+        // Resolve the approval secret: an explicit config value wins, else the one
+        // persisted in manifest.yaml after a previous approval.
+        String resolvedSecret = config.getExtensionSecret();
+        if ((resolvedSecret == null || resolvedSecret.isEmpty())
+                && config.getManifestPath() != null && !config.getManifestPath().isEmpty()) {
+            try {
+                resolvedSecret = ManifestLoader.loadSecret(config.getManifestPath());
+            } catch (Exception e) {
+                System.err.println("warning: failed to read manifest secret: " + e.getMessage());
+            }
+        }
+        final String secret = resolvedSecret == null ? "" : resolvedSecret;
+
         final StreamObserver<TunnelMessage>[] requestObserverHolder = new StreamObserver[1];
 
         StreamObserver<TunnelMessage> responseObserver = new StreamObserver<>() {
             @Override
             public void onNext(TunnelMessage msg) {
-                if (msg.hasRegisterResp()) {
+                if (msg.hasRegisterDecision()) {
+                    handleDecision(msg.getRegisterDecision(), requestObserverHolder[0], zipBytes, config);
+                } else if (msg.hasRegisterResp()) {
                     RegisterResponse resp = msg.getRegisterResp();
                     if (!resp.getSuccess()) {
-                        System.err.println("registration rejected: " + resp.getErrorMessage());
+                        System.err.println("registration failed: " + resp.getErrorMessage());
                     } else {
                         System.out.println("registration success");
                     }
@@ -119,7 +134,8 @@ public class ServletBridge {
                 .setVersion(config.getVersion())
                 .setIsDev(registerAsDev)
                 .setZipFileSize(zipBytes.length)
-                .setZipSha256(zipSha256);
+                .setZipSha256(zipSha256)
+                .setExtensionSecret(secret);
         // Send declared collections/indexes/slots so Core provisions CMDS tables.
         if (config.getManifestPath() != null && !config.getManifestPath().isEmpty()) {
             try {
@@ -129,22 +145,57 @@ public class ServletBridge {
             }
         }
 
+        // Register; the frontend is uploaded only after Core approves (decision).
         requestObserver.onNext(TunnelMessage.newBuilder().setRegisterReq(reg.build()).build());
+    }
 
-        // Stream the bundled frontend then signal completion so Core extracts
-        // it and replies with the registration result.
-        if (zipBytes.length > 0) {
-            int index = 0;
-            for (int offset = 0; offset < zipBytes.length; offset += FRONTEND_CHUNK_SIZE) {
-                int end = Math.min(offset + FRONTEND_CHUNK_SIZE, zipBytes.length);
-                requestObserver.onNext(TunnelMessage.newBuilder()
+    /**
+     * Handles a RegisterDecision: a pending decision is awaited, an approval
+     * persists the issued secret and (in production) uploads the frontend, and a
+     * rejection is logged.
+     */
+    private static void handleDecision(com.ty.sdk.proto.RegisterDecision d,
+                                       StreamObserver<TunnelMessage> out, byte[] zipBytes, Config config) {
+        switch (d.getStatus()) {
+            case "pending" -> System.out.println("registration pending administrator approval...");
+            case "approved" -> {
+                if (!d.getIssuedSecret().isEmpty()) {
+                    if (config.getManifestPath() != null && !config.getManifestPath().isEmpty()) {
+                        try {
+                            ManifestLoader.saveSecret(config.getManifestPath(), d.getIssuedSecret());
+                            System.out.println("approved; persisted issued secret to " + config.getManifestPath());
+                        } catch (Exception e) {
+                            System.err.println("warning: failed to persist secret: " + e.getMessage());
+                        }
+                    } else {
+                        System.out.println("approved; no manifestPath set, secret not persisted");
+                    }
+                }
+                if (d.getUploadFrontend() && zipBytes.length > 0) {
+                    uploadFrontend(out, zipBytes);
+                }
+            }
+            case "rejected" -> System.err.println("registration rejected by administrator");
+            default -> { }
+        }
+    }
+
+    /** Streams the bundled frontend then signals completion. */
+    private static void uploadFrontend(StreamObserver<TunnelMessage> out, byte[] zipBytes) {
+        int index = 0;
+        for (int offset = 0; offset < zipBytes.length; offset += FRONTEND_CHUNK_SIZE) {
+            int end = Math.min(offset + FRONTEND_CHUNK_SIZE, zipBytes.length);
+            synchronized (out) {
+                out.onNext(TunnelMessage.newBuilder()
                         .setFileChunk(FileChunk.newBuilder()
                                 .setContent(ByteString.copyFrom(zipBytes, offset, end - offset))
                                 .setChunkIndex(index++)
                                 .build())
                         .build());
             }
-            requestObserver.onNext(TunnelMessage.newBuilder()
+        }
+        synchronized (out) {
+            out.onNext(TunnelMessage.newBuilder()
                     .setRegisterComplete(RegisterComplete.newBuilder().build())
                     .build());
         }

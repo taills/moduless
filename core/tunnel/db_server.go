@@ -7,7 +7,9 @@ import (
 	"github.com/taills/moduless/core/db"
 	pb "github.com/taills/moduless/proto/tunnel"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // extKeyMetadataField is the gRPC metadata key carrying the calling
@@ -28,6 +30,35 @@ func ExtensionKeyUnaryInterceptor(ctx context.Context, req interface{}, info *gr
 		}
 	}
 	return handler(ctx, req)
+}
+
+// KeyAuthorizer reports whether an extension key is approved. Implemented by the
+// extension registry; used to gate data-plane (DB/File/Event) unary calls.
+type KeyAuthorizer interface {
+	IsApproved(ctx context.Context, key string) bool
+}
+
+// ApprovedKeyUnaryInterceptor builds an interceptor that, in addition to placing
+// the extension key in context, rejects data-plane calls from keys that are not
+// approved. When authz is nil the gate is skipped (open/demo mode).
+func ApprovedKeyUnaryInterceptor(authz KeyAuthorizer) grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		key := ""
+		if md, ok := metadata.FromIncomingContext(ctx); ok {
+			if vals := md.Get(extKeyMetadataField); len(vals) > 0 {
+				key = vals[0]
+			}
+		}
+		if key != "" {
+			ctx = context.WithValue(ctx, extensionKeyCtx, key)
+		}
+		if authz != nil {
+			if key == "" || !authz.IsApproved(ctx, key) {
+				return nil, status.Error(codes.PermissionDenied, "extension not approved")
+			}
+		}
+		return handler(ctx, req)
+	}
 }
 
 func extensionKeyFromCtx(ctx context.Context) (string, error) {

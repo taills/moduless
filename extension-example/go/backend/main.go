@@ -42,6 +42,9 @@ func main() {
 		ExtensionKey: "go_example",
 		CoreGrpcURL:  coreURL,
 		ManifestPath: os.Getenv("MANIFEST_PATH"),
+		// EXTENSION_SECRET pins a pre-issued secret (e.g. for an extra replica);
+		// otherwise the SDK reads/persists it via manifest.yaml after approval.
+		ExtensionSecret: os.Getenv("EXTENSION_SECRET"),
 	}
 	if dir := os.Getenv("FRONTEND_DIR"); dir != "" {
 		cfg.FrontendDir = dir // production: Core serves the bundled micro-frontend

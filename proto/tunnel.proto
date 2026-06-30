@@ -134,6 +134,7 @@ message RegisterRequest {
   string dev_frontend_url = 9;
   repeated CollectionSchema collections = 10;
   repeated SlotSchema slots = 11;
+  int32 weight = 12; // load-balancing weight for this replica (default 1)
 }
 
 message CollectionSchema {

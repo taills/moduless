@@ -16,6 +16,10 @@ def load_manifest(path: str) -> Dict[str, Any]:
 
 
 def apply_manifest(req: "tunnel_pb2.RegisterRequest", manifest: Dict[str, Any]) -> None:
+    weight = manifest.get("weight")
+    if weight:
+        req.weight = int(weight)
+
     database = manifest.get("database") or {}
     for collection in database.get("collections", []) or []:
         col = req.collections.add()

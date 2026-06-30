@@ -61,7 +61,8 @@ func handleInfo(c *gin.Context) {
 		userID = user.UserID
 		roles = user.Roles
 	}
-	c.JSON(http.StatusOK, gin.H{"language": "go", "user_id": userID, "roles": roles})
+	host, _ := os.Hostname() // identifies which replica served the request
+	c.JSON(http.StatusOK, gin.H{"language": "go", "user_id": userID, "roles": roles, "instance": host})
 }
 
 func listItems(c *gin.Context) {

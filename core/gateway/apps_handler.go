@@ -12,6 +12,7 @@ type AppInfo struct {
 	MenuPath    string `json:"menu_path"`
 	Entry       string `json:"entry"`
 	Online      bool   `json:"online"`
+	Replicas    int    `json:"replicas"`
 }
 
 // AppsHandler serves GET /api/system/ui/apps: registered extensions with their
@@ -43,6 +44,7 @@ func (h *GatewayHandler) AppsHandler(w http.ResponseWriter, r *http.Request) {
 			MenuPath:    menuPath,
 			Entry:       "/extensions/" + e.Key + "/",
 			Online:      e.Online,
+			Replicas:    e.Replicas,
 		})
 	}
 	writeJSON(w, http.StatusOK, apps)

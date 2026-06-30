@@ -13,15 +13,16 @@ import (
 func TestGatewayStaticFileCache(t *testing.T) {
 	mgr := tunnel.NewTunnelManager()
 
-	// Pre-populate dummy zip for test-ext.
+	// Pre-populate dummy zip for test-ext via a registered replica.
 	var zipBuf bytes.Buffer
 	zw := zip.NewWriter(&zipBuf)
 	f, _ := zw.Create("app.js")
 	f.Write([]byte("console.log('test')"))
 	zw.Close()
 
-	mgr.SaveZipChunk("test-ext", zipBuf.Bytes())
-	if err := mgr.ExtractZipCache("test-ext"); err != nil {
+	rep := mgr.Register("test-ext", nil, nil)
+	mgr.SaveZipChunk(rep, zipBuf.Bytes())
+	if err := mgr.ExtractZipCache(rep); err != nil {
 		t.Fatalf("ExtractZipCache failed: %v", err)
 	}
 

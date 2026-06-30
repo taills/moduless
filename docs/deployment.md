@@ -100,3 +100,30 @@ docker build -f extension-example/go/Dockerfile     -t go-example .
 docker build -f extension-example/python/Dockerfile -t python-example .
 docker build -f extension-example/java/Dockerfile   -t java-example .
 ```
+
+## Scaling an extension (load balancing)
+
+Run multiple replicas of one extension and Core load-balances API traffic across
+them. Each replica dials Core and registers under the same extension key; Core
+keeps the full replica set (not just the latest) and routes with **smooth
+weighted round-robin**.
+
+```bash
+docker compose up -d --scale go-example=3
+# 30 requests to /api/extensions/go_example/* spread ~10/10/10 across replicas
+```
+
+Set a per-replica `weight` in `manifest.yaml` (default 1) to send proportionally
+more traffic to heavier replicas:
+
+```yaml
+key: go_example
+weight: 2   # this build's replicas each get weight 2
+```
+
+`GET /api/system/diagnostics` lists every connected replica (instance id +
+weight); `GET /api/system/ui/apps` reports each extension's `replicas` count.
+
+Note: this is single-Core, in-process load balancing across an extension's
+replicas — it is not Core HA (Core stays single-instance; see above). When the
+routed replica dies, Core drops it and routes to the others.

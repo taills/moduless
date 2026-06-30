@@ -31,6 +31,11 @@ public final class ManifestLoader {
             return;
         }
 
+        Object weight = manifest.get("weight");
+        if (weight instanceof Number) {
+            req.setWeight(((Number) weight).intValue());
+        }
+
         Map<String, Object> database = (Map<String, Object>) manifest.get("database");
         if (database != null) {
             List<Map<String, Object>> collections = (List<Map<String, Object>>) database.get("collections");

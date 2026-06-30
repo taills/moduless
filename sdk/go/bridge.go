@@ -136,6 +136,9 @@ func Start(handler http.Handler, cfg Config) {
 // applyManifest copies manifest collection/slot declarations into the
 // registration request.
 func applyManifest(req *pb.RegisterRequest, m *manifest.Manifest) {
+	if m.Weight > 0 {
+		req.Weight = int32(m.Weight)
+	}
 	for _, c := range m.Database.Collections {
 		col := &pb.CollectionSchema{Name: c.Name}
 		for _, idx := range c.Indexes {

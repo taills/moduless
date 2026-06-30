@@ -1,6 +1,7 @@
 key: java_example
 display_name: "Java 示例扩展"
 version: "1.0.0"
+weight: 1            # load-balancing weight per replica (default 1)
 menu:
   icon: "java"
   path: "/java-example"

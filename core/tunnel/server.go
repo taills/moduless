@@ -59,7 +59,7 @@ func (s *TunnelServer) Connect(stream pb.ExtensionTunnel_ConnectServer) error {
 					}); sendErr != nil {
 						return sendErr
 					}
-					s.Manager.Unregister(key)
+					s.Manager.RemoveTunnel(key, currentTunnel)
 					return err
 				}
 			}
@@ -79,13 +79,13 @@ func (s *TunnelServer) Connect(stream pb.ExtensionTunnel_ConnectServer) error {
 			if key == "" {
 				return errors.New("file chunk sent before registration")
 			}
-			s.Manager.SaveZipChunk(key, payload.FileChunk.Content)
+			s.Manager.SaveZipChunk(currentTunnel, payload.FileChunk.Content)
 
 		case *pb.TunnelMessage_RegisterComplete:
 			if key == "" {
 				return errors.New("complete sent before registration")
 			}
-			err := s.Manager.ExtractZipCache(key)
+			err := s.Manager.ExtractZipCache(currentTunnel)
 			var resp *pb.RegisterResponse
 			if err != nil {
 				resp = &pb.RegisterResponse{Success: false, ErrorMessage: err.Error()}
@@ -107,8 +107,8 @@ func (s *TunnelServer) Connect(stream pb.ExtensionTunnel_ConnectServer) error {
 			}
 
 		case *pb.TunnelMessage_Ping:
-			if key != "" {
-				s.Manager.TouchPing(key)
+			if currentTunnel != nil {
+				s.Manager.Touch(currentTunnel)
 			}
 			if currentTunnel != nil {
 				if err := currentTunnel.Send(&pb.TunnelMessage{
@@ -128,19 +128,19 @@ func (s *TunnelServer) Connect(stream pb.ExtensionTunnel_ConnectServer) error {
 	return nil
 }
 
-// gracefulUnregister applies a 10s graceful unload buffer: if the extension
-// reconnects within the window, the tunnel survives; otherwise it is removed.
+// gracefulUnregister applies a 10s graceful unload buffer: if the replica
+// reconnects within the window, it survives; otherwise it is removed. Key-scoped
+// state (UI slots) is dropped only when the last replica for the key is gone.
 func (s *TunnelServer) gracefulUnregister(key string, t *ActiveTunnel) {
 	go func() {
 		time.Sleep(10 * time.Second)
-		// Only remove if the still-registered tunnel is the same instance that
-		// disconnected (a reconnect would have replaced it with a new pointer).
-		if cur, ok := s.Manager.GetTunnel(key); ok && cur == t {
-			s.Manager.Unregister(key)
-			if s.OnUnregister != nil {
-				s.OnUnregister(key)
-			}
-			log.Printf("[tunnel] extension unregistered after grace period: %s", key)
+		if !s.Manager.HasTunnel(key, t) {
+			return
+		}
+		lastGone := s.Manager.RemoveTunnel(key, t)
+		log.Printf("[tunnel] replica unregistered after grace period: %s (%s)", key, t.InstanceID)
+		if lastGone && s.OnUnregister != nil {
+			s.OnUnregister(key)
 		}
 	}()
 }

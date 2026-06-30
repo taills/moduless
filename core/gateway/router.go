@@ -125,7 +125,7 @@ func (h *GatewayHandler) proxyToExtension(w http.ResponseWriter, r *http.Request
 	extKey := parts[0]
 	subPath := "/" + parts[1]
 
-	activeTunnel, ok := h.Manager.GetTunnel(extKey)
+	activeTunnel, ok := h.Manager.PickTunnel(extKey)
 	if !ok {
 		http.Error(w, "extension offline", http.StatusBadGateway)
 		return

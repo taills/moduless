@@ -15,6 +15,7 @@ type Manifest struct {
 	Key         string   `yaml:"key"`
 	DisplayName string   `yaml:"display_name"`
 	Version     string   `yaml:"version"`
+	Weight      int      `yaml:"weight"` // load-balancing weight for replicas (default 1)
 	Menu        Menu     `yaml:"menu"`
 	Frontend    Frontend `yaml:"frontend"`
 	Database    Database `yaml:"database"`

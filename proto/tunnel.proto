@@ -132,6 +132,23 @@ message RegisterRequest {
   string zip_sha256 = 7;
   bool is_dev = 8;
   string dev_frontend_url = 9;
+  repeated CollectionSchema collections = 10;
+  repeated SlotSchema slots = 11;
+}
+
+message CollectionSchema {
+  string name = 1;
+  repeated IndexSchema indexes = 2;
+}
+
+message IndexSchema {
+  repeated string fields = 1;
+  bool unique = 2;
+}
+
+message SlotSchema {
+  string slot_name = 1;
+  string component_entry = 2;
 }
 
 message FileChunk {

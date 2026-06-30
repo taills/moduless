@@ -34,6 +34,10 @@ type Config struct {
 	IsDev        bool
 	DevFEUrl     string
 	Version      string
+	// ManifestPath, when set, makes the SDK load manifest.yaml and send the
+	// declared collections/indexes/slots to Core on registration so Core can
+	// provision tables and register UI slots automatically.
+	ManifestPath string
 }
 
 // mockResponseWriter captures handler output so it can be marshalled into a

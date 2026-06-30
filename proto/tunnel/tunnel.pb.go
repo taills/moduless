@@ -1153,15 +1153,17 @@ type RegisterRequest struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	ExtensionKey   string `protobuf:"bytes,1,opt,name=extension_key,json=extensionKey,proto3" json:"extension_key,omitempty"`
-	Version        string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
-	DisplayName    string `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	MenuIcon       string `protobuf:"bytes,4,opt,name=menu_icon,json=menuIcon,proto3" json:"menu_icon,omitempty"`
-	MenuPath       string `protobuf:"bytes,5,opt,name=menu_path,json=menuPath,proto3" json:"menu_path,omitempty"`
-	ZipFileSize    uint64 `protobuf:"varint,6,opt,name=zip_file_size,json=zipFileSize,proto3" json:"zip_file_size,omitempty"`
-	ZipSha256      string `protobuf:"bytes,7,opt,name=zip_sha256,json=zipSha256,proto3" json:"zip_sha256,omitempty"`
-	IsDev          bool   `protobuf:"varint,8,opt,name=is_dev,json=isDev,proto3" json:"is_dev,omitempty"`
-	DevFrontendUrl string `protobuf:"bytes,9,opt,name=dev_frontend_url,json=devFrontendUrl,proto3" json:"dev_frontend_url,omitempty"`
+	ExtensionKey   string              `protobuf:"bytes,1,opt,name=extension_key,json=extensionKey,proto3" json:"extension_key,omitempty"`
+	Version        string              `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	DisplayName    string              `protobuf:"bytes,3,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	MenuIcon       string              `protobuf:"bytes,4,opt,name=menu_icon,json=menuIcon,proto3" json:"menu_icon,omitempty"`
+	MenuPath       string              `protobuf:"bytes,5,opt,name=menu_path,json=menuPath,proto3" json:"menu_path,omitempty"`
+	ZipFileSize    uint64              `protobuf:"varint,6,opt,name=zip_file_size,json=zipFileSize,proto3" json:"zip_file_size,omitempty"`
+	ZipSha256      string              `protobuf:"bytes,7,opt,name=zip_sha256,json=zipSha256,proto3" json:"zip_sha256,omitempty"`
+	IsDev          bool                `protobuf:"varint,8,opt,name=is_dev,json=isDev,proto3" json:"is_dev,omitempty"`
+	DevFrontendUrl string              `protobuf:"bytes,9,opt,name=dev_frontend_url,json=devFrontendUrl,proto3" json:"dev_frontend_url,omitempty"`
+	Collections    []*CollectionSchema `protobuf:"bytes,10,rep,name=collections,proto3" json:"collections,omitempty"`
+	Slots          []*SlotSchema       `protobuf:"bytes,11,rep,name=slots,proto3" json:"slots,omitempty"`
 }
 
 func (x *RegisterRequest) Reset() {
@@ -1259,6 +1261,185 @@ func (x *RegisterRequest) GetDevFrontendUrl() string {
 	return ""
 }
 
+func (x *RegisterRequest) GetCollections() []*CollectionSchema {
+	if x != nil {
+		return x.Collections
+	}
+	return nil
+}
+
+func (x *RegisterRequest) GetSlots() []*SlotSchema {
+	if x != nil {
+		return x.Slots
+	}
+	return nil
+}
+
+type CollectionSchema struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Name    string         `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Indexes []*IndexSchema `protobuf:"bytes,2,rep,name=indexes,proto3" json:"indexes,omitempty"`
+}
+
+func (x *CollectionSchema) Reset() {
+	*x = CollectionSchema{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_proto_tunnel_proto_msgTypes[19]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *CollectionSchema) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CollectionSchema) ProtoMessage() {}
+
+func (x *CollectionSchema) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_tunnel_proto_msgTypes[19]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CollectionSchema.ProtoReflect.Descriptor instead.
+func (*CollectionSchema) Descriptor() ([]byte, []int) {
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *CollectionSchema) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CollectionSchema) GetIndexes() []*IndexSchema {
+	if x != nil {
+		return x.Indexes
+	}
+	return nil
+}
+
+type IndexSchema struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Fields []string `protobuf:"bytes,1,rep,name=fields,proto3" json:"fields,omitempty"`
+	Unique bool     `protobuf:"varint,2,opt,name=unique,proto3" json:"unique,omitempty"`
+}
+
+func (x *IndexSchema) Reset() {
+	*x = IndexSchema{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_proto_tunnel_proto_msgTypes[20]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *IndexSchema) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*IndexSchema) ProtoMessage() {}
+
+func (x *IndexSchema) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_tunnel_proto_msgTypes[20]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use IndexSchema.ProtoReflect.Descriptor instead.
+func (*IndexSchema) Descriptor() ([]byte, []int) {
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *IndexSchema) GetFields() []string {
+	if x != nil {
+		return x.Fields
+	}
+	return nil
+}
+
+func (x *IndexSchema) GetUnique() bool {
+	if x != nil {
+		return x.Unique
+	}
+	return false
+}
+
+type SlotSchema struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	SlotName       string `protobuf:"bytes,1,opt,name=slot_name,json=slotName,proto3" json:"slot_name,omitempty"`
+	ComponentEntry string `protobuf:"bytes,2,opt,name=component_entry,json=componentEntry,proto3" json:"component_entry,omitempty"`
+}
+
+func (x *SlotSchema) Reset() {
+	*x = SlotSchema{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_proto_tunnel_proto_msgTypes[21]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *SlotSchema) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SlotSchema) ProtoMessage() {}
+
+func (x *SlotSchema) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_tunnel_proto_msgTypes[21]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SlotSchema.ProtoReflect.Descriptor instead.
+func (*SlotSchema) Descriptor() ([]byte, []int) {
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *SlotSchema) GetSlotName() string {
+	if x != nil {
+		return x.SlotName
+	}
+	return ""
+}
+
+func (x *SlotSchema) GetComponentEntry() string {
+	if x != nil {
+		return x.ComponentEntry
+	}
+	return ""
+}
+
 type FileChunk struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -1271,7 +1452,7 @@ type FileChunk struct {
 func (x *FileChunk) Reset() {
 	*x = FileChunk{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_proto_tunnel_proto_msgTypes[19]
+		mi := &file_proto_tunnel_proto_msgTypes[22]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1284,7 +1465,7 @@ func (x *FileChunk) String() string {
 func (*FileChunk) ProtoMessage() {}
 
 func (x *FileChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[19]
+	mi := &file_proto_tunnel_proto_msgTypes[22]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1297,7 +1478,7 @@ func (x *FileChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FileChunk.ProtoReflect.Descriptor instead.
 func (*FileChunk) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{19}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *FileChunk) GetContent() []byte {
@@ -1323,7 +1504,7 @@ type RegisterComplete struct {
 func (x *RegisterComplete) Reset() {
 	*x = RegisterComplete{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_proto_tunnel_proto_msgTypes[20]
+		mi := &file_proto_tunnel_proto_msgTypes[23]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1336,7 +1517,7 @@ func (x *RegisterComplete) String() string {
 func (*RegisterComplete) ProtoMessage() {}
 
 func (x *RegisterComplete) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[20]
+	mi := &file_proto_tunnel_proto_msgTypes[23]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1349,7 +1530,7 @@ func (x *RegisterComplete) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterComplete.ProtoReflect.Descriptor instead.
 func (*RegisterComplete) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{20}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{23}
 }
 
 type RegisterResponse struct {
@@ -1365,7 +1546,7 @@ type RegisterResponse struct {
 func (x *RegisterResponse) Reset() {
 	*x = RegisterResponse{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_proto_tunnel_proto_msgTypes[21]
+		mi := &file_proto_tunnel_proto_msgTypes[24]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1378,7 +1559,7 @@ func (x *RegisterResponse) String() string {
 func (*RegisterResponse) ProtoMessage() {}
 
 func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[21]
+	mi := &file_proto_tunnel_proto_msgTypes[24]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1391,7 +1572,7 @@ func (x *RegisterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterResponse.ProtoReflect.Descriptor instead.
 func (*RegisterResponse) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{21}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *RegisterResponse) GetSuccess() bool {
@@ -1433,7 +1614,7 @@ type HttpRequestChunk struct {
 func (x *HttpRequestChunk) Reset() {
 	*x = HttpRequestChunk{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_proto_tunnel_proto_msgTypes[22]
+		mi := &file_proto_tunnel_proto_msgTypes[25]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1446,7 +1627,7 @@ func (x *HttpRequestChunk) String() string {
 func (*HttpRequestChunk) ProtoMessage() {}
 
 func (x *HttpRequestChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[22]
+	mi := &file_proto_tunnel_proto_msgTypes[25]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1459,7 +1640,7 @@ func (x *HttpRequestChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HttpRequestChunk.ProtoReflect.Descriptor instead.
 func (*HttpRequestChunk) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{22}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *HttpRequestChunk) GetStreamId() string {
@@ -1534,7 +1715,7 @@ type HttpResponseChunk struct {
 func (x *HttpResponseChunk) Reset() {
 	*x = HttpResponseChunk{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_proto_tunnel_proto_msgTypes[23]
+		mi := &file_proto_tunnel_proto_msgTypes[26]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1547,7 +1728,7 @@ func (x *HttpResponseChunk) String() string {
 func (*HttpResponseChunk) ProtoMessage() {}
 
 func (x *HttpResponseChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[23]
+	mi := &file_proto_tunnel_proto_msgTypes[26]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1560,7 +1741,7 @@ func (x *HttpResponseChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HttpResponseChunk.ProtoReflect.Descriptor instead.
 func (*HttpResponseChunk) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{23}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *HttpResponseChunk) GetStreamId() string {
@@ -1616,7 +1797,7 @@ type Ping struct {
 func (x *Ping) Reset() {
 	*x = Ping{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_proto_tunnel_proto_msgTypes[24]
+		mi := &file_proto_tunnel_proto_msgTypes[27]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1629,7 +1810,7 @@ func (x *Ping) String() string {
 func (*Ping) ProtoMessage() {}
 
 func (x *Ping) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[24]
+	mi := &file_proto_tunnel_proto_msgTypes[27]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1642,7 +1823,7 @@ func (x *Ping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ping.ProtoReflect.Descriptor instead.
 func (*Ping) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{24}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *Ping) GetTimestamp() int64 {
@@ -1663,7 +1844,7 @@ type Pong struct {
 func (x *Pong) Reset() {
 	*x = Pong{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_proto_tunnel_proto_msgTypes[25]
+		mi := &file_proto_tunnel_proto_msgTypes[28]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -1676,7 +1857,7 @@ func (x *Pong) String() string {
 func (*Pong) ProtoMessage() {}
 
 func (x *Pong) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_tunnel_proto_msgTypes[25]
+	mi := &file_proto_tunnel_proto_msgTypes[28]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1689,7 +1870,7 @@ func (x *Pong) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Pong.ProtoReflect.Descriptor instead.
 func (*Pong) Descriptor() ([]byte, []int) {
-	return file_proto_tunnel_proto_rawDescGZIP(), []int{25}
+	return file_proto_tunnel_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *Pong) GetTimestamp() int64 {
@@ -1817,7 +1998,7 @@ var file_proto_tunnel_proto_rawDesc = []byte{
 	0x65, 0x6e, 0x61, 0x6d, 0x65, 0x12, 0x12, 0x0a, 0x04, 0x73, 0x69, 0x7a, 0x65, 0x18, 0x04, 0x20,
 	0x01, 0x28, 0x03, 0x52, 0x04, 0x73, 0x69, 0x7a, 0x65, 0x12, 0x1b, 0x0a, 0x09, 0x6d, 0x69, 0x6d,
 	0x65, 0x5f, 0x74, 0x79, 0x70, 0x65, 0x18, 0x05, 0x20, 0x01, 0x28, 0x09, 0x52, 0x08, 0x6d, 0x69,
-	0x6d, 0x65, 0x54, 0x79, 0x70, 0x65, 0x22, 0xb1, 0x02, 0x0a, 0x0f, 0x52, 0x65, 0x67, 0x69, 0x73,
+	0x6d, 0x65, 0x54, 0x79, 0x70, 0x65, 0x22, 0x97, 0x03, 0x0a, 0x0f, 0x52, 0x65, 0x67, 0x69, 0x73,
 	0x74, 0x65, 0x72, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x12, 0x23, 0x0a, 0x0d, 0x65, 0x78,
 	0x74, 0x65, 0x6e, 0x73, 0x69, 0x6f, 0x6e, 0x5f, 0x6b, 0x65, 0x79, 0x18, 0x01, 0x20, 0x01, 0x28,
 	0x09, 0x52, 0x0c, 0x65, 0x78, 0x74, 0x65, 0x6e, 0x73, 0x69, 0x6f, 0x6e, 0x4b, 0x65, 0x79, 0x12,
@@ -1836,7 +2017,28 @@ var file_proto_tunnel_proto_rawDesc = []byte{
 	0x64, 0x65, 0x76, 0x18, 0x08, 0x20, 0x01, 0x28, 0x08, 0x52, 0x05, 0x69, 0x73, 0x44, 0x65, 0x76,
 	0x12, 0x28, 0x0a, 0x10, 0x64, 0x65, 0x76, 0x5f, 0x66, 0x72, 0x6f, 0x6e, 0x74, 0x65, 0x6e, 0x64,
 	0x5f, 0x75, 0x72, 0x6c, 0x18, 0x09, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0e, 0x64, 0x65, 0x76, 0x46,
-	0x72, 0x6f, 0x6e, 0x74, 0x65, 0x6e, 0x64, 0x55, 0x72, 0x6c, 0x22, 0x46, 0x0a, 0x09, 0x46, 0x69,
+	0x72, 0x6f, 0x6e, 0x74, 0x65, 0x6e, 0x64, 0x55, 0x72, 0x6c, 0x12, 0x3a, 0x0a, 0x0b, 0x63, 0x6f,
+	0x6c, 0x6c, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x73, 0x18, 0x0a, 0x20, 0x03, 0x28, 0x0b, 0x32,
+	0x18, 0x2e, 0x74, 0x75, 0x6e, 0x6e, 0x65, 0x6c, 0x2e, 0x43, 0x6f, 0x6c, 0x6c, 0x65, 0x63, 0x74,
+	0x69, 0x6f, 0x6e, 0x53, 0x63, 0x68, 0x65, 0x6d, 0x61, 0x52, 0x0b, 0x63, 0x6f, 0x6c, 0x6c, 0x65,
+	0x63, 0x74, 0x69, 0x6f, 0x6e, 0x73, 0x12, 0x28, 0x0a, 0x05, 0x73, 0x6c, 0x6f, 0x74, 0x73, 0x18,
+	0x0b, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x12, 0x2e, 0x74, 0x75, 0x6e, 0x6e, 0x65, 0x6c, 0x2e, 0x53,
+	0x6c, 0x6f, 0x74, 0x53, 0x63, 0x68, 0x65, 0x6d, 0x61, 0x52, 0x05, 0x73, 0x6c, 0x6f, 0x74, 0x73,
+	0x22, 0x55, 0x0a, 0x10, 0x43, 0x6f, 0x6c, 0x6c, 0x65, 0x63, 0x74, 0x69, 0x6f, 0x6e, 0x53, 0x63,
+	0x68, 0x65, 0x6d, 0x61, 0x12, 0x12, 0x0a, 0x04, 0x6e, 0x61, 0x6d, 0x65, 0x18, 0x01, 0x20, 0x01,
+	0x28, 0x09, 0x52, 0x04, 0x6e, 0x61, 0x6d, 0x65, 0x12, 0x2d, 0x0a, 0x07, 0x69, 0x6e, 0x64, 0x65,
+	0x78, 0x65, 0x73, 0x18, 0x02, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x13, 0x2e, 0x74, 0x75, 0x6e, 0x6e,
+	0x65, 0x6c, 0x2e, 0x49, 0x6e, 0x64, 0x65, 0x78, 0x53, 0x63, 0x68, 0x65, 0x6d, 0x61, 0x52, 0x07,
+	0x69, 0x6e, 0x64, 0x65, 0x78, 0x65, 0x73, 0x22, 0x3d, 0x0a, 0x0b, 0x49, 0x6e, 0x64, 0x65, 0x78,
+	0x53, 0x63, 0x68, 0x65, 0x6d, 0x61, 0x12, 0x16, 0x0a, 0x06, 0x66, 0x69, 0x65, 0x6c, 0x64, 0x73,
+	0x18, 0x01, 0x20, 0x03, 0x28, 0x09, 0x52, 0x06, 0x66, 0x69, 0x65, 0x6c, 0x64, 0x73, 0x12, 0x16,
+	0x0a, 0x06, 0x75, 0x6e, 0x69, 0x71, 0x75, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x08, 0x52, 0x06,
+	0x75, 0x6e, 0x69, 0x71, 0x75, 0x65, 0x22, 0x52, 0x0a, 0x0a, 0x53, 0x6c, 0x6f, 0x74, 0x53, 0x63,
+	0x68, 0x65, 0x6d, 0x61, 0x12, 0x1b, 0x0a, 0x09, 0x73, 0x6c, 0x6f, 0x74, 0x5f, 0x6e, 0x61, 0x6d,
+	0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x08, 0x73, 0x6c, 0x6f, 0x74, 0x4e, 0x61, 0x6d,
+	0x65, 0x12, 0x27, 0x0a, 0x0f, 0x63, 0x6f, 0x6d, 0x70, 0x6f, 0x6e, 0x65, 0x6e, 0x74, 0x5f, 0x65,
+	0x6e, 0x74, 0x72, 0x79, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0e, 0x63, 0x6f, 0x6d, 0x70,
+	0x6f, 0x6e, 0x65, 0x6e, 0x74, 0x45, 0x6e, 0x74, 0x72, 0x79, 0x22, 0x46, 0x0a, 0x09, 0x46, 0x69,
 	0x6c, 0x65, 0x43, 0x68, 0x75, 0x6e, 0x6b, 0x12, 0x18, 0x0a, 0x07, 0x63, 0x6f, 0x6e, 0x74, 0x65,
 	0x6e, 0x74, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x07, 0x63, 0x6f, 0x6e, 0x74, 0x65, 0x6e,
 	0x74, 0x12, 0x1f, 0x0a, 0x0b, 0x63, 0x68, 0x75, 0x6e, 0x6b, 0x5f, 0x69, 0x6e, 0x64, 0x65, 0x78,
@@ -1951,7 +2153,7 @@ func file_proto_tunnel_proto_rawDescGZIP() []byte {
 	return file_proto_tunnel_proto_rawDescData
 }
 
-var file_proto_tunnel_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_proto_tunnel_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_proto_tunnel_proto_goTypes = []interface{}{
 	(*TunnelMessage)(nil),     // 0: tunnel.TunnelMessage
 	(*PutRequest)(nil),        // 1: tunnel.PutRequest
@@ -1972,51 +2174,57 @@ var file_proto_tunnel_proto_goTypes = []interface{}{
 	(*FileMetaRequest)(nil),   // 16: tunnel.FileMetaRequest
 	(*FileMetaResponse)(nil),  // 17: tunnel.FileMetaResponse
 	(*RegisterRequest)(nil),   // 18: tunnel.RegisterRequest
-	(*FileChunk)(nil),         // 19: tunnel.FileChunk
-	(*RegisterComplete)(nil),  // 20: tunnel.RegisterComplete
-	(*RegisterResponse)(nil),  // 21: tunnel.RegisterResponse
-	(*HttpRequestChunk)(nil),  // 22: tunnel.HttpRequestChunk
-	(*HttpResponseChunk)(nil), // 23: tunnel.HttpResponseChunk
-	(*Ping)(nil),              // 24: tunnel.Ping
-	(*Pong)(nil),              // 25: tunnel.Pong
-	nil,                       // 26: tunnel.HttpRequestChunk.HeadersEntry
-	nil,                       // 27: tunnel.HttpResponseChunk.HeadersEntry
+	(*CollectionSchema)(nil),  // 19: tunnel.CollectionSchema
+	(*IndexSchema)(nil),       // 20: tunnel.IndexSchema
+	(*SlotSchema)(nil),        // 21: tunnel.SlotSchema
+	(*FileChunk)(nil),         // 22: tunnel.FileChunk
+	(*RegisterComplete)(nil),  // 23: tunnel.RegisterComplete
+	(*RegisterResponse)(nil),  // 24: tunnel.RegisterResponse
+	(*HttpRequestChunk)(nil),  // 25: tunnel.HttpRequestChunk
+	(*HttpResponseChunk)(nil), // 26: tunnel.HttpResponseChunk
+	(*Ping)(nil),              // 27: tunnel.Ping
+	(*Pong)(nil),              // 28: tunnel.Pong
+	nil,                       // 29: tunnel.HttpRequestChunk.HeadersEntry
+	nil,                       // 30: tunnel.HttpResponseChunk.HeadersEntry
 }
 var file_proto_tunnel_proto_depIdxs = []int32{
 	18, // 0: tunnel.TunnelMessage.register_req:type_name -> tunnel.RegisterRequest
-	19, // 1: tunnel.TunnelMessage.file_chunk:type_name -> tunnel.FileChunk
-	20, // 2: tunnel.TunnelMessage.register_complete:type_name -> tunnel.RegisterComplete
-	21, // 3: tunnel.TunnelMessage.register_resp:type_name -> tunnel.RegisterResponse
-	22, // 4: tunnel.TunnelMessage.http_req_chunk:type_name -> tunnel.HttpRequestChunk
-	23, // 5: tunnel.TunnelMessage.http_resp_chunk:type_name -> tunnel.HttpResponseChunk
-	24, // 6: tunnel.TunnelMessage.ping:type_name -> tunnel.Ping
-	25, // 7: tunnel.TunnelMessage.pong:type_name -> tunnel.Pong
+	22, // 1: tunnel.TunnelMessage.file_chunk:type_name -> tunnel.FileChunk
+	23, // 2: tunnel.TunnelMessage.register_complete:type_name -> tunnel.RegisterComplete
+	24, // 3: tunnel.TunnelMessage.register_resp:type_name -> tunnel.RegisterResponse
+	25, // 4: tunnel.TunnelMessage.http_req_chunk:type_name -> tunnel.HttpRequestChunk
+	26, // 5: tunnel.TunnelMessage.http_resp_chunk:type_name -> tunnel.HttpResponseChunk
+	27, // 6: tunnel.TunnelMessage.ping:type_name -> tunnel.Ping
+	28, // 7: tunnel.TunnelMessage.pong:type_name -> tunnel.Pong
 	8,  // 8: tunnel.FindRequest.filters:type_name -> tunnel.QueryFilter
-	26, // 9: tunnel.HttpRequestChunk.headers:type_name -> tunnel.HttpRequestChunk.HeadersEntry
-	27, // 10: tunnel.HttpResponseChunk.headers:type_name -> tunnel.HttpResponseChunk.HeadersEntry
-	0,  // 11: tunnel.ExtensionTunnel.Connect:input_type -> tunnel.TunnelMessage
-	1,  // 12: tunnel.DatabaseService.Put:input_type -> tunnel.PutRequest
-	3,  // 13: tunnel.DatabaseService.Get:input_type -> tunnel.GetRequest
-	5,  // 14: tunnel.DatabaseService.Delete:input_type -> tunnel.DeleteRequest
-	7,  // 15: tunnel.DatabaseService.Find:input_type -> tunnel.FindRequest
-	10, // 16: tunnel.EventBusService.Publish:input_type -> tunnel.PublishRequest
-	12, // 17: tunnel.EventBusService.Subscribe:input_type -> tunnel.SubscribeRequest
-	14, // 18: tunnel.FileService.GenerateDownloadToken:input_type -> tunnel.TokenRequest
-	16, // 19: tunnel.FileService.GetMetadata:input_type -> tunnel.FileMetaRequest
-	0,  // 20: tunnel.ExtensionTunnel.Connect:output_type -> tunnel.TunnelMessage
-	2,  // 21: tunnel.DatabaseService.Put:output_type -> tunnel.PutResponse
-	4,  // 22: tunnel.DatabaseService.Get:output_type -> tunnel.GetResponse
-	6,  // 23: tunnel.DatabaseService.Delete:output_type -> tunnel.DeleteResponse
-	9,  // 24: tunnel.DatabaseService.Find:output_type -> tunnel.FindResponse
-	11, // 25: tunnel.EventBusService.Publish:output_type -> tunnel.PublishResponse
-	13, // 26: tunnel.EventBusService.Subscribe:output_type -> tunnel.EventMessage
-	15, // 27: tunnel.FileService.GenerateDownloadToken:output_type -> tunnel.TokenResponse
-	17, // 28: tunnel.FileService.GetMetadata:output_type -> tunnel.FileMetaResponse
-	20, // [20:29] is the sub-list for method output_type
-	11, // [11:20] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	19, // 9: tunnel.RegisterRequest.collections:type_name -> tunnel.CollectionSchema
+	21, // 10: tunnel.RegisterRequest.slots:type_name -> tunnel.SlotSchema
+	20, // 11: tunnel.CollectionSchema.indexes:type_name -> tunnel.IndexSchema
+	29, // 12: tunnel.HttpRequestChunk.headers:type_name -> tunnel.HttpRequestChunk.HeadersEntry
+	30, // 13: tunnel.HttpResponseChunk.headers:type_name -> tunnel.HttpResponseChunk.HeadersEntry
+	0,  // 14: tunnel.ExtensionTunnel.Connect:input_type -> tunnel.TunnelMessage
+	1,  // 15: tunnel.DatabaseService.Put:input_type -> tunnel.PutRequest
+	3,  // 16: tunnel.DatabaseService.Get:input_type -> tunnel.GetRequest
+	5,  // 17: tunnel.DatabaseService.Delete:input_type -> tunnel.DeleteRequest
+	7,  // 18: tunnel.DatabaseService.Find:input_type -> tunnel.FindRequest
+	10, // 19: tunnel.EventBusService.Publish:input_type -> tunnel.PublishRequest
+	12, // 20: tunnel.EventBusService.Subscribe:input_type -> tunnel.SubscribeRequest
+	14, // 21: tunnel.FileService.GenerateDownloadToken:input_type -> tunnel.TokenRequest
+	16, // 22: tunnel.FileService.GetMetadata:input_type -> tunnel.FileMetaRequest
+	0,  // 23: tunnel.ExtensionTunnel.Connect:output_type -> tunnel.TunnelMessage
+	2,  // 24: tunnel.DatabaseService.Put:output_type -> tunnel.PutResponse
+	4,  // 25: tunnel.DatabaseService.Get:output_type -> tunnel.GetResponse
+	6,  // 26: tunnel.DatabaseService.Delete:output_type -> tunnel.DeleteResponse
+	9,  // 27: tunnel.DatabaseService.Find:output_type -> tunnel.FindResponse
+	11, // 28: tunnel.EventBusService.Publish:output_type -> tunnel.PublishResponse
+	13, // 29: tunnel.EventBusService.Subscribe:output_type -> tunnel.EventMessage
+	15, // 30: tunnel.FileService.GenerateDownloadToken:output_type -> tunnel.TokenResponse
+	17, // 31: tunnel.FileService.GetMetadata:output_type -> tunnel.FileMetaResponse
+	23, // [23:32] is the sub-list for method output_type
+	14, // [14:23] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_proto_tunnel_proto_init() }
@@ -2254,7 +2462,7 @@ func file_proto_tunnel_proto_init() {
 			}
 		}
 		file_proto_tunnel_proto_msgTypes[19].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*FileChunk); i {
+			switch v := v.(*CollectionSchema); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2266,7 +2474,7 @@ func file_proto_tunnel_proto_init() {
 			}
 		}
 		file_proto_tunnel_proto_msgTypes[20].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*RegisterComplete); i {
+			switch v := v.(*IndexSchema); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2278,7 +2486,7 @@ func file_proto_tunnel_proto_init() {
 			}
 		}
 		file_proto_tunnel_proto_msgTypes[21].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*RegisterResponse); i {
+			switch v := v.(*SlotSchema); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2290,7 +2498,7 @@ func file_proto_tunnel_proto_init() {
 			}
 		}
 		file_proto_tunnel_proto_msgTypes[22].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*HttpRequestChunk); i {
+			switch v := v.(*FileChunk); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2302,7 +2510,7 @@ func file_proto_tunnel_proto_init() {
 			}
 		}
 		file_proto_tunnel_proto_msgTypes[23].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*HttpResponseChunk); i {
+			switch v := v.(*RegisterComplete); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2314,7 +2522,7 @@ func file_proto_tunnel_proto_init() {
 			}
 		}
 		file_proto_tunnel_proto_msgTypes[24].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*Ping); i {
+			switch v := v.(*RegisterResponse); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2326,6 +2534,42 @@ func file_proto_tunnel_proto_init() {
 			}
 		}
 		file_proto_tunnel_proto_msgTypes[25].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*HttpRequestChunk); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_proto_tunnel_proto_msgTypes[26].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*HttpResponseChunk); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_proto_tunnel_proto_msgTypes[27].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*Ping); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_proto_tunnel_proto_msgTypes[28].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*Pong); i {
 			case 0:
 				return &v.state
@@ -2354,7 +2598,7 @@ func file_proto_tunnel_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_proto_tunnel_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   28,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   4,
 		},

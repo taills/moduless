@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ty-lab/go-web-module/manifest"
 	pb "github.com/ty-lab/go-web-module/proto/tunnel"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -64,6 +65,20 @@ func Start(handler http.Handler, cfg Config) {
 		version = "1.0.0"
 	}
 
+	registerReq := &pb.RegisterRequest{
+		ExtensionKey:   cfg.ExtensionKey,
+		Version:        version,
+		IsDev:          cfg.IsDev,
+		DevFrontendUrl: cfg.DevFEUrl,
+	}
+	if cfg.ManifestPath != "" {
+		if m, err := manifest.Load(cfg.ManifestPath); err != nil {
+			log.Printf("warning: failed to load manifest %s: %v", cfg.ManifestPath, err)
+		} else {
+			applyManifest(registerReq, m)
+		}
+	}
+
 	for {
 		stream, err := client.Connect(context.Background())
 		if err != nil {
@@ -74,14 +89,7 @@ func Start(handler http.Handler, cfg Config) {
 
 		cs := &clientStream{stream: stream}
 		if err := cs.Send(&pb.TunnelMessage{
-			Payload: &pb.TunnelMessage_RegisterReq{
-				RegisterReq: &pb.RegisterRequest{
-					ExtensionKey:   cfg.ExtensionKey,
-					Version:        version,
-					IsDev:          cfg.IsDev,
-					DevFrontendUrl: cfg.DevFEUrl,
-				},
-			},
+			Payload: &pb.TunnelMessage_RegisterReq{RegisterReq: registerReq},
 		}); err != nil {
 			log.Printf("registration send failed: %v", err)
 			time.Sleep(2 * time.Second)
@@ -92,6 +100,36 @@ func Start(handler http.Handler, cfg Config) {
 			log.Printf("tunnel connection lost: %v. Reconnecting in 2s...", err)
 			time.Sleep(2 * time.Second)
 		}
+	}
+}
+
+// applyManifest copies manifest collection/slot declarations into the
+// registration request.
+func applyManifest(req *pb.RegisterRequest, m *manifest.Manifest) {
+	for _, c := range m.Database.Collections {
+		col := &pb.CollectionSchema{Name: c.Name}
+		for _, idx := range c.Indexes {
+			col.Indexes = append(col.Indexes, &pb.IndexSchema{
+				Fields: idx.Fields,
+				Unique: idx.Unique,
+			})
+		}
+		req.Collections = append(req.Collections, col)
+	}
+	for _, s := range m.UISlots {
+		req.Slots = append(req.Slots, &pb.SlotSchema{
+			SlotName:       s.SlotName,
+			ComponentEntry: s.ComponentEntry,
+		})
+	}
+	if m.Menu.Icon != "" {
+		req.MenuIcon = m.Menu.Icon
+	}
+	if m.Menu.Path != "" {
+		req.MenuPath = m.Menu.Path
+	}
+	if m.DisplayName != "" {
+		req.DisplayName = m.DisplayName
 	}
 }
 

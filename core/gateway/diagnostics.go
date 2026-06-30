@@ -10,10 +10,10 @@ import (
 
 // DiagnosticsReport is one row of the developer diagnostics dashboard.
 type DiagnosticsReport struct {
-	ExtensionKey  string `json:"extension_key"`
-	LastPingTime  string `json:"last_ping_time"`
-	SecondsAgo    int64  `json:"seconds_since_ping"`
-	Online        bool   `json:"online"`
+	ExtensionKey string `json:"extension_key"`
+	LastPingTime string `json:"last_ping_time"`
+	SecondsAgo   int64  `json:"seconds_since_ping"`
+	Online       bool   `json:"online"`
 }
 
 // GetDiagnostics serves GET /api/system/diagnostics with live tunnel telemetry

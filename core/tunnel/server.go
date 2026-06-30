@@ -13,6 +13,13 @@ import (
 type TunnelServer struct {
 	pb.UnimplementedExtensionTunnelServer
 	Manager *TunnelManager
+
+	// OnRegister, when set, runs at registration time so Core can provision
+	// CMDS schema and register UI slots from the manifest declarations carried
+	// in the RegisterRequest. A returned error rejects the registration.
+	OnRegister func(req *pb.RegisterRequest) error
+	// OnUnregister, when set, runs after an extension is removed.
+	OnUnregister func(extKey string)
 }
 
 func NewTunnelServer(m *TunnelManager) *TunnelServer {
@@ -41,6 +48,21 @@ func (s *TunnelServer) Connect(stream pb.ExtensionTunnel_ConnectServer) error {
 			key = payload.RegisterReq.ExtensionKey
 			currentTunnel = s.Manager.Register(key, stream, payload.RegisterReq)
 			log.Printf("[tunnel] extension registered: %s (dev=%v)", key, payload.RegisterReq.IsDev)
+
+			if s.OnRegister != nil {
+				if err := s.OnRegister(payload.RegisterReq); err != nil {
+					log.Printf("[tunnel] OnRegister failed for %s: %v", key, err)
+					if sendErr := currentTunnel.Send(&pb.TunnelMessage{
+						Payload: &pb.TunnelMessage_RegisterResp{
+							RegisterResp: &pb.RegisterResponse{Success: false, ErrorMessage: err.Error()},
+						},
+					}); sendErr != nil {
+						return sendErr
+					}
+					s.Manager.Unregister(key)
+					return err
+				}
+			}
 
 			if payload.RegisterReq.IsDev {
 				// Dev mode skips zip upload; respond success immediately.
@@ -115,6 +137,9 @@ func (s *TunnelServer) gracefulUnregister(key string, t *ActiveTunnel) {
 		// disconnected (a reconnect would have replaced it with a new pointer).
 		if cur, ok := s.Manager.GetTunnel(key); ok && cur == t {
 			s.Manager.Unregister(key)
+			if s.OnUnregister != nil {
+				s.OnUnregister(key)
+			}
 			log.Printf("[tunnel] extension unregistered after grace period: %s", key)
 		}
 	}()

@@ -13,7 +13,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0ctunnel.proto\x12\x06tunnel\"\x98\x03\n\rTunnelMessage\x12\x12\n\nmessage_id\x18\x01 \x01(\t\x12/\n\x0cregister_req\x18\x02 \x01(\x0b\x32\x17.tunnel.RegisterRequestH\x00\x12\'\n\nfile_chunk\x18\x03 \x01(\x0b\x32\x11.tunnel.FileChunkH\x00\x12\x35\n\x11register_complete\x18\x04 \x01(\x0b\x32\x18.tunnel.RegisterCompleteH\x00\x12\x31\n\rregister_resp\x18\x05 \x01(\x0b\x32\x18.tunnel.RegisterResponseH\x00\x12\x32\n\x0ehttp_req_chunk\x18\x06 \x01(\x0b\x32\x18.tunnel.HttpRequestChunkH\x00\x12\x34\n\x0fhttp_resp_chunk\x18\x07 \x01(\x0b\x32\x19.tunnel.HttpResponseChunkH\x00\x12\x1c\n\x04ping\x18\x08 \x01(\x0b\x32\x0c.tunnel.PingH\x00\x12\x1c\n\x04pong\x18\t \x01(\x0b\x32\x0c.tunnel.PongH\x00\x42\t\n\x07payload\"H\n\nPutRequest\x12\x12\n\ncollection\x18\x01 \x01(\t\x12\x13\n\x0b\x64ocument_id\x18\x02 \x01(\t\x12\x11\n\tjson_data\x18\x03 \x01(\x0c\"\x1e\n\x0bPutResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"5\n\nGetRequest\x12\x12\n\ncollection\x18\x01 \x01(\t\x12\x13\n\x0b\x64ocument_id\x18\x02 \x01(\t\"/\n\x0bGetResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x11\n\tjson_data\x18\x02 \x01(\x0c\"8\n\rDeleteRequest\x12\x12\n\ncollection\x18\x01 \x01(\t\x12\x13\n\x0b\x64ocument_id\x18\x02 \x01(\t\"!\n\x0e\x44\x65leteResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"f\n\x0b\x46indRequest\x12\x12\n\ncollection\x18\x01 \x01(\t\x12$\n\x07\x66ilters\x18\x02 \x03(\x0b\x32\x13.tunnel.QueryFilter\x12\r\n\x05limit\x18\x03 \x01(\x05\x12\x0e\n\x06offset\x18\x04 \x01(\x05\"=\n\x0bQueryFilter\x12\r\n\x05\x66ield\x18\x01 \x01(\t\x12\x10\n\x08operator\x18\x02 \x01(\t\x12\r\n\x05value\x18\x03 \x01(\t\"!\n\x0c\x46indResponse\x12\x11\n\tdocuments\x18\x01 \x03(\x0c\"8\n\x0ePublishRequest\x12\x12\n\nevent_name\x18\x01 \x01(\t\x12\x12\n\nevent_data\x18\x02 \x01(\x0c\"\"\n\x0fPublishResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"&\n\x10SubscribeRequest\x12\x12\n\nevent_name\x18\x01 \x01(\t\"6\n\x0c\x45ventMessage\x12\x12\n\nevent_name\x18\x01 \x01(\t\x12\x12\n\nevent_data\x18\x02 \x01(\x0c\"H\n\x0cTokenRequest\x12\x0f\n\x07\x66ile_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x16\n\x0e\x65xpiry_seconds\x18\x03 \x01(\x05\"+\n\rTokenResponse\x12\r\n\x05token\x18\x01 \x01(\t\x12\x0b\n\x03url\x18\x02 \x01(\t\"\"\n\x0f\x46ileMetaRequest\x12\x0f\n\x07\x66ile_id\x18\x01 \x01(\t\"e\n\x10\x46ileMetaResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x0f\n\x07\x66ile_id\x18\x02 \x01(\t\x12\x10\n\x08\x66ilename\x18\x03 \x01(\t\x12\x0c\n\x04size\x18\x04 \x01(\x03\x12\x11\n\tmime_type\x18\x05 \x01(\t\"\xca\x01\n\x0fRegisterRequest\x12\x15\n\rextension_key\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x14\n\x0c\x64isplay_name\x18\x03 \x01(\t\x12\x11\n\tmenu_icon\x18\x04 \x01(\t\x12\x11\n\tmenu_path\x18\x05 \x01(\t\x12\x15\n\rzip_file_size\x18\x06 \x01(\x04\x12\x12\n\nzip_sha256\x18\x07 \x01(\t\x12\x0e\n\x06is_dev\x18\x08 \x01(\x08\x12\x18\n\x10\x64\x65v_frontend_url\x18\t \x01(\t\"1\n\tFileChunk\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\x0c\x12\x13\n\x0b\x63hunk_index\x18\x02 \x01(\r\"\x12\n\x10RegisterComplete\"O\n\x10RegisterResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x15\n\rerror_message\x18\x02 \x01(\t\x12\x13\n\x0bskip_upload\x18\x03 \x01(\x08\"\xf1\x01\n\x10HttpRequestChunk\x12\x11\n\tstream_id\x18\x01 \x01(\t\x12\x10\n\x08is_first\x18\x02 \x01(\x08\x12\x0f\n\x07is_last\x18\x03 \x01(\x08\x12\x0e\n\x06method\x18\x04 \x01(\t\x12\x0c\n\x04path\x18\x05 \x01(\t\x12\r\n\x05query\x18\x06 \x01(\t\x12\x36\n\x07headers\x18\x07 \x03(\x0b\x32%.tunnel.HttpRequestChunk.HeadersEntry\x12\x12\n\nbody_chunk\x18\x08 \x01(\x0c\x1a.\n\x0cHeadersEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\xdb\x01\n\x11HttpResponseChunk\x12\x11\n\tstream_id\x18\x01 \x01(\t\x12\x10\n\x08is_first\x18\x02 \x01(\x08\x12\x0f\n\x07is_last\x18\x03 \x01(\x08\x12\x13\n\x0bstatus_code\x18\x04 \x01(\x05\x12\x37\n\x07headers\x18\x05 \x03(\x0b\x32&.tunnel.HttpResponseChunk.HeadersEntry\x12\x12\n\nbody_chunk\x18\x06 \x01(\x0c\x1a.\n\x0cHeadersEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x19\n\x04Ping\x12\x11\n\ttimestamp\x18\x01 \x01(\x03\"\x19\n\x04Pong\x12\x11\n\ttimestamp\x18\x01 \x01(\x03\x32N\n\x0f\x45xtensionTunnel\x12;\n\x07\x43onnect\x12\x15.tunnel.TunnelMessage\x1a\x15.tunnel.TunnelMessage(\x01\x30\x01\x32\xdd\x01\n\x0f\x44\x61tabaseService\x12.\n\x03Put\x12\x12.tunnel.PutRequest\x1a\x13.tunnel.PutResponse\x12.\n\x03Get\x12\x12.tunnel.GetRequest\x1a\x13.tunnel.GetResponse\x12\x37\n\x06\x44\x65lete\x12\x15.tunnel.DeleteRequest\x1a\x16.tunnel.DeleteResponse\x12\x31\n\x04\x46ind\x12\x13.tunnel.FindRequest\x1a\x14.tunnel.FindResponse2\x8e\x01\n\x0f\x45ventBusService\x12:\n\x07Publish\x12\x16.tunnel.PublishRequest\x1a\x17.tunnel.PublishResponse\x12?\n\tSubscribe\x12\x18.tunnel.SubscribeRequest\x1a\x14.tunnel.EventMessage(\x01\x30\x01\x32\x95\x01\n\x0b\x46ileService\x12\x44\n\x15GenerateDownloadToken\x12\x14.tunnel.TokenRequest\x1a\x15.tunnel.TokenResponse\x12@\n\x0bGetMetadata\x12\x17.tunnel.FileMetaRequest\x1a\x18.tunnel.FileMetaResponseBO\n\x10\x63om.ty.sdk.protoB\x0bTunnelProtoP\x01Z,github.com/ty-lab/go-web-module/proto/tunnelb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0ctunnel.proto\x12\x06tunnel\"\x98\x03\n\rTunnelMessage\x12\x12\n\nmessage_id\x18\x01 \x01(\t\x12/\n\x0cregister_req\x18\x02 \x01(\x0b\x32\x17.tunnel.RegisterRequestH\x00\x12\'\n\nfile_chunk\x18\x03 \x01(\x0b\x32\x11.tunnel.FileChunkH\x00\x12\x35\n\x11register_complete\x18\x04 \x01(\x0b\x32\x18.tunnel.RegisterCompleteH\x00\x12\x31\n\rregister_resp\x18\x05 \x01(\x0b\x32\x18.tunnel.RegisterResponseH\x00\x12\x32\n\x0ehttp_req_chunk\x18\x06 \x01(\x0b\x32\x18.tunnel.HttpRequestChunkH\x00\x12\x34\n\x0fhttp_resp_chunk\x18\x07 \x01(\x0b\x32\x19.tunnel.HttpResponseChunkH\x00\x12\x1c\n\x04ping\x18\x08 \x01(\x0b\x32\x0c.tunnel.PingH\x00\x12\x1c\n\x04pong\x18\t \x01(\x0b\x32\x0c.tunnel.PongH\x00\x42\t\n\x07payload\"H\n\nPutRequest\x12\x12\n\ncollection\x18\x01 \x01(\t\x12\x13\n\x0b\x64ocument_id\x18\x02 \x01(\t\x12\x11\n\tjson_data\x18\x03 \x01(\x0c\"\x1e\n\x0bPutResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"5\n\nGetRequest\x12\x12\n\ncollection\x18\x01 \x01(\t\x12\x13\n\x0b\x64ocument_id\x18\x02 \x01(\t\"/\n\x0bGetResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x11\n\tjson_data\x18\x02 \x01(\x0c\"8\n\rDeleteRequest\x12\x12\n\ncollection\x18\x01 \x01(\t\x12\x13\n\x0b\x64ocument_id\x18\x02 \x01(\t\"!\n\x0e\x44\x65leteResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"f\n\x0b\x46indRequest\x12\x12\n\ncollection\x18\x01 \x01(\t\x12$\n\x07\x66ilters\x18\x02 \x03(\x0b\x32\x13.tunnel.QueryFilter\x12\r\n\x05limit\x18\x03 \x01(\x05\x12\x0e\n\x06offset\x18\x04 \x01(\x05\"=\n\x0bQueryFilter\x12\r\n\x05\x66ield\x18\x01 \x01(\t\x12\x10\n\x08operator\x18\x02 \x01(\t\x12\r\n\x05value\x18\x03 \x01(\t\"!\n\x0c\x46indResponse\x12\x11\n\tdocuments\x18\x01 \x03(\x0c\"8\n\x0ePublishRequest\x12\x12\n\nevent_name\x18\x01 \x01(\t\x12\x12\n\nevent_data\x18\x02 \x01(\x0c\"\"\n\x0fPublishResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"&\n\x10SubscribeRequest\x12\x12\n\nevent_name\x18\x01 \x01(\t\"6\n\x0c\x45ventMessage\x12\x12\n\nevent_name\x18\x01 \x01(\t\x12\x12\n\nevent_data\x18\x02 \x01(\x0c\"H\n\x0cTokenRequest\x12\x0f\n\x07\x66ile_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x16\n\x0e\x65xpiry_seconds\x18\x03 \x01(\x05\"+\n\rTokenResponse\x12\r\n\x05token\x18\x01 \x01(\t\x12\x0b\n\x03url\x18\x02 \x01(\t\"\"\n\x0f\x46ileMetaRequest\x12\x0f\n\x07\x66ile_id\x18\x01 \x01(\t\"e\n\x10\x46ileMetaResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x0f\n\x07\x66ile_id\x18\x02 \x01(\t\x12\x10\n\x08\x66ilename\x18\x03 \x01(\t\x12\x0c\n\x04size\x18\x04 \x01(\x03\x12\x11\n\tmime_type\x18\x05 \x01(\t\"\x9c\x02\n\x0fRegisterRequest\x12\x15\n\rextension_key\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x14\n\x0c\x64isplay_name\x18\x03 \x01(\t\x12\x11\n\tmenu_icon\x18\x04 \x01(\t\x12\x11\n\tmenu_path\x18\x05 \x01(\t\x12\x15\n\rzip_file_size\x18\x06 \x01(\x04\x12\x12\n\nzip_sha256\x18\x07 \x01(\t\x12\x0e\n\x06is_dev\x18\x08 \x01(\x08\x12\x18\n\x10\x64\x65v_frontend_url\x18\t \x01(\t\x12-\n\x0b\x63ollections\x18\n \x03(\x0b\x32\x18.tunnel.CollectionSchema\x12!\n\x05slots\x18\x0b \x03(\x0b\x32\x12.tunnel.SlotSchema\"F\n\x10\x43ollectionSchema\x12\x0c\n\x04name\x18\x01 \x01(\t\x12$\n\x07indexes\x18\x02 \x03(\x0b\x32\x13.tunnel.IndexSchema\"-\n\x0bIndexSchema\x12\x0e\n\x06\x66ields\x18\x01 \x03(\t\x12\x0e\n\x06unique\x18\x02 \x01(\x08\"8\n\nSlotSchema\x12\x11\n\tslot_name\x18\x01 \x01(\t\x12\x17\n\x0f\x63omponent_entry\x18\x02 \x01(\t\"1\n\tFileChunk\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\x0c\x12\x13\n\x0b\x63hunk_index\x18\x02 \x01(\r\"\x12\n\x10RegisterComplete\"O\n\x10RegisterResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x15\n\rerror_message\x18\x02 \x01(\t\x12\x13\n\x0bskip_upload\x18\x03 \x01(\x08\"\xf1\x01\n\x10HttpRequestChunk\x12\x11\n\tstream_id\x18\x01 \x01(\t\x12\x10\n\x08is_first\x18\x02 \x01(\x08\x12\x0f\n\x07is_last\x18\x03 \x01(\x08\x12\x0e\n\x06method\x18\x04 \x01(\t\x12\x0c\n\x04path\x18\x05 \x01(\t\x12\r\n\x05query\x18\x06 \x01(\t\x12\x36\n\x07headers\x18\x07 \x03(\x0b\x32%.tunnel.HttpRequestChunk.HeadersEntry\x12\x12\n\nbody_chunk\x18\x08 \x01(\x0c\x1a.\n\x0cHeadersEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\xdb\x01\n\x11HttpResponseChunk\x12\x11\n\tstream_id\x18\x01 \x01(\t\x12\x10\n\x08is_first\x18\x02 \x01(\x08\x12\x0f\n\x07is_last\x18\x03 \x01(\x08\x12\x13\n\x0bstatus_code\x18\x04 \x01(\x05\x12\x37\n\x07headers\x18\x05 \x03(\x0b\x32&.tunnel.HttpResponseChunk.HeadersEntry\x12\x12\n\nbody_chunk\x18\x06 \x01(\x0c\x1a.\n\x0cHeadersEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x19\n\x04Ping\x12\x11\n\ttimestamp\x18\x01 \x01(\x03\"\x19\n\x04Pong\x12\x11\n\ttimestamp\x18\x01 \x01(\x03\x32N\n\x0f\x45xtensionTunnel\x12;\n\x07\x43onnect\x12\x15.tunnel.TunnelMessage\x1a\x15.tunnel.TunnelMessage(\x01\x30\x01\x32\xdd\x01\n\x0f\x44\x61tabaseService\x12.\n\x03Put\x12\x12.tunnel.PutRequest\x1a\x13.tunnel.PutResponse\x12.\n\x03Get\x12\x12.tunnel.GetRequest\x1a\x13.tunnel.GetResponse\x12\x37\n\x06\x44\x65lete\x12\x15.tunnel.DeleteRequest\x1a\x16.tunnel.DeleteResponse\x12\x31\n\x04\x46ind\x12\x13.tunnel.FindRequest\x1a\x14.tunnel.FindResponse2\x8e\x01\n\x0f\x45ventBusService\x12:\n\x07Publish\x12\x16.tunnel.PublishRequest\x1a\x17.tunnel.PublishResponse\x12?\n\tSubscribe\x12\x18.tunnel.SubscribeRequest\x1a\x14.tunnel.EventMessage(\x01\x30\x01\x32\x95\x01\n\x0b\x46ileService\x12\x44\n\x15GenerateDownloadToken\x12\x14.tunnel.TokenRequest\x1a\x15.tunnel.TokenResponse\x12@\n\x0bGetMetadata\x12\x17.tunnel.FileMetaRequest\x1a\x18.tunnel.FileMetaResponseBO\n\x10\x63om.ty.sdk.protoB\x0bTunnelProtoP\x01Z,github.com/ty-lab/go-web-module/proto/tunnelb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -62,31 +62,37 @@ if _descriptor._USE_C_DESCRIPTORS == False:
   _globals['_FILEMETARESPONSE']._serialized_start=1285
   _globals['_FILEMETARESPONSE']._serialized_end=1386
   _globals['_REGISTERREQUEST']._serialized_start=1389
-  _globals['_REGISTERREQUEST']._serialized_end=1591
-  _globals['_FILECHUNK']._serialized_start=1593
-  _globals['_FILECHUNK']._serialized_end=1642
-  _globals['_REGISTERCOMPLETE']._serialized_start=1644
-  _globals['_REGISTERCOMPLETE']._serialized_end=1662
-  _globals['_REGISTERRESPONSE']._serialized_start=1664
-  _globals['_REGISTERRESPONSE']._serialized_end=1743
-  _globals['_HTTPREQUESTCHUNK']._serialized_start=1746
-  _globals['_HTTPREQUESTCHUNK']._serialized_end=1987
-  _globals['_HTTPREQUESTCHUNK_HEADERSENTRY']._serialized_start=1941
-  _globals['_HTTPREQUESTCHUNK_HEADERSENTRY']._serialized_end=1987
-  _globals['_HTTPRESPONSECHUNK']._serialized_start=1990
-  _globals['_HTTPRESPONSECHUNK']._serialized_end=2209
-  _globals['_HTTPRESPONSECHUNK_HEADERSENTRY']._serialized_start=1941
-  _globals['_HTTPRESPONSECHUNK_HEADERSENTRY']._serialized_end=1987
-  _globals['_PING']._serialized_start=2211
-  _globals['_PING']._serialized_end=2236
-  _globals['_PONG']._serialized_start=2238
-  _globals['_PONG']._serialized_end=2263
-  _globals['_EXTENSIONTUNNEL']._serialized_start=2265
-  _globals['_EXTENSIONTUNNEL']._serialized_end=2343
-  _globals['_DATABASESERVICE']._serialized_start=2346
-  _globals['_DATABASESERVICE']._serialized_end=2567
-  _globals['_EVENTBUSSERVICE']._serialized_start=2570
-  _globals['_EVENTBUSSERVICE']._serialized_end=2712
-  _globals['_FILESERVICE']._serialized_start=2715
-  _globals['_FILESERVICE']._serialized_end=2864
+  _globals['_REGISTERREQUEST']._serialized_end=1673
+  _globals['_COLLECTIONSCHEMA']._serialized_start=1675
+  _globals['_COLLECTIONSCHEMA']._serialized_end=1745
+  _globals['_INDEXSCHEMA']._serialized_start=1747
+  _globals['_INDEXSCHEMA']._serialized_end=1792
+  _globals['_SLOTSCHEMA']._serialized_start=1794
+  _globals['_SLOTSCHEMA']._serialized_end=1850
+  _globals['_FILECHUNK']._serialized_start=1852
+  _globals['_FILECHUNK']._serialized_end=1901
+  _globals['_REGISTERCOMPLETE']._serialized_start=1903
+  _globals['_REGISTERCOMPLETE']._serialized_end=1921
+  _globals['_REGISTERRESPONSE']._serialized_start=1923
+  _globals['_REGISTERRESPONSE']._serialized_end=2002
+  _globals['_HTTPREQUESTCHUNK']._serialized_start=2005
+  _globals['_HTTPREQUESTCHUNK']._serialized_end=2246
+  _globals['_HTTPREQUESTCHUNK_HEADERSENTRY']._serialized_start=2200
+  _globals['_HTTPREQUESTCHUNK_HEADERSENTRY']._serialized_end=2246
+  _globals['_HTTPRESPONSECHUNK']._serialized_start=2249
+  _globals['_HTTPRESPONSECHUNK']._serialized_end=2468
+  _globals['_HTTPRESPONSECHUNK_HEADERSENTRY']._serialized_start=2200
+  _globals['_HTTPRESPONSECHUNK_HEADERSENTRY']._serialized_end=2246
+  _globals['_PING']._serialized_start=2470
+  _globals['_PING']._serialized_end=2495
+  _globals['_PONG']._serialized_start=2497
+  _globals['_PONG']._serialized_end=2522
+  _globals['_EXTENSIONTUNNEL']._serialized_start=2524
+  _globals['_EXTENSIONTUNNEL']._serialized_end=2602
+  _globals['_DATABASESERVICE']._serialized_start=2605
+  _globals['_DATABASESERVICE']._serialized_end=2826
+  _globals['_EVENTBUSSERVICE']._serialized_start=2829
+  _globals['_EVENTBUSSERVICE']._serialized_end=2971
+  _globals['_FILESERVICE']._serialized_start=2974
+  _globals['_FILESERVICE']._serialized_end=3123
 # @@protoc_insertion_point(module_scope)

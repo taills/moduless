@@ -3,27 +3,25 @@ import { ref, computed, onMounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { api, auth } from "../api";
 import { setupMicroApps } from "../microApps";
+import MenuTree from "./MenuTree.vue";
 
 const router = useRouter();
 const route = useRoute();
-const apps = ref([]);
+const menu = ref([]); // merged menu tree (may have nested children)
 const error = ref("");
 const user = ref(JSON.parse(localStorage.getItem("moduless_user") || "null"));
 const isAdmin = computed(() => user.value && user.value.role === "admin");
 
 onMounted(async () => {
   try {
-    // Registers qiankun micro-apps and returns the menu list.
-    apps.value = await setupMicroApps();
+    // Registers qiankun micro-apps and returns the merged menu tree.
+    const result = await setupMicroApps();
+    menu.value = result.menu || [];
   } catch (e) {
     error.value = e.message;
     if (e.message === "unauthenticated") router.push("/login");
   }
 });
-
-function open(app) {
-  router.push("/apps/" + app.key);
-}
 
 async function logout() {
   try {
@@ -43,17 +41,11 @@ async function logout() {
       <div class="brand">Moduless</div>
       <nav>
         <router-link class="nav-item" to="/" :class="{ active: route.path === '/' }">概览</router-link>
-        <div class="nav-label">扩展模块</div>
-        <a
-          v-for="app in apps"
-          :key="app.key"
-          class="nav-item"
-          :class="{ active: route.path === '/apps/' + app.key }"
-          @click="open(app)"
-        >
-          <span class="dot" :class="{ on: app.online }"></span>{{ app.display_name }}
-        </a>
-        <div v-if="apps.length === 0" class="empty">暂无在线扩展</div>
+        <template v-if="menu.length > 0">
+          <div class="nav-label">扩展模块</div>
+          <MenuTree :nodes="menu" :depth="0" />
+        </template>
+        <div v-else class="empty">暂无在线扩展</div>
 
         <template v-if="isAdmin">
           <div class="nav-label">系统管理</div>
@@ -65,7 +57,7 @@ async function logout() {
 
     <div class="body">
       <header class="topbar">
-        <div class="crumb">{{ route.path === "/" ? "概览" : route.params.key }}</div>
+        <div class="crumb">{{ route.path === "/" ? "概览" : (route.params.pathMatch || route.params.key || "") }}</div>
         <div class="user">
           <span>{{ user ? user.username : "" }}</span>
           <button @click="logout">退出</button>
@@ -74,7 +66,7 @@ async function logout() {
       <main class="content">
         <div v-if="error" class="err">{{ error }}</div>
         <router-view />
-        <!-- Persistent qiankun mount point; sub-apps render here under /apps/<key>. -->
+        <!-- Persistent qiankun mount point; sub-apps render here under /apps/<path>. -->
         <div id="subapp-container"></div>
       </main>
     </div>
@@ -87,7 +79,7 @@ async function logout() {
   min-height: 100vh;
 }
 .sidebar {
-  width: 220px;
+  width: 240px;
   background: #111827;
   color: #e5e7eb;
   display: flex;
@@ -104,6 +96,7 @@ nav {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow-y: auto;
 }
 .nav-label {
   font-size: 11px;
@@ -128,15 +121,6 @@ nav {
 .nav-item.active {
   background: #2563eb;
   color: #fff;
-}
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #6b7280;
-}
-.dot.on {
-  background: #22c55e;
 }
 .empty {
   color: #6b7280;

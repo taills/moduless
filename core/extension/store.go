@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -68,8 +69,15 @@ func (s *Store) Authenticate(ctx context.Context, req *pb.RegisterRequest) (tunn
 		}
 		return tunnel.AuthResult{Action: tunnel.AuthPending}, nil
 	case ext.Status == StatusApproved:
-		return tunnel.AuthResult{Action: tunnel.AuthDeny,
-			Message: "extension already approved; provide a secret issued from the console"}, nil
+		// A no-secret dial to an already-approved key. Rather than hard-denying
+		// (which trapped a restarted replica that lost its persisted secret in a
+		// 2s reconnect loop), park this connection as a pending instance for
+		// admin re-approval. The approved registry row is left untouched — its
+		// status, metadata and any secret-carrying replicas are unaffected — so
+		// an unauthenticated dial can neither downgrade the extension nor poison
+		// its metadata, and the new instance is not routed until an admin
+		// approves it and Core mints it a fresh secret.
+		return tunnel.AuthResult{Action: tunnel.AuthPending}, nil
 	default: // rejected
 		return tunnel.AuthResult{Action: tunnel.AuthReject,
 			Message: "registration rejected by administrator"}, nil
@@ -87,15 +95,48 @@ func (s *Store) IsApproved(ctx context.Context, key string) bool {
 }
 
 // recordPending upserts the pending registry row from the request metadata.
+// The menus JSONB column carries the full menu tree (proto.MenuItem list). When
+// the request has no menus but does have legacy menu_icon / menu_path, a
+// single-node tree is built so the row is never menus-less for an extension
+// that did intend to surface a menu.
 func (s *Store) recordPending(ctx context.Context, req *pb.RegisterRequest) error {
+	menus := encodeMenus(req)
 	_, err := s.q.UpsertPendingExtension(ctx, sqlc.UpsertPendingExtensionParams{
 		Key:         req.ExtensionKey,
 		DisplayName: req.DisplayName,
 		Version:     req.Version,
 		MenuIcon:    req.MenuIcon,
 		MenuPath:    req.MenuPath,
+		Menus:       menus,
 	})
 	return err
+}
+
+// encodeMenus serializes the proto menu tree into the JSONB blob stored on the
+// extensions row. nil/empty proto menus falls back to a one-node tree derived
+// from the legacy menu_icon / menu_path fields (or returns an empty array when
+// neither is set).
+func encodeMenus(req *pb.RegisterRequest) []byte {
+	if len(req.Menus) > 0 {
+		b, err := json.Marshal(req.Menus)
+		if err == nil {
+			return b
+		}
+	}
+	if req.MenuPath != "" || req.MenuIcon != "" {
+		fallback := []map[string]any{{
+			"path":     req.MenuPath,
+			"title":    req.DisplayName,
+			"icon":     req.MenuIcon,
+			"order":    0,
+			"entry":    "",
+			"roles":    []string{},
+			"children": []any{},
+		}}
+		b, _ := json.Marshal(fallback)
+		return b
+	}
+	return []byte("[]")
 }
 
 // verifySecret reports whether secret matches any active secret for key. On a

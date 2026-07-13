@@ -94,7 +94,7 @@ func (q *Queries) DeleteUser(ctx context.Context, id int32) error {
 }
 
 const getExtension = `-- name: GetExtension :one
-SELECT key, display_name, version, menu_icon, menu_path, status, created_at, approved_at, updated_at FROM extensions WHERE key = $1
+SELECT key, display_name, version, menu_icon, menu_path, status, created_at, approved_at, updated_at, menus FROM extensions WHERE key = $1
 `
 
 func (q *Queries) GetExtension(ctx context.Context, key string) (Extension, error) {
@@ -110,6 +110,7 @@ func (q *Queries) GetExtension(ctx context.Context, key string) (Extension, erro
 		&i.CreatedAt,
 		&i.ApprovedAt,
 		&i.UpdatedAt,
+		&i.Menus,
 	)
 	return i, err
 }
@@ -372,7 +373,7 @@ func (q *Queries) ListExtensionSecrets(ctx context.Context, extensionKey string)
 }
 
 const listExtensions = `-- name: ListExtensions :many
-SELECT key, display_name, version, menu_icon, menu_path, status, created_at, approved_at, updated_at FROM extensions ORDER BY created_at DESC
+SELECT key, display_name, version, menu_icon, menu_path, status, created_at, approved_at, updated_at, menus FROM extensions ORDER BY created_at DESC
 `
 
 func (q *Queries) ListExtensions(ctx context.Context) ([]Extension, error) {
@@ -394,6 +395,7 @@ func (q *Queries) ListExtensions(ctx context.Context) ([]Extension, error) {
 			&i.CreatedAt,
 			&i.ApprovedAt,
 			&i.UpdatedAt,
+			&i.Menus,
 		); err != nil {
 			return nil, err
 		}
@@ -534,15 +536,16 @@ func (q *Queries) UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) 
 }
 
 const upsertPendingExtension = `-- name: UpsertPendingExtension :one
-INSERT INTO extensions (key, display_name, version, menu_icon, menu_path, status, updated_at)
-VALUES ($1, $2, $3, $4, $5, 'pending', NOW())
+INSERT INTO extensions (key, display_name, version, menu_icon, menu_path, status, updated_at, menus)
+VALUES ($1, $2, $3, $4, $5, 'pending', NOW(), $6)
 ON CONFLICT (key) DO UPDATE
     SET display_name = EXCLUDED.display_name,
         version      = EXCLUDED.version,
         menu_icon    = EXCLUDED.menu_icon,
         menu_path    = EXCLUDED.menu_path,
+        menus        = EXCLUDED.menus,
         updated_at   = NOW()
-RETURNING key, display_name, version, menu_icon, menu_path, status, created_at, approved_at, updated_at
+RETURNING key, display_name, version, menu_icon, menu_path, status, created_at, approved_at, updated_at, menus
 `
 
 type UpsertPendingExtensionParams struct {
@@ -551,6 +554,7 @@ type UpsertPendingExtensionParams struct {
 	Version     string `json:"version"`
 	MenuIcon    string `json:"menu_icon"`
 	MenuPath    string `json:"menu_path"`
+	Menus       []byte `json:"menus"`
 }
 
 func (q *Queries) UpsertPendingExtension(ctx context.Context, arg UpsertPendingExtensionParams) (Extension, error) {
@@ -560,6 +564,7 @@ func (q *Queries) UpsertPendingExtension(ctx context.Context, arg UpsertPendingE
 		arg.Version,
 		arg.MenuIcon,
 		arg.MenuPath,
+		arg.Menus,
 	)
 	var i Extension
 	err := row.Scan(
@@ -572,6 +577,7 @@ func (q *Queries) UpsertPendingExtension(ctx context.Context, arg UpsertPendingE
 		&i.CreatedAt,
 		&i.ApprovedAt,
 		&i.UpdatedAt,
+		&i.Menus,
 	)
 	return i, err
 }

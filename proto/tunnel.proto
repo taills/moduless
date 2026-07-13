@@ -127,6 +127,8 @@ message RegisterRequest {
   string extension_key = 1;
   string version = 2;
   string display_name = 3;
+  // menu_icon / menu_path are the legacy single-menu fields; new extensions
+  // should declare menus[] instead. Core falls back to these when menus is empty.
   string menu_icon = 4;
   string menu_path = 5;
   uint64 zip_file_size = 6;
@@ -141,6 +143,25 @@ message RegisterRequest {
   // manifest.yaml) and replays here on every reconnect. A key may have many
   // valid secrets (one per instance) to support multi-replica deployments.
   string extension_secret = 13;
+  // menus is the optional tree of menu nodes for this extension. Nodes can
+  // share a parent path with nodes declared by other extensions — Core merges
+  // by path so a single "System" group can aggregate items from many
+  // extensions. Wire-compatible addition (repeated field).
+  repeated MenuItem menus = 14;
+}
+
+// MenuItem is one node in an extension's menu tree. An empty Entry marks a
+// pure organizational node (no micro-app to mount); otherwise Entry is the
+// micro-frontend html path Core will serve (e.g. "/extensions/foo/index.html").
+// Roles, when non-empty, restricts which user roles may see this node.
+message MenuItem {
+  string path = 1;
+  string title = 2;
+  string icon = 3;
+  int32 order = 4;
+  string entry = 5;
+  repeated string roles = 6;
+  repeated MenuItem children = 7;
 }
 
 message CollectionSchema {

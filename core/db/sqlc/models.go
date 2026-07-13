@@ -29,6 +29,10 @@ type Extension struct {
 	CreatedAt   sql.NullTime `json:"created_at"`
 	ApprovedAt  sql.NullTime `json:"approved_at"`
 	UpdatedAt   sql.NullTime `json:"updated_at"`
+	// Menus is the raw JSONB array of MenuItem objects stored on the extensions
+	// row. Callers should json.Unmarshal it into []extension.MenuNode (or the
+	// manifest.MenuItem shape) rather than poking at bytes directly.
+	Menus []byte `json:"menus"`
 }
 
 type ExtensionSecret struct {

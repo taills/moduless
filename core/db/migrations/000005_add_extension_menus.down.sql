@@ -1,0 +1,1 @@
+ALTER TABLE extensions DROP COLUMN menus;

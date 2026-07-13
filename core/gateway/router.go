@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/taills/moduless/core/auth"
+	sqlc "github.com/taills/moduless/core/db/sqlc"
 	"github.com/taills/moduless/core/tunnel"
 	pb "github.com/taills/moduless/proto/tunnel"
 )
@@ -20,6 +21,12 @@ import (
 // requests to extensions over gRPC.
 type GatewayHandler struct {
 	Manager *tunnel.TunnelManager
+
+	// Store, when set, lets the gateway read persistent extension metadata
+	// (menus, registration status) from the database so the host app can render
+	// menus even after a Core restart, when no replicas are connected. Optional:
+	// the gateway falls back to TunnelManager-only metadata when Store is nil.
+	Store ExtensionStore
 
 	// systemRoutes holds optional extra handlers (files, slots, diagnostics)
 	// registered by later phases. Checked before extension routing.
@@ -33,6 +40,13 @@ type GatewayHandler struct {
 	// Host, when set, serves the qiankun host app (and its SPA routes) for any
 	// non-API path that does not match an extension or system route.
 	Host http.Handler
+}
+
+// ExtensionStore is the slice of extension.Store that AppsHandler relies on.
+// Defined here as an interface so gateway does not import core/extension
+// directly (extension imports gateway transitively for other handlers).
+type ExtensionStore interface {
+	ListExtensions(ctx context.Context) ([]sqlc.Extension, error)
 }
 
 // UserResolver maps a session token to an authenticated user.

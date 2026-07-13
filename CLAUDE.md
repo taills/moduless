@@ -58,9 +58,27 @@ Extensions are **not** auto-trusted. Registration follows an admin approval flow
 4. **拒绝** revokes secrets + disconnects; **删除** lets the extension re-apply.
 
 One extension key may own **multiple secrets** (one per instance). Generate extra
-secrets in the console and pass them to replicas via the `EXTENSION_SECRET` env;
-a no-secret dial to an approved key is rejected, preventing key hijacking. See
+secrets in the console and pass them to replicas via the `EXTENSION_SECRET` env.
+A no-secret dial to an approved key is **not routed**; it is parked as a **pending
+instance** for admin re-approval (so a restarted replica that lost its persisted
+secret recovers by re-approval — Core mints it a fresh secret). Key hijacking is
+still prevented: an unauthenticated dial can neither downgrade the approved row
+nor be routed without an explicit admin **批准**. See
 [docs/deployment.md](docs/deployment.md) for secret persistence in containers.
+
+#### Extension menus
+
+An extension declares its host-app menu tree in `manifest.yaml` under `menus:` —
+a nested list of nodes, each with `path`, `title`, `icon`, `order`, `entry`
+(the micro-frontend html path; empty = a pure organizational node), `roles`
+(when non-empty, Core filters the node out for users lacking the role before
+sending the tree to the host), and `children`. The legacy single `menu:`
+(`icon`/`path`) still works and is auto-promoted to a one-node `menus:` tree, so
+old manifests need no change. Core persists the tree (migration `000005`,
+backfilled from legacy fields by `000006`), merges nodes across extensions by
+`path` (first declarer wins a shared parent's title/icon), and the console renders
+the role-filtered result. Paths must be unique **within** one extension;
+cross-extension path collisions are expected and merged by Core.
 
 ### 3. Running Extensions
 Extensions do not listen to ports. Run them in IDEs or terminals by passing the `CORE_URL` or configuration:

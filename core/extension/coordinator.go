@@ -158,20 +158,45 @@ func (c *Coordinator) disconnectAll(key string) {
 // ExtensionView is one row in the admin extension list: the registry record plus
 // live runtime status.
 type ExtensionView struct {
-	Key              string     `json:"key"`
-	DisplayName      string     `json:"display_name"`
-	Version          string     `json:"version"`
-	MenuIcon         string     `json:"menu_icon"`
-	MenuPath         string     `json:"menu_path"`
-	Status           string     `json:"status"`
-	Online           bool       `json:"online"`
-	Replicas         int        `json:"replicas"`
-	PendingInstances int        `json:"pending_instances"`
-	CreatedAt        *time.Time `json:"created_at,omitempty"`
-	ApprovedAt       *time.Time `json:"approved_at,omitempty"`
+	Key              string           `json:"key"`
+	DisplayName      string           `json:"display_name"`
+	Version          string           `json:"version"`
+	MenuIcon         string           `json:"menu_icon"`
+	MenuPath         string           `json:"menu_path"`
+	Status           string           `json:"status"`
+	Online           bool             `json:"online"`
+	Replicas         int              `json:"replicas"`
+	PendingInstances int              `json:"pending_instances"`
+	LastPing         *time.Time       `json:"last_ping,omitempty"` // newest heartbeat across routable replicas
+	Weight           int              `json:"weight"`              // sum of all routable replica weights
+	ReplicaList      []ReplicaSummary `json:"replicas_detail"`     // per-routed-replica detail (secret-carrying, routed)
+	PendingList      []PendingSummary `json:"pending_detail"`      // per-parked-instance detail (no-secret dials awaiting approval)
+	CreatedAt        *time.Time       `json:"created_at,omitempty"`
+	ApprovedAt       *time.Time       `json:"approved_at,omitempty"`
 }
 
-// List returns every registered extension merged with live tunnel status.
+// ReplicaSummary is the per-replica slice of an ExtensionView. Online reflects
+// staleness against tunnel.OfflineThreshold.
+type ReplicaSummary struct {
+	InstanceID string    `json:"instance_id"`
+	Weight     int       `json:"weight"`
+	LastPing   time.Time `json:"last_ping"`
+	Online     bool      `json:"online"`
+}
+
+// PendingSummary is one parked instance awaiting approval — a connection that
+// dialed without a valid secret. Surfaced per-instance so an admin can tell
+// them apart from each other and from routed (secret-carrying) replicas.
+type PendingSummary struct {
+	InstanceID  string    `json:"instance_id"`
+	Version     string    `json:"version"`
+	IsDev       bool      `json:"is_dev"`
+	ConnectedAt time.Time `json:"connected_at"`
+}
+
+// List returns every registered extension merged with live tunnel status. It
+// aggregates per-replica LastPing/Weight from TunnelManager so admins can see
+// connection freshness and total load-balancing capacity at a glance.
 func (c *Coordinator) List(ctx context.Context) ([]ExtensionView, error) {
 	rows, err := c.Store.q.ListExtensions(ctx)
 	if err != nil {
@@ -179,22 +204,63 @@ func (c *Coordinator) List(ctx context.Context) ([]ExtensionView, error) {
 	}
 	out := make([]ExtensionView, 0, len(rows))
 	for _, e := range rows {
-		replicas := c.Manager.CountReplicas(e.Key)
-		out = append(out, ExtensionView{
+		replicas := c.Manager.ReplicasFor(e.Key)
+		pending := c.Manager.PendingFor(e.Key)
+		view := ExtensionView{
 			Key:              e.Key,
 			DisplayName:      e.DisplayName,
 			Version:          e.Version,
 			MenuIcon:         e.MenuIcon,
 			MenuPath:         e.MenuPath,
 			Status:           e.Status,
-			Online:           replicas > 0,
-			Replicas:         replicas,
-			PendingInstances: c.Manager.CountPending(e.Key),
+			Online:           len(replicas) > 0,
+			Replicas:         len(replicas),
+			PendingInstances: len(pending),
+			PendingList:      pendingSummaries(pending),
 			CreatedAt:        nullTime(e.CreatedAt),
 			ApprovedAt:       nullTime(e.ApprovedAt),
-		})
+		}
+		view.LastPing, view.Weight, view.ReplicaList = aggregateReplicas(replicas)
+		out = append(out, view)
 	}
 	return out, nil
+}
+
+// pendingSummaries maps the tunnel-layer pending snapshot into the API shape.
+func pendingSummaries(pending []tunnel.PendingInfo) []PendingSummary {
+	out := make([]PendingSummary, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, PendingSummary{
+			InstanceID:  p.InstanceID,
+			Version:     p.Version,
+			IsDev:       p.IsDev,
+			ConnectedAt: p.ConnectedAt,
+		})
+	}
+	return out
+}
+
+// aggregateReplicas rolls up the per-replica list into (newest ping, total
+// weight, summary slice). Extracted so the pure aggregation is unit-testable
+// without a DB. nil input is treated as empty.
+func aggregateReplicas(replicas []tunnel.ReplicaInfo) (*time.Time, int, []ReplicaSummary) {
+	var newest *time.Time
+	totalWeight := 0
+	summaries := make([]ReplicaSummary, 0, len(replicas))
+	for _, r := range replicas {
+		ts := r.LastPing
+		if newest == nil || ts.After(*newest) {
+			newest = &ts
+		}
+		totalWeight += r.Weight
+		summaries = append(summaries, ReplicaSummary{
+			InstanceID: r.InstanceID,
+			Weight:     r.Weight,
+			LastPing:   r.LastPing,
+			Online:     time.Since(r.LastPing) < tunnel.OfflineThreshold,
+		})
+	}
+	return newest, totalWeight, summaries
 }
 
 // SecretView is one row in the per-extension secret list (no plaintext).

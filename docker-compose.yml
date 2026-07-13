@@ -9,10 +9,12 @@
 #   # On approval Core issues a secret the SDK persists into its manifest.yaml.
 #
 # Secret persistence note: the manifest lives inside each example image, so a
-# container rebuild/restart loses the persisted secret and the extension returns
-# to 待注册 (just re-approve). For restart-safe production deployments pin the
-# approved secret via the EXTENSION_SECRET env (see docs/deployment.md), or mount
-# the manifest directory on a named volume.
+# container rebuild/restart loses the persisted secret. The extension then
+# reconnects and reappears under 扩展管理 as a pending instance (待审实例 +1) on
+# the still-approved row — click 批准 to re-issue its secret and route it again.
+# For restart-safe production deployments pin the approved secret via the
+# EXTENSION_SECRET env (see docs/deployment.md), or mount the manifest directory
+# on a named volume.
 
 services:
   postgres:

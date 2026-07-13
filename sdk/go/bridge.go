@@ -146,7 +146,9 @@ type tunnelSession struct {
 }
 
 // applyManifest copies manifest collection/slot declarations into the
-// registration request.
+// registration request. Menu is sent as the new menus[] tree (which Core merges
+// by path); the legacy menu_icon / menu_path single fields are left empty
+// because menus[] supersedes them.
 func applyManifest(req *pb.RegisterRequest, m *manifest.Manifest) {
 	if m.Weight > 0 {
 		req.Weight = int32(m.Weight)
@@ -167,15 +169,34 @@ func applyManifest(req *pb.RegisterRequest, m *manifest.Manifest) {
 			ComponentEntry: s.ComponentEntry,
 		})
 	}
-	if m.Menu.Icon != "" {
-		req.MenuIcon = m.Menu.Icon
-	}
-	if m.Menu.Path != "" {
-		req.MenuPath = m.Menu.Path
-	}
 	if m.DisplayName != "" {
 		req.DisplayName = m.DisplayName
 	}
+	if len(m.Menus) > 0 {
+		req.Menus = toProtoMenus(m.Menus)
+	}
+}
+
+// toProtoMenus converts a manifest.MenuItem tree into the matching proto tree.
+// nil entries in either side are treated as empty.
+func toProtoMenus(items []manifest.MenuItem) []*pb.MenuItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]*pb.MenuItem, 0, len(items))
+	for _, it := range items {
+		node := &pb.MenuItem{
+			Path:     it.Path,
+			Title:    it.Title,
+			Icon:     it.Icon,
+			Order:    int32(it.Order),
+			Entry:    it.Entry,
+			Roles:    append([]string(nil), it.Roles...),
+			Children: toProtoMenus(it.Children),
+		}
+		out = append(out, node)
+	}
+	return out
 }
 
 // handleTunnel runs the per-connection message loop and returns the backoff to

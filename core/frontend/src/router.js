@@ -16,9 +16,14 @@ const router = createRouter({
       component: Layout,
       children: [
         { path: "", name: "home", component: Home },
-        // qiankun activeRule "/apps/<key>" mounts the sub-app into the layout's
-        // persistent container; this routed view is just a placeholder.
-        { path: "apps/:key", name: "app", component: AppView },
+        // qiankun activeRule "/apps<menu.path>" mounts the sub-app into the
+        // layout's persistent container. AppView reads route.params.pathMatch
+        // to know which menu node is active (used for crumbs / breadcrumbs).
+        {
+          path: "apps/:pathMatch(.*)*",
+          name: "app",
+          component: AppView,
+        },
         { path: "system/users", name: "users", component: Users },
         { path: "system/extensions", name: "extensions", component: Extensions },
       ],

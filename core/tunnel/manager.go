@@ -12,6 +12,12 @@ import (
 	pb "github.com/taills/moduless/proto/tunnel"
 )
 
+// OfflineThreshold is the staleness window for an ActiveTunnel.LastPing. A
+// replica whose last heartbeat is older than this is considered offline by
+// diagnostics surfaces (e.g. the admin extension list). Chosen wider than the
+// gracefulUnregister window to avoid flapping when a Ping is briefly delayed.
+const OfflineThreshold = 30 * time.Second
+
 // ActiveTunnel represents a single live extension replica connection. Multiple
 // replicas may share one ExtensionKey; the manager load-balances across them.
 type ActiveTunnel struct {
@@ -304,6 +310,58 @@ func (m *TunnelManager) ListReplicas() []ReplicaInfo {
 				LastPing:   t.LastPing,
 			})
 		}
+	}
+	return out
+}
+
+// ReplicasFor returns the snapshot of routable replicas for a single key, in
+// registration order. Returns an empty slice (not nil) when the key has none.
+func (m *TunnelManager) ReplicasFor(key string) []ReplicaInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	replicas := m.tunnels[key]
+	out := make([]ReplicaInfo, 0, len(replicas))
+	for _, t := range replicas {
+		out = append(out, ReplicaInfo{
+			Key:        key,
+			InstanceID: t.InstanceID,
+			Weight:     t.Weight,
+			LastPing:   t.LastPing,
+		})
+	}
+	return out
+}
+
+// PendingInfo describes one tunnel parked awaiting admin approval (e.g. a
+// no-secret dial to a not-yet-approved or already-approved key). It carries the
+// per-instance metadata the console needs to tell pending instances apart from
+// each other and from routed replicas.
+type PendingInfo struct {
+	Key         string
+	InstanceID  string
+	Version     string
+	IsDev       bool
+	ConnectedAt time.Time // LastPing; for a parked tunnel this tracks first-seen/heartbeat
+}
+
+// PendingFor returns a snapshot of the tunnels parked awaiting approval for a
+// single key, in arrival order. Returns an empty slice (not nil) when none.
+func (m *TunnelManager) PendingFor(key string) []PendingInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	pend := m.pending[key]
+	out := make([]PendingInfo, 0, len(pend))
+	for _, t := range pend {
+		info := PendingInfo{
+			Key:         key,
+			InstanceID:  t.InstanceID,
+			ConnectedAt: t.LastPing,
+		}
+		if t.Meta != nil {
+			info.Version = t.Meta.Version
+			info.IsDev = t.Meta.IsDev
+		}
+		out = append(out, info)
 	}
 	return out
 }

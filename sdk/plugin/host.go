@@ -579,8 +579,21 @@ func (e *EventClient) Publish(ctx context.Context, name string, payload any) err
 	return err
 }
 
-// Subscribe delivers events until ctx is cancelled. Use "otherplugin:event" to
-// hear from another plugin, or a bare name for this plugin's own events.
+// Subscribe BLOCKS, delivering events until ctx is cancelled or the stream
+// fails. Run it in its own goroutine:
+//
+//	go func() {
+//		if err := sdk.Events.Subscribe(ctx, "billing:paid", onPaid); err != nil {
+//			sdk.Log.Error(ctx, "subscription ended", "err", err.Error())
+//		}
+//	}()
+//
+// It sits next to Publish, which returns immediately, and the pairing invites
+// the assumption that this one registers a callback and returns too. Calling it
+// inline from main hangs the plugin before it serves anything.
+//
+// Use "otherplugin:event" to hear from another plugin, or a bare name for this
+// plugin's own events.
 func (e *EventClient) Subscribe(ctx context.Context, name string, handler func(context.Context, []byte)) error {
 	stream, err := e.c.Subscribe(outgoing(ctx), &pb.SubscribeRequest{EventName: name})
 	if err != nil {

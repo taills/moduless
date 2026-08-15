@@ -107,8 +107,12 @@ menus:                        # 启用时出现在控制台，禁用时立刻消
     title: 笔记
     icon: file-text
     order: 20
-    roles: [admin]            # 非空时只有该角色可见
-    children: []
+    roles: [admin]            # 非空时只有该角色可见（Core 侧过滤，不下发）
+    entry: ""                 # 叶子节点留空 = 挂载本插件的微前端
+    children:                 # 有 children 的节点是分组，不要给它 entry，
+      - path: /notes/archive  # 否则控制台会试图把分组本身当页面挂载
+        title: 归档
+        order: 10
 
 filters:
   - name: rate-limit
@@ -119,7 +123,8 @@ filters:
       methods: ["POST", "PUT"]
     timeout_ms: 50
     fail_closed: false        # 见下方「失败策略」
-    needs_request_body: false # 见下方「Body」
+    needs_request_body: false  # 见下方「Body」
+    needs_response_body: false # post_handler/on_error 想读响应体时必须开
     max_body_bytes: 65536
 
 jobs:
@@ -136,6 +141,13 @@ egress_allow:                 # 出站 HTTP 白名单
 ## Host 能力
 
 所有能力在 `sdk.Serve` 启动后即可用，包括插件自己的初始化阶段。每次调用都由 Core 按 manifest 校验权限。
+
+插件自己的身份和落盘位置也从 SDK 拿，不用自己解析环境变量：
+
+```go
+sdk.Key()      // manifest 里的 key
+sdk.DataDir()  // 本插件私有的可写目录；文件系统其余部分都当只读
+```
 
 ### 文档存储
 
@@ -217,7 +229,13 @@ if ok {
 ```go
 // 事件：尽力而为的广播，订阅者跟不上就会丢。不能丢的走队列。
 _ = sdk.Events.Publish(ctx, "note.created", note)
-_ = sdk.Events.Subscribe(ctx, "otherplugin:thing.happened", handler)
+
+// 订阅是阻塞的：它一直收到 ctx 取消或出错才返回，所以要自己起 goroutine
+go func() {
+    if err := sdk.Events.Subscribe(ctx, "otherplugin:thing.happened", handler); err != nil {
+        sdk.Log.Error(ctx, "订阅结束", "err", err.Error())
+    }
+}()
 
 // 文件：写入经插件，读取不经过 —— 下载链接给浏览器直接取
 fileID, size, err := sdk.Files.Put(ctx, "report.pdf", "application/pdf", reader)
@@ -227,12 +245,13 @@ url, expires, err := sdk.Files.DownloadURL(ctx, fileID, userID, 5*time.Minute)
 resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 ```
 
+`Subscribe` 和 `Publish` 长得像一对，但行为完全不同：`Publish` 发完就返回，`Subscribe` 是一个收到流结束才退出的循环。直接写在 `main()` 或某个初始化函数里会把插件挂在那里。
+
 出站代理不只是匹配域名。它还会检查**实际拨号的 IP**：白名单上的域名可能解析到 127.0.0.1 或云元数据地址（169.254.169.254），无论是配置失误还是 DNS 重绑定攻击。同时不跟随重定向 —— 否则一个被允许的主机可以用 302 把你带去内网。
 
 ### 配置
 
 管理员在控制台为每个插件维护一份键值配置。保存后 Core 立即推送给运行中的进程，**不需要重启插件**。
-
 ```go
 sdk.Serve(sdk.Config{
     Handler: mux,
@@ -261,6 +280,29 @@ func main() {
 无法解析的配置值应当回落到默认值，而不是关掉这项功能。控制台上的一个笔误不应该变成一扇敞开的门。
 
 完整例子见 [`extension-example/ratelimit`](../extension-example/ratelimit)。
+
+### 定时任务
+
+manifest 里 `jobs:` 声明的每个任务，在代码里注册一个同名 handler：
+
+```go
+sdk.Serve(sdk.Config{
+    Handler: mux,
+    Jobs: map[string]sdk.JobFunc{
+        "nightly-summary": func(ctx context.Context, job *sdk.Job) error {
+            // job.Scheduled 是这次运行「本该」发生的时刻（Unix 秒）
+            window := time.Unix(job.Scheduled, 0)
+            return summarise(ctx, window)
+        },
+    },
+})
+```
+
+名字对不上的不会被调用：manifest 里声明了但这里没注册的任务，Core 调过来时没有 handler；这里注册了但 manifest 没声明的，永远不会被触发。
+
+**用 `job.Scheduled`，不要用 `time.Now()`。** 它是这次运行对应的那个计划时刻。Core 忙、插件刚重启、任务排队，都会让实际执行时间晚于计划时间；一个按「昨天」汇总的任务如果用 `time.Now()`，在 00:03 跑就会汇总错日期，而且这种错只在延迟发生的那天出现。
+
+调度归 Core：插件被禁用任务就停，多副本下一次只有一个副本执行，不需要自己加分布式锁。
 
 ---
 
@@ -297,6 +339,8 @@ sdk.Serve(sdk.Config{
 })
 ```
 
+`SetValue` 和 `SetRequestHeader` 的去向不一样，容易混。`SetValue` 存的东西只能被**同一请求里更晚的 filter** 用 `sdk.Values(ctx)` 读到；它不会传给最终处理这个请求的 backend handler —— 在自己的 HTTP handler 里 `sdk.Values(ctx)` 永远是空的。要把信息交给 backend，用 `SetRequestHeader`：那是请求的一部分，handler 从 `r.Header` 就能读到。
+
 ### 失败策略
 
 默认 **fail-open**：filter 超时或报错时请求照常放行。因为多数 filter 是观察者，一个坏掉的观察者不该让站点不可用。
@@ -312,6 +356,17 @@ sdk.Serve(sdk.Config{
 默认不把 body 跨进程传给 filter。实测一个 64KB 的 body 会让调用成本变成空 body 的四倍，而多数 filter 只看方法、路径、头和身份。
 
 需要时声明 `needs_request_body: true` 并设 `max_body_bytes`。超过上限时：`fail_closed` 的 filter 返回 413，fail-open 的跳过。**不会截断后传给你** —— 一个基于半截数据做判断的安全 filter，可能得出和后端处理完整数据不同的结论。
+
+**响应 body 是另一个开关。** `post_handler` 和 `on_error` 阶段能拿到 `req.ResponseStatus` 和 `req.ResponseHeader`，但 `req.ResponseBody` 只在声明了 `needs_response_body: true` 时才有内容 —— 否则它是一个空切片，而不是一个错误。想改写或检查响应体的 filter 必须显式声明：
+
+```yaml
+filters:
+  - name: inject-banner
+    phase: post_handler
+    match: { paths: ["/api/plugins/notes/**"] }
+    needs_response_body: true
+    max_body_bytes: 262144
+```
 
 ### 身份改写
 

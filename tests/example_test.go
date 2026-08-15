@@ -15,6 +15,7 @@ import (
 	"github.com/taills/moduless/core/hostsvc"
 	"github.com/taills/moduless/core/pluginhost"
 	pb "github.com/taills/moduless/proto/plugin"
+	"gopkg.in/yaml.v3"
 )
 
 // These tests exercise the shipped ratelimit example the way an operator would
@@ -30,26 +31,54 @@ import (
 // laid out exactly as a distributed plugin would be.
 func installExample(t *testing.T, root, name, source string) {
 	t.Helper()
+	installExampleAs(t, root, name, name, source)
+}
 
-	dir := filepath.Join(root, name)
+// installExampleAs is installExample for an example whose source directory is
+// not named after its plugin key.
+func installExampleAs(t *testing.T, root, dirName, key, source string) {
+	t.Helper()
+
+	dir := filepath.Join(root, dirName)
 	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	build := exec.Command("go", "build", "-o", filepath.Join(dir, "bin", name), source)
+	// The binary is named for the manifest's entrypoint, which every example
+	// declares as bin/<key>... except notes, which uses bin/plugin. Read the
+	// manifest first and honour what it says rather than guessing.
+	manifestSrc, err := os.ReadFile(filepath.Join(source, "manifest.yaml"))
+	if err != nil {
+		t.Fatalf("reading the example manifest: %v", err)
+	}
+	entrypoint := entrypointFrom(t, manifestSrc)
+
+	build := exec.Command("go", "build", "-o", filepath.Join(dir, entrypoint), source)
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
-		t.Fatalf("building the %s example: %v", name, err)
-	}
-
-	manifestSrc, err := os.ReadFile(filepath.Join("..", "extension-example", name, "manifest.yaml"))
-	if err != nil {
-		t.Fatalf("reading the example manifest: %v", err)
+		t.Fatalf("building the %s example: %v", key, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), manifestSrc, 0o644); err != nil {
 		t.Fatalf("writing manifest: %v", err)
 	}
+}
+
+// entrypointFrom reads runtime.entrypoint out of a manifest.
+func entrypointFrom(t *testing.T, manifestSrc []byte) string {
+	t.Helper()
+	var m struct {
+		Runtime struct {
+			Entrypoint string `yaml:"entrypoint"`
+		} `yaml:"runtime"`
+	}
+	if err := yaml.Unmarshal(manifestSrc, &m); err != nil {
+		t.Fatalf("parsing the example manifest: %v", err)
+	}
+	if m.Runtime.Entrypoint == "" {
+		t.Fatal("the example manifest declares no runtime.entrypoint")
+	}
+	return m.Runtime.Entrypoint
 }
 
 // exampleStack builds a Core running the ratelimit example over a plugin that
@@ -292,18 +321,74 @@ func TestExampleRateLimitConfigPushToStoppedPlugin(t *testing.T) {
 	}
 }
 
-// The example must be installable exactly as shipped, with no test-only
-// edits. A manifest that does not load is a broken example.
+// Every shipped example must be installable exactly as it stands, with no
+// test-only edits. An example that does not load is worse than no example: it
+// is the first thing a new plugin author copies.
 func TestExampleManifestsAreValid(t *testing.T) {
-	root := t.TempDir()
-	for _, name := range []string{"ratelimit"} {
-		installExample(t, root, name, "../extension-example/"+name)
+	// The notes example lives in a directory named "plugin" but declares the
+	// key "notes", and package directories must be named for their key.
+	examples := []struct{ dir, key, source string }{
+		{"ratelimit", "ratelimit", "../extension-example/ratelimit"},
+		{"notes", "notes", "../extension-example/plugin"},
+	}
 
-		pkg, err := pluginhost.LoadPackage(filepath.Join(root, name))
-		if err != nil {
-			t.Fatalf("the shipped %s example does not load: %v", name, err)
-		}
-		t.Logf("%s: %d filter(s), %d permission(s), %d job(s)",
-			pkg.Key(), len(pkg.Filters), len(pkg.Manifest.Permissions), len(pkg.Manifest.Jobs))
+	root := t.TempDir()
+	for _, ex := range examples {
+		t.Run(ex.key, func(t *testing.T) {
+			installExampleAs(t, root, ex.dir, ex.key, ex.source)
+
+			pkg, err := pluginhost.LoadPackage(filepath.Join(root, ex.dir))
+			if err != nil {
+				t.Fatalf("the shipped %s example does not load: %v", ex.key, err)
+			}
+			t.Logf("%s: %d filter(s), %d permission(s), %d job(s), %d collection(s)",
+				pkg.Key(), len(pkg.Filters), len(pkg.Manifest.Permissions),
+				len(pkg.Manifest.Jobs), len(pkg.Manifest.Database.Collections))
+		})
+	}
+}
+
+// Both examples must actually start: complete the handshake, accept their
+// configuration and report ready. Compiling is not the same as booting, and a
+// plugin that cannot boot fails in a way that points at Core rather than at
+// the example.
+//
+// The notes example needs a database for its own routes, but not to start —
+// so this covers start-up without requiring PostgreSQL.
+func TestExamplesStart(t *testing.T) {
+	for _, ex := range []struct{ dir, key, source string }{
+		{"ratelimit", "ratelimit", "../extension-example/ratelimit"},
+		{"notes", "notes", "../extension-example/plugin"},
+	} {
+		t.Run(ex.key, func(t *testing.T) {
+			root := t.TempDir()
+			installExampleAs(t, root, ex.dir, ex.key, ex.source)
+
+			cfg := hostsvc.NewStaticConfig()
+			reg := pluginhost.NewRegistry()
+			mgr := pluginhost.NewManager(pluginhost.ManagerConfig{
+				Dir:         root,
+				DataDirRoot: filepath.Join(root, "data"),
+				DevMode:     true,
+			}, reg, func(pkg *pluginhost.Package) pb.HostServicesServer {
+				return hostsvc.New(pkg.Key(), pkg.Manifest.Permissions, hostsvc.Deps{
+					Config: cfg,
+					Cache:  hostsvc.NewMemoryCache(100),
+					Locks:  hostsvc.NewMemoryLocks(),
+				})
+			})
+			defer mgr.Close()
+
+			mgr.Scan()
+			if err := mgr.Enable(context.Background(), ex.key); err != nil {
+				t.Fatalf("the shipped %s example does not start: %v", ex.key, err)
+			}
+
+			for _, st := range mgr.List() {
+				if st.Key == ex.key && st.Ready != 1 {
+					t.Errorf("%s started but reports %d ready replica(s)", ex.key, st.Ready)
+				}
+			}
+		})
 	}
 }

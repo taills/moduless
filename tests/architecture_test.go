@@ -70,6 +70,7 @@ func TestExamplesDoNotDependOnCore(t *testing.T) {
 	for _, pkg := range []string{
 		"extension-example/notes",
 		"extension-example/ratelimit",
+		"extension-example/audit",
 	} {
 		t.Run(pkg, func(t *testing.T) {
 			for _, dep := range internalDeps(t, pkg) {

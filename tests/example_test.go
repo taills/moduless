@@ -328,6 +328,7 @@ func TestExampleManifestsAreValid(t *testing.T) {
 	examples := []struct{ dir, key, source string }{
 		{"ratelimit", "ratelimit", "../extension-example/ratelimit"},
 		{"notes", "notes", "../extension-example/notes"},
+		{"audit", "audit", "../extension-example/audit"},
 	}
 
 	root := t.TempDir()
@@ -357,6 +358,7 @@ func TestExamplesStart(t *testing.T) {
 	for _, ex := range []struct{ dir, key, source string }{
 		{"ratelimit", "ratelimit", "../extension-example/ratelimit"},
 		{"notes", "notes", "../extension-example/notes"},
+		{"audit", "audit", "../extension-example/audit"},
 	} {
 		t.Run(ex.key, func(t *testing.T) {
 			root := t.TempDir()

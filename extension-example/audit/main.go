@@ -9,10 +9,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"sync"
@@ -76,7 +73,7 @@ func main() {
 //     sdk.User(r.Context()).Username，从没在 filter 里出现过。
 func recordWrite(ctx context.Context, req *sdk.FilterRequest) (*sdk.FilterResult, error) {
 	entry := AuditEntry{
-		ID:     newID(),
+		ID:     sdk.NewID(),
 		User:   sdk.User(ctx).Username, // 猜测：ctx 在 filter 里也能喂给 sdk.User
 		Method: req.Method,             // 猜测：字段名未在指南中出现
 		Path:   req.Path,               // 猜测：字段名未在指南中出现
@@ -166,6 +163,14 @@ func purgeExpired(ctx context.Context, job *sdk.Job) error {
 //     的工具。这行为上等于：只要有人知道 /entries 这个 URL，不管是不是
 //     admin 都能读到全部审计记录。
 func listEntries(w http.ResponseWriter, r *http.Request) {
+	// The audit trail is admin-only. A menu's roles: [admin] does not do this
+	// — that only decides who sees the menu item, and anyone able to type the
+	// URL reaches the route regardless.
+	if !sdk.User(r.Context()).HasRole("admin") {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	ctx := r.Context()
 	q := r.URL.Query()
 
@@ -203,14 +208,4 @@ func listEntries(w http.ResponseWriter, r *http.Request) {
 		"entries": entries,
 		"next":    next,
 	})
-}
-
-// newID 生成一个审计记录的主键。指南没有提供任何 ID 生成辅助函数
-// （对比：sdk.DB.Put(ctx, "notes", id, note) 的例子里 id 是从哪来的完全
-// 没交代），所以只能自己手搓一个，不引入没见过在这个项目里用过的第三方
-// uuid 依赖。
-func newID() string {
-	var b [12]byte
-	_, _ = rand.Read(b[:])
-	return fmt.Sprintf("%d-%s", time.Now().UnixNano(), hex.EncodeToString(b[:]))
 }

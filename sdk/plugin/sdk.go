@@ -10,10 +10,14 @@
 //	func main() {
 //		mux := http.NewServeMux()
 //		mux.HandleFunc("/hello", func(w http.ResponseWriter, r *http.Request) {
-//			fmt.Fprintf(w, "hello %s", sdk.User(r.Context()).Username)
+//			fmt.Fprintf(w, "hello %s", sdk.User(r.Context()).Name())
 //		})
 //		sdk.Serve(sdk.Config{Handler: mux})
 //	}
+//
+// Read the caller through Name, ID and HasRole rather than the struct fields:
+// User returns nil for an unauthenticated request, and a panic inside a plugin
+// takes the process down with it.
 //
 // One rule matters more than any other: never write to stdout. Core reads the
 // handshake from the first line of the plugin's stdout, so a stray fmt.Println
@@ -23,7 +27,11 @@ package sdk
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"net/http"
+	"strconv"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -118,6 +126,22 @@ func (p *plugin) bindHost(conn *grpc.ClientConn) {
 	Events = &EventClient{c: client}
 	HTTP = &HTTPClient{c: client}
 	Log = &Logger{c: client}
+}
+
+// NewID returns a random identifier suitable for a document id.
+//
+// Plugins need one whenever they write a document they did not get an id for,
+// which is most of the time. Without this every plugin grows its own, and the
+// hand-rolled ones tend to be timestamps with a counter — fine until two
+// replicas allocate the same second.
+func NewID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand does not fail in practice; if it ever does, a
+		// time-based id is still better than an empty one.
+		return "id-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // The host capabilities. They are usable from the moment Configure runs, which

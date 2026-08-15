@@ -107,10 +107,12 @@ database:
 menus:                        # 启用时出现在控制台，禁用时立刻消失
   - path: /notes
     title: 笔记
-    icon: file-text
+    icon: file-text           # 控制台用 lucide 图标名，见 lucide.dev
     order: 20
     roles: [admin]            # 非空时只有该角色可见（Core 侧过滤，不下发）
-    entry: ""                 # 叶子节点留空 = 挂载本插件的微前端
+    entry: ""                 # 叶子节点留空 = 挂载本插件的微前端；
+                              # 插件没有 frontend/ 目录时这个菜单点开是空白页，
+                              # 纯后端插件就别声明 menus
     children:                 # 有 children 的节点是分组，不要给它 entry，
       - path: /notes/archive  # 否则控制台会试图把分组本身当页面挂载
         title: 归档
@@ -325,6 +327,24 @@ sdk.Log.Metric(ctx, "orders_created", 1, map[string]string{"region": region})
 
 字段是交替的键值对，值可以是任意类型 —— 字符串、数字、error 都行，Core 侧统一格式化。trace id 自动附加，不用手工传。
 
+### 插件自己的鉴权
+
+**`menus` 里的 `roles` 不保护你的接口。** 它只决定这个菜单项在控制台上显示给谁 —— Core 在下发菜单树时过滤掉，仅此而已。任何人只要拼得出 URL，就能直接请求 `/api/plugins/<key>/...`，菜单上看不看得见毫无关系。
+
+接口的鉴权在你自己的 handler 里做：
+
+```go
+mux.HandleFunc("GET /entries", func(w http.ResponseWriter, r *http.Request) {
+    if !sdk.User(r.Context()).HasRole("admin") {
+        http.Error(w, "forbidden", http.StatusForbidden)
+        return
+    }
+    // ...
+})
+```
+
+`HasRole` 对 `nil` 安全，所以未认证的调用者自然被拒。需要更细的判断就读 `sdk.User(ctx)` 的字段，或者用 `authorize` 阶段的 filter 做集中式判定。
+
 ### 定时任务
 
 manifest 里 `jobs:` 声明的每个任务，在代码里注册一个同名 handler：
@@ -363,6 +383,10 @@ Filter 是 IIS Filter / ASP.NET HttpModule 那套模型：插件可以介入**�
 | `post_handler` | 后端返回后 | 改写响应 |
 | `on_error` | 后端 5xx 或超时 | 兜底、告警 |
 | `log` | 响应已发出 | 审计、埋点（异步，不影响响应） |
+
+`log` 阶段对**每一个**请求都会跑，包括被更早的 filter 短路掉的、鉴权失败的、以及后端返回 5xx 的 —— 所以审计不会对「被拒绝的流量」留下盲区。它在响应发出之后异步执行，返回值被忽略，`fail_closed` 在这里没有意义（响应都发完了，拒无可拒）。
+
+**这带来一个用「审计」当例子时必须讲清楚的后果**：`log` 阶段的 filter 失败时，请求已经成功了，而那条审计记录就这么没了 —— 插件崩溃、熔断打开、正在排空的那段时间都会发生，只在 Core 自己的运维日志里留下「这个 filter 失败了」。也就是说**基于 `log` 阶段的审计是尽力而为的，不保证完整**。真正不能丢的审计要在 `log` 阶段里把记录投进持久队列（那有至少一次投递保证），或者接受这个缺口并监控 Core 日志里的 filter 失败。
 
 filter 收到的 `*sdk.FilterRequest` 字段：
 

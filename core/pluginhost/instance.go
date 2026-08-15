@@ -18,9 +18,13 @@ import (
 //	Ready    -> Draining    an admin disabled or upgraded the plugin
 //	Ready    -> Failed      the process died on its own
 //	Draining -> Stopped     in-flight work finished (or the deadline passed)
-//	Failed   -> Starting    the supervisor is retrying
 //	Failed   -> Quarantined too many crashes in the window
-//	Quarantined -> Starting an admin re-enabled it explicitly
+//
+// Stopped, Failed and Quarantined are terminal for the instance that reaches
+// them. A retry or a re-enable produces a *new* Instance and replaces this one
+// in the registry — nothing ever moves an instance back to Starting. The table
+// used to claim otherwise, which sends anyone debugging "why is this failed
+// instance not starting again" looking for a transition that does not exist.
 type State int32
 
 const (

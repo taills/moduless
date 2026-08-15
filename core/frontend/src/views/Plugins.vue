@@ -127,6 +127,7 @@ onMounted(load);
           <td>
             {{ p.ready }}/{{ p.replicas }}<span v-if="p.in_flight"> · 处理中 {{ p.in_flight }}</span>
             <div v-if="uptime(p)" class="uptime">已运行 {{ uptime(p) }}</div>
+            <div v-if="p.queue_depth" class="uptime">队列积压 {{ p.queue_depth }}</div>
           </td>
           <td>{{ p.filters || 0 }}</td>
           <td class="perms">

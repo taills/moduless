@@ -732,7 +732,6 @@ func (l *Logger) log(ctx context.Context, level pb.LogLevel, msg string, fields 
 	_, _ = stream.CloseAndRecv()
 }
 
-// Metric records a measurement.
 // asLogValue renders one field value. Errors use their message rather than
 // their Go representation, which is what a reader of the log wants.
 func asLogValue(v any) string {
@@ -746,6 +745,7 @@ func asLogValue(v any) string {
 	}
 }
 
+// Metric records a measurement.
 func (l *Logger) Metric(ctx context.Context, name string, value float64, labels map[string]string) {
 	_, _ = l.c.RecordMetric(outgoing(ctx), &pb.MetricRequest{
 		Name: name, Kind: pb.MetricKind_METRIC_COUNTER, Value: value, Labels: labels,

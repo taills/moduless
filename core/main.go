@@ -74,6 +74,7 @@ func main() {
 	// Database-backed capabilities are optional so Core can run without
 	// PostgreSQL; they then report Unavailable rather than failing obscurely.
 	var pluginConfig *hostsvc.DBConfig
+	var pluginQueue *hostsvc.PGQueue
 	if databaseURL != "" {
 		var err error
 		conn, err = db.InitDB(databaseURL)
@@ -96,6 +97,7 @@ func main() {
 		queue := hostsvc.NewPGQueue(db.NewQueue(conn))
 		queue.StartMaintenance(context.Background(), 30*time.Second, 24*time.Hour)
 		hostDeps.Queue = queue
+		pluginQueue = queue
 
 		log.Println("[core] document store and durable queue enabled")
 	} else {
@@ -156,6 +158,14 @@ func main() {
 		// What a plugin is launched with. Read at every launch rather than
 		// cached, so a restarted or upgraded plugin picks up whatever the
 		// operator set in the meantime.
+		// A backlog growing toward the queue's ceiling should be visible
+		// before Enqueue starts refusing.
+		QueueDepth: func(pluginKey string) int64 {
+			if pluginQueue == nil {
+				return 0
+			}
+			return pluginQueue.Depth(pluginKey)
+		},
 		ConfigSource: func(pluginKey string) map[string]string {
 			if pluginConfig == nil {
 				return nil

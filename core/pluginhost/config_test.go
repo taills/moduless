@@ -300,3 +300,48 @@ func statusFor(t *testing.T, mgr *Manager, key string) Status {
 	t.Fatalf("no status for %s", key)
 	return Status{}
 }
+
+// A plugin's queue backlog reaches the console.
+//
+// The queue refuses an Enqueue past MaxDepth, and until this was wired the
+// first sign of a backlog was that refusal — nothing showed it growing. The
+// depth is already measured by the maintenance loop for the ceiling check, so
+// this is a matter of it reaching somewhere a person looks.
+func TestStatusReportsQueueDepth(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "alpha", "1.0.0", 0, "")
+
+	reg := NewRegistry()
+	mgr := NewManager(ManagerConfig{
+		Dir:          root,
+		DataDirRoot:  filepath.Join(root, ".data"),
+		DrainTimeout: time.Second,
+		DevMode:      true,
+		QueueDepth: func(key string) int64 {
+			if key == "alpha" {
+				return 4200
+			}
+			return 0
+		},
+	}, reg, func(*Package) pb.HostServicesServer { return &stubHost{} })
+	t.Cleanup(mgr.Close)
+	mgr.Scan()
+
+	if got := statusFor(t, mgr, "alpha").QueueDepth; got != 4200 {
+		t.Errorf("queue depth = %d, want 4200", got)
+	}
+}
+
+// Core without a database has no queue, and reports no depth rather than a
+// zero that reads as "measured, and empty".
+func TestStatusOmitsQueueDepthWithoutAQueue(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "alpha", "1.0.0", 0, "")
+
+	mgr, _ := configuredManager(t, root) // no QueueDepth hook
+	mgr.Scan()
+
+	if got := statusFor(t, mgr, "alpha").QueueDepth; got != 0 {
+		t.Errorf("queue depth = %d with no queue configured", got)
+	}
+}

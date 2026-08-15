@@ -240,7 +240,13 @@ func (q *Queue) ReapExpired(ctx context.Context) (int64, error) {
 	return n, nil
 }
 
-// QueueStats summarises a topic, for the console and for tests.
+// QueueStats summarises a topic.
+//
+// The per-plugin backlog the console shows comes from PendingDepth, which the
+// maintenance loop already measures for the depth ceiling. This is the
+// finer-grained view — pending against processing against dead — for a
+// specific topic, which nothing asks for automatically and an operator
+// investigating one plugin does.
 type QueueStats struct {
 	Pending    int64
 	Processing int64

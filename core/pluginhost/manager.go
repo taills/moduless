@@ -45,6 +45,14 @@ type ManagerConfig struct {
 	// production and against a map in tests.
 	ConfigSource func(pluginKey string) map[string]string
 
+	// QueueDepth reports how many messages a plugin has waiting. Nil when
+	// there is no queue, which is Core without a database.
+	//
+	// Surfaced because the queue has a hard ceiling — Enqueue is refused past
+	// MaxDepth — and until now nothing showed an operator that a plugin's
+	// backlog was growing toward it. The first sign was the refusal.
+	QueueDepth func(pluginKey string) int64
+
 	// Supervisor tunes crash recovery: restart backoff, and how many crashes
 	// within a window put a plugin into quarantine. The zero value uses
 	// DefaultSupervisorConfig.
@@ -93,6 +101,9 @@ type Status struct {
 	// operator whether a plugin has been quietly restarting all morning.
 	Tripped         int       `json:"tripped,omitempty"`
 	OldestStartedAt time.Time `json:"oldest_started_at,omitempty"`
+
+	// QueueDepth is how many messages this plugin has waiting.
+	QueueDepth int64 `json:"queue_depth,omitempty"`
 }
 
 // Manager owns installed packages and drives their lifecycle: enable, disable
@@ -333,6 +344,9 @@ func (m *Manager) List() []Status {
 		}
 		if at, isolated := m.sup.QuarantinedSince(key); isolated {
 			st.Quarantined, st.QuarantinedAt = true, at
+		}
+		if m.cfg.QueueDepth != nil {
+			st.QueueDepth = m.cfg.QueueDepth(key)
 		}
 		out = append(out, st)
 	}

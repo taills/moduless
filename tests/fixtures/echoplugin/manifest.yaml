@@ -10,7 +10,13 @@ runtime:
   entrypoint: bin/echo
   replicas: 1
 
-permissions: []
+# Declared so a test can reach the capability itself rather than stopping at
+# the permission gate — the deployment case worth covering is a plugin that
+# legitimately asks for the document store on a Core started without a
+# database.
+permissions:
+  - db
+  - queue
 
 # A menu tree with the shapes the console has to handle: a leaf, a parent with
 # children, and a node only one role may see.

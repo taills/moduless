@@ -109,6 +109,8 @@ func (f *Files) Put(ctx context.Context, pluginKey, filename, mimeType string, r
 		StorageKey: storageKey,
 		// Written by a plugin rather than a user, so there is no uploader.
 		UploaderID: "",
+		// Ownership, which is what later access checks are made against.
+		OwnerPluginKey: pluginKey,
 	}); err != nil {
 		// The object is already written. Leaving it orphaned is preferable to
 		// reporting success for a file no record points at; a storage sweep
@@ -127,13 +129,10 @@ func (f *Files) Delete(ctx context.Context, pluginKey, fileID string) error {
 	if f.q == nil {
 		return errors.New("file storage is not configured")
 	}
-	row, err := f.q.GetFile(ctx, fileID)
-	if err != nil {
-		return fmt.Errorf("file not found")
+	if err := f.checkOwnership(ctx, pluginKey, fileID); err != nil {
+		return err
 	}
-	if !ownsFile(pluginKey, row.StorageKey) {
-		// Reported as not-found rather than forbidden: telling a plugin that a
-		// file exists but belongs to someone else is itself information.
+	if _, err := f.q.GetFile(ctx, fileID); err != nil {
 		return fmt.Errorf("file not found")
 	}
 	if f.conn == nil {
@@ -149,6 +148,9 @@ func (f *Files) Delete(ctx context.Context, pluginKey, fileID string) error {
 func (f *Files) GenerateDownloadToken(ctx context.Context, pluginKey, fileID, userID string, expiry time.Duration) (string, time.Time, error) {
 	if f.q == nil {
 		return "", time.Time{}, errors.New("file storage is not configured")
+	}
+	if err := f.checkOwnership(ctx, pluginKey, fileID); err != nil {
+		return "", time.Time{}, err
 	}
 	if expiry <= 0 {
 		expiry = 5 * time.Minute
@@ -176,10 +178,42 @@ func (f *Files) GenerateDownloadToken(ctx context.Context, pluginKey, fileID, us
 	return url, expiresAt, nil
 }
 
+// checkOwnership refuses access to a file another plugin wrote.
+//
+// A file id is not a secret: it appears in logs, in events, and in whatever a
+// plugin stores about its own work. Without this, holding one was enough to
+// mint a working download link for it, so any plugin with files:read could
+// read every plugin's files.
+//
+// A file with no owning plugin came through the user-facing upload endpoint
+// and stays reachable, which is what that endpoint is for and the behaviour
+// that existed before ownership was recorded.
+func (f *Files) checkOwnership(ctx context.Context, pluginKey, fileID string) error {
+	owner, err := f.q.GetFileOwner(ctx, fileID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("file %s not found", fileID)
+		}
+		return fmt.Errorf("look up file owner: %w", err)
+	}
+	if owner != "" && owner != pluginKey {
+		// Deliberately the same message a missing file gets: telling a plugin
+		// that an id exists but belongs to someone else confirms the id is
+		// real, which is the one thing worth learning from probing.
+		return fmt.Errorf("file %s not found", fileID)
+	}
+	return nil
+}
+
 // Metadata reports what Core knows about a file.
 func (f *Files) Metadata(ctx context.Context, pluginKey, fileID string) (FileMeta, error) {
 	if f.q == nil {
 		return FileMeta{}, errors.New("file storage is not configured")
+	}
+	// Not-found rather than an error for a file owned by someone else: a
+	// plugin learning that an id is real is the whole point of probing.
+	if err := f.checkOwnership(ctx, pluginKey, fileID); err != nil {
+		return FileMeta{Found: false}, nil
 	}
 	row, err := f.q.GetFile(ctx, fileID)
 	if err != nil {
@@ -196,7 +230,3 @@ func (f *Files) Metadata(ctx context.Context, pluginKey, fileID string) (FileMet
 
 // ownsFile reports whether a storage key belongs to a plugin. Files uploaded
 // by users through the browser are not owned by any plugin.
-func ownsFile(pluginKey, storageKey string) bool {
-	return len(storageKey) > len("plugins/"+pluginKey+"/") &&
-		storageKey[:len("plugins/"+pluginKey+"/")] == "plugins/"+pluginKey+"/"
-}

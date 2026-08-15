@@ -1,6 +1,9 @@
 -- name: InsertFile :exec
-INSERT INTO system_files (id, filename, size, mime_type, storage_key, uploader_id)
-VALUES ($1, $2, $3, $4, $5, $6);
+INSERT INTO system_files (id, filename, size, mime_type, storage_key, uploader_id, owner_plugin_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
+
+-- name: GetFileOwner :one
+SELECT owner_plugin_key FROM system_files WHERE id = $1;
 
 -- name: GetFile :one
 SELECT * FROM system_files WHERE id = $1;

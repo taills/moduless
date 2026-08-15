@@ -167,6 +167,37 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 		log.Print("echoplugin: dying with a transaction open")
 		os.Exit(4)
 
+	case "/file-shortlived":
+		// Same as /file but with a download link that expires almost at once,
+		// so a test can watch it stop working.
+		out, err := e.roundTripFileExpiry(context.Background(), req.GetQuery(), 1)
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
+		}
+		body = out
+
+	case "/file-token-for":
+		// Asks for a download link to a file id this plugin was given, which
+		// may belong to somebody else.
+		host := e.hostClient()
+		token, err := host.GenerateDownloadToken(context.Background(), &pb.DownloadTokenRequest{
+			FileId: req.GetQuery(), UserId: "1", ExpirySeconds: 300,
+		})
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 403, Body: []byte(err.Error())}, nil
+		}
+		body = []byte("url=" + token.GetUrl())
+
+	case "/file":
+		// Writes a file through Core and asks for a download link. The bytes
+		// go out through the plugin transport in chunks; nothing comes back
+		// through it, which is the asymmetry worth exercising.
+		out, err := e.roundTripFile(context.Background(), req.GetQuery())
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
+		}
+		body = out
+
 	case "/fetch":
 		// Outbound HTTP through Core's egress proxy. The query string is the
 		// target URL, so a test can aim it wherever it likes and see what Core
@@ -320,6 +351,48 @@ func (e *echoImpl) roundTripDocument(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("document was not found after writing it")
 	}
 	return fmt.Appendf(nil, "version=%d data=%s", put.GetVersion(), got.GetData()), nil
+}
+
+// roundTripFile uploads content and returns "id=<id> size=<n> url=<url>".
+func (e *echoImpl) roundTripFile(ctx context.Context, content string) ([]byte, error) {
+	return e.roundTripFileExpiry(ctx, content, 300)
+}
+
+func (e *echoImpl) roundTripFileExpiry(ctx context.Context, content string, expiry int32) ([]byte, error) {
+	host := e.hostClient()
+
+	stream, err := host.PutFile(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("open upload: %w", err)
+	}
+	// First chunk carries the metadata, the rest carry only bytes — split
+	// deliberately so the streaming path is exercised rather than a single
+	// message that happens to fit.
+	if err := stream.Send(&pb.PutFileChunk{
+		Filename: "report.txt",
+		MimeType: "text/plain",
+		Data:     []byte(content),
+	}); err != nil {
+		return nil, fmt.Errorf("send metadata chunk: %w", err)
+	}
+	if err := stream.Send(&pb.PutFileChunk{Data: []byte("\ntrailing chunk")}); err != nil {
+		return nil, fmt.Errorf("send data chunk: %w", err)
+	}
+	put, err := stream.CloseAndRecv()
+	if err != nil {
+		return nil, fmt.Errorf("finish upload: %w", err)
+	}
+
+	token, err := host.GenerateDownloadToken(ctx, &pb.DownloadTokenRequest{
+		FileId:        put.GetFileId(),
+		UserId:        "1",
+		ExpirySeconds: expiry,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("download token: %w", err)
+	}
+	return fmt.Appendf(nil, "id=%s size=%d url=%s",
+		put.GetFileId(), put.GetSize(), token.GetUrl()), nil
 }
 
 // transact writes two documents inside one transaction and commits it.

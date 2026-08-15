@@ -58,7 +58,7 @@ func (q *Queries) DeleteUser(ctx context.Context, id int32) error {
 }
 
 const getFile = `-- name: GetFile :one
-SELECT id, filename, size, mime_type, storage_key, uploader_id, status, created_at FROM system_files WHERE id = $1
+SELECT id, filename, size, mime_type, storage_key, uploader_id, status, created_at, owner_plugin_key FROM system_files WHERE id = $1
 `
 
 func (q *Queries) GetFile(ctx context.Context, id string) (SystemFile, error) {
@@ -73,8 +73,20 @@ func (q *Queries) GetFile(ctx context.Context, id string) (SystemFile, error) {
 		&i.UploaderID,
 		&i.Status,
 		&i.CreatedAt,
+		&i.OwnerPluginKey,
 	)
 	return i, err
+}
+
+const getFileOwner = `-- name: GetFileOwner :one
+SELECT owner_plugin_key FROM system_files WHERE id = $1
+`
+
+func (q *Queries) GetFileOwner(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getFileOwner, id)
+	var owner_plugin_key string
+	err := row.Scan(&owner_plugin_key)
+	return owner_plugin_key, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
@@ -164,17 +176,18 @@ func (q *Queries) InsertDownloadToken(ctx context.Context, arg InsertDownloadTok
 }
 
 const insertFile = `-- name: InsertFile :exec
-INSERT INTO system_files (id, filename, size, mime_type, storage_key, uploader_id)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO system_files (id, filename, size, mime_type, storage_key, uploader_id, owner_plugin_key)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertFileParams struct {
-	ID         string `json:"id"`
-	Filename   string `json:"filename"`
-	Size       int64  `json:"size"`
-	MimeType   string `json:"mime_type"`
-	StorageKey string `json:"storage_key"`
-	UploaderID string `json:"uploader_id"`
+	ID             string `json:"id"`
+	Filename       string `json:"filename"`
+	Size           int64  `json:"size"`
+	MimeType       string `json:"mime_type"`
+	StorageKey     string `json:"storage_key"`
+	UploaderID     string `json:"uploader_id"`
+	OwnerPluginKey string `json:"owner_plugin_key"`
 }
 
 func (q *Queries) InsertFile(ctx context.Context, arg InsertFileParams) error {
@@ -185,6 +198,7 @@ func (q *Queries) InsertFile(ctx context.Context, arg InsertFileParams) error {
 		arg.MimeType,
 		arg.StorageKey,
 		arg.UploaderID,
+		arg.OwnerPluginKey,
 	)
 	return err
 }

@@ -71,6 +71,13 @@ docker run --rm -v "$(pwd)":/src -w /src -v "$HOME/go/pkg/mod":/go/pkg/mod \
 #     -e POSTGRES_DB=moduless_test postgres:18-alpine
 TEST_DATABASE_URL='postgres://moduless:moduless@localhost:15433/moduless_test?sslmode=disable' go test ./...
 
+# File tests additionally need S3-compatible storage. MinIO works; the bucket is
+# created by the test if missing:
+#   docker run -d --name moduless-test-s3 -p 19000:9000 \
+#     -e MINIO_ROOT_USER=moduless -e MINIO_ROOT_PASSWORD=moduless123 \
+#     minio/minio:latest server /data
+TEST_S3_ENDPOINT='http://localhost:19000' go test ./tests/ -run File
+
 # Console
 cd core/frontend && npm install && npm run build   # or npm run dev
 ```

@@ -60,6 +60,9 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		MimeType:   mime,
 		StorageKey: fileID,
 		UploaderID: uploaderID,
+		// No owning plugin: this came from a user through the browser, and
+		// stays reachable by plugins that are given its id.
+		OwnerPluginKey: "",
 	}); err != nil {
 		http.Error(w, "database insert failed", http.StatusInternalServerError)
 		return

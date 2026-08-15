@@ -14,6 +14,7 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) error
 	DeleteUser(ctx context.Context, id int32) error
 	GetFile(ctx context.Context, id string) (SystemFile, error)
+	GetFileOwner(ctx context.Context, id string) (string, error)
 	GetUserByID(ctx context.Context, id int32) (SystemUser, error)
 	GetUserByUsername(ctx context.Context, username string) (GetUserByUsernameRow, error)
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error

@@ -45,14 +45,15 @@ type PluginQueue struct {
 }
 
 type SystemFile struct {
-	ID         string         `json:"id"`
-	Filename   string         `json:"filename"`
-	Size       int64          `json:"size"`
-	MimeType   string         `json:"mime_type"`
-	StorageKey string         `json:"storage_key"`
-	UploaderID string         `json:"uploader_id"`
-	Status     sql.NullString `json:"status"`
-	CreatedAt  sql.NullTime   `json:"created_at"`
+	ID             string         `json:"id"`
+	Filename       string         `json:"filename"`
+	Size           int64          `json:"size"`
+	MimeType       string         `json:"mime_type"`
+	StorageKey     string         `json:"storage_key"`
+	UploaderID     string         `json:"uploader_id"`
+	Status         sql.NullString `json:"status"`
+	CreatedAt      sql.NullTime   `json:"created_at"`
+	OwnerPluginKey string         `json:"owner_plugin_key"`
 }
 
 type SystemUser struct {

@@ -316,7 +316,18 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 }
 
 func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterResponse, error) {
+	// Matched by suffix: a filter sees whatever path the phase gives it, which
+	// is the full request path in pre_route and the plugin-relative one later.
+	// Matching on the whole string made a test silently exercise nothing.
+	if strings.HasSuffix(req.GetPath(), "/slow-filter") {
+		// Slow enough that something else can happen while the request is
+		// still inside the filter.
+		time.Sleep(200 * time.Millisecond)
+		return &pb.FilterResponse{Action: pb.FilterResponse_ACTION_CONTINUE}, nil
+	}
+
 	switch req.GetPath() {
+
 	case "/deny":
 		return &pb.FilterResponse{
 			Action: pb.FilterResponse_ACTION_SHORT_CIRCUIT,

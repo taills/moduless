@@ -126,6 +126,24 @@ func (i *Instance) MarkFailed() { i.setState(StateFailed) }
 // MarkQuarantined takes the instance out of service until an admin intervenes.
 func (i *Instance) MarkQuarantined() { i.setState(StateQuarantined) }
 
+// Servable reports whether a request holding this snapshot may still use the
+// instance.
+//
+// Draining counts. Keeping new traffic away is the snapshot's job — a swap
+// removes the old instance from it, so nothing arriving afterwards can see it
+// at all — and the only requests still reaching a draining instance are ones
+// that were admitted before the swap and are partway through. Refusing those
+// here would return 502 for work the system had already accepted, which is the
+// opposite of draining.
+func (i *Instance) Servable() bool {
+	switch i.State() {
+	case StateReady, StateDraining:
+		return true
+	default:
+		return false
+	}
+}
+
 // InFlight reports how many requests are currently executing against this
 // instance. Draining waits for it to reach zero.
 func (i *Instance) InFlight() int64 { return i.inflight.Load() }

@@ -79,6 +79,11 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 	w.Header().Set("X-Request-Id", traceID)
 
 	rc := pipeline.NewRequestContext(traceID, r, clientIP(r))
+	// Capacity this request reserves on any plugin is held until the response
+	// has been written, and freed here. A draining instance waits for exactly
+	// this, and a request that was admitted is never refused halfway through.
+	defer rc.ReleaseAdmissions()
+
 	isPluginRoute := strings.HasPrefix(r.URL.Path, PluginAPIPrefix)
 
 	// Buffer the body only when something downstream needs it: a filter that
@@ -206,11 +211,13 @@ func (h *PluginHandler) callBackend(ctx context.Context, snap *pluginhost.Snapsh
 	if !ok {
 		return nil, &pluginUnavailableError{key: key}
 	}
-	release, ok := inst.BeginRequest()
-	if !ok {
+	// Through the request's own admission rather than a fresh one: a filter on
+	// this plugin has usually already reserved capacity, and asking again would
+	// fail if the instance began draining in between — refusing a request that
+	// the system had already accepted and run.
+	if !rc.Admit(key, inst.BeginRequest) {
 		return nil, &pluginUnavailableError{key: key}
 	}
-	defer release()
 
 	callCtx, cancel := context.WithTimeout(ctx, h.backendTimeout())
 	defer cancel()

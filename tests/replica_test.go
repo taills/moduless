@@ -426,3 +426,69 @@ func installFixturePackage(t *testing.T, root string) {
 		t.Fatalf("writing the fixture manifest: %v", err)
 	}
 }
+
+// A slow request in flight when its plugin is swapped out must finish, not be
+// cut off.
+//
+// The zero-downtime upgrade test does not establish this. Its requests take
+// microseconds, so by the time the drain looks there is nothing in flight and
+// a drain that waited for nothing would pass. What zero downtime rests on is
+// two separate mechanisms — the snapshot swaps atomically so no new request
+// reaches the old instance, and the drain waits for the ones already inside it
+// — and only a request slow enough to still be running distinguishes them.
+func TestSlowRequestSurvivesAnUpgrade(t *testing.T) {
+	reg := pluginhost.NewRegistry()
+	v1 := launchPlugin(t, "hello", "1.0.0", nil)
+	reg.InstallPlugin(pluginhost.Registration{Key: "hello", Instances: []*pluginhost.Instance{v1}})
+
+	srv := newGateway(reg)
+	defer srv.Close()
+
+	// The fixture's /slow takes 150ms, comfortably longer than the swap.
+	type result struct {
+		status int
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		client := &http.Client{Timeout: 20 * time.Second}
+		resp, err := client.Get(srv.URL + "/api/plugins/hello/slow")
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		done <- result{status: resp.StatusCode}
+	}()
+
+	// Let the request reach the plugin, then swap underneath it.
+	time.Sleep(40 * time.Millisecond)
+
+	v2 := launchPlugin(t, "hello", "2.0.0", nil)
+	swapStart := time.Now()
+	reg.Swap(context.Background(),
+		pluginhost.Registration{Key: "hello", Instances: []*pluginhost.Instance{v2}},
+		5*time.Second)
+
+	got := <-done
+	t.Logf("in-flight request finished %s after the swap began: status=%d err=%v",
+		time.Since(swapStart).Round(time.Millisecond), got.status, got.err)
+
+	if got.err != nil {
+		t.Fatalf("a request in flight during an upgrade failed at the transport layer: %v; "+
+			"the old instance was killed before it finished", got.err)
+	}
+	if got.status != 200 {
+		t.Errorf("a request in flight during an upgrade returned %d; the drain did not wait for it", got.status)
+	}
+
+	// The old instance is gone once its work is done.
+	deadline := time.Now().Add(10 * time.Second)
+	for !v1.ProcessExited() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !v1.ProcessExited() {
+		t.Error("the old instance was never stopped after draining")
+	}
+}

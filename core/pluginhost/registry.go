@@ -49,7 +49,7 @@ func (rs *replicaSet) pick() (*Instance, bool) {
 		return nil, false
 	case 1:
 		inst := rs.instances[0]
-		if inst.State() != StateReady {
+		if !inst.Servable() {
 			return nil, false
 		}
 		return inst, true
@@ -58,6 +58,9 @@ func (rs *replicaSet) pick() (*Instance, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 
+	// Ready replicas are preferred; a draining one is only picked when no ready
+	// replica is left, which is the case of a request that was admitted before
+	// a swap and is finishing on the instance it started on.
 	total := 0
 	best := -1
 	for idx, inst := range rs.instances {
@@ -71,6 +74,11 @@ func (rs *replicaSet) pick() (*Instance, bool) {
 		}
 	}
 	if best < 0 {
+		for _, inst := range rs.instances {
+			if inst.Servable() {
+				return inst, true
+			}
+		}
 		return nil, false
 	}
 	rs.current[best] -= total

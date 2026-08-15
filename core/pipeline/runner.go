@@ -115,12 +115,12 @@ func (r *Runner) runOne(ctx context.Context, res Resolver, phase pb.Phase, f *Fi
 		return r.failure(f, http.StatusServiceUnavailable, "plugin "+f.PluginKey+" is unhealthy")
 	}
 
-	release, ok := target.Begin()
-	if !ok {
+	// Held for the life of the request, not just this call: see
+	// RequestContext.Admit.
+	if !rc.Admit(f.PluginKey, target.Begin) {
 		r.report(f, errors.New("plugin is draining"))
 		return r.failure(f, http.StatusServiceUnavailable, "plugin "+f.PluginKey+" is draining")
 	}
-	defer release()
 
 	callCtx, cancel := context.WithTimeout(ctx, f.Timeout)
 	defer cancel()

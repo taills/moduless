@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	pb "github.com/taills/moduless/proto/plugin"
@@ -43,6 +44,58 @@ type RequestContext struct {
 	ResponseBody   []byte
 
 	startedAt time.Time
+
+	// admissions records, per plugin, the capacity this request already holds.
+	//
+	// A request calls one plugin more than once — a filter, then the backend,
+	// then a later phase — and each call used to admit itself separately. That
+	// made admission a property of the call rather than of the request, so an
+	// upgrade landing between two of them refused the second: the request had
+	// been accepted, had run, and was then told the plugin was draining. It
+	// came back 502 despite nothing having gone wrong with it.
+	//
+	// Admitting once and holding for the life of the request also gives the
+	// drain something accurate to wait for. It is the same principle as loading
+	// the routing snapshot once: decide at the start, then stay consistent.
+	admissionsMu sync.Mutex
+	admissions   map[string]func()
+}
+
+// Admit reserves capacity on a plugin for this request, or reports that the
+// plugin is not accepting work.
+//
+// The second and later calls for the same plugin reuse the first admission
+// rather than asking again, so a request that was accepted stays accepted even
+// if the plugin starts draining while it is still running.
+func (rc *RequestContext) Admit(pluginKey string, begin func() (func(), bool)) bool {
+	rc.admissionsMu.Lock()
+	defer rc.admissionsMu.Unlock()
+
+	if _, held := rc.admissions[pluginKey]; held {
+		return true
+	}
+	release, ok := begin()
+	if !ok {
+		return false
+	}
+	if rc.admissions == nil {
+		rc.admissions = make(map[string]func(), 2)
+	}
+	rc.admissions[pluginKey] = release
+	return true
+}
+
+// ReleaseAdmissions frees every reservation this request holds. The gateway
+// calls it once the response has been written, which is the point at which a
+// draining instance may finally stop.
+func (rc *RequestContext) ReleaseAdmissions() {
+	rc.admissionsMu.Lock()
+	defer rc.admissionsMu.Unlock()
+
+	for key, release := range rc.admissions {
+		release()
+		delete(rc.admissions, key)
+	}
 }
 
 // NewRequestContext seeds a context from an incoming HTTP request. The body is

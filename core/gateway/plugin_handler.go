@@ -106,6 +106,15 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 		// Not a plugin API call. Filters still ran, and still get their log
 		// phase, but routing belongs to the rest of the gateway.
 		//
+		// Release what the filters reserved before handing off. Nothing beyond
+		// this point calls a plugin again — the log phase takes its own
+		// admission — and the handler below may hold the connection open
+		// indefinitely: the console's event stream does exactly that. Keeping
+		// the reservation would pin every plugin with a pre_route filter for as
+		// long as a console is connected, so a disable or an upgrade would sit
+		// out the full drain timeout before killing the process anyway.
+		rc.ReleaseAdmissions()
+
 		// The response is only wrapped when a post_handler filter actually
 		// exists. Wrapping unconditionally would be worse than wasteful: any
 		// wrapper hides interfaces the underlying writer implements, and
@@ -244,7 +253,10 @@ func (h *PluginHandler) callBackend(ctx context.Context, snap *pluginhost.Snapsh
 // no longer mutated by this point, and a fresh context is used because the
 // request's own is cancelled the moment the handler returns.
 func (h *PluginHandler) logPhase(chain *pipeline.Chain, snap *pluginhost.Snapshot, rc *pipeline.RequestContext) {
-	h.Runner.RunAsync(context.Background(), chain, snap, pb.Phase_PHASE_LOG, rc)
+	// ForAsync because this outlives the response: the request has already
+	// released its reservations by the time this phase runs, so it needs its
+	// own to release in turn.
+	h.Runner.RunAsync(context.Background(), chain, snap, pb.Phase_PHASE_LOG, rc.ForAsync())
 }
 
 func (h *PluginHandler) readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {

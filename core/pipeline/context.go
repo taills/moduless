@@ -85,6 +85,38 @@ func (rc *RequestContext) Admit(pluginKey string, begin func() (func(), bool)) b
 	return true
 }
 
+// ForAsync returns a copy of the request for work that outlives the response.
+//
+// The log phase runs on its own goroutine after the response has been written,
+// which is after the request released everything it held. Admitting into the
+// original from there would add a reservation nothing ever frees: every
+// request carrying a log filter would leak one in-flight count, and a drain
+// would then wait its full timeout for requests that finished long ago.
+//
+// The copy shares the request's data — which is no longer being written by the
+// time the log phase starts — and keeps its own admissions, released when that
+// phase completes.
+func (rc *RequestContext) ForAsync() *RequestContext {
+	// Fields are copied by name rather than by copying the struct: it carries
+	// the admissions mutex, and copying a lock is both a vet error and a real
+	// one — the copy would guard nothing.
+	return &RequestContext{
+		TraceID:        rc.TraceID,
+		Method:         rc.Method,
+		Path:           rc.Path,
+		Query:          rc.Query,
+		ClientIP:       rc.ClientIP,
+		Header:         rc.Header,
+		Identity:       rc.Identity,
+		Values:         rc.Values,
+		RequestBody:    rc.RequestBody,
+		ResponseStatus: rc.ResponseStatus,
+		ResponseHeader: rc.ResponseHeader,
+		ResponseBody:   rc.ResponseBody,
+		startedAt:      rc.startedAt,
+	}
+}
+
 // ReleaseAdmissions frees every reservation this request holds. The gateway
 // calls it once the response has been written, which is the point at which a
 // draining instance may finally stop.

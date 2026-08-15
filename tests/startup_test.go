@@ -269,3 +269,37 @@ func TestDisableIsIdempotent(t *testing.T) {
 		t.Errorf("disabling an unknown plugin reported %v; it should be a no-op", err)
 	}
 }
+
+// Core must verify the binary it is about to execute, on the path an operator
+// actually uses.
+//
+// The checksum go-plugin enforces closes the window between a package being
+// validated and its binary being run: something replacing the file in between
+// gets a refusal rather than an exec. Two tests covered this already, but both
+// called Launch directly with a checksum of their own — the manager, which is
+// how every real plugin starts, passed none at all, so the verification was
+// switched off everywhere it mattered.
+func TestManagerVerifiesTheBinaryItLaunches(t *testing.T) {
+	root := t.TempDir()
+	installFixturePackage(t, root)
+
+	mgr, _ := newManagerOver(t, root, nil)
+	mgr.Scan()
+
+	// Replace the binary after the scan, which is the window the checksum is
+	// for. Unlink first: Linux refuses to write to a file that is executing,
+	// and overwriting is what the deployment guidance forbids anyway.
+	binary := filepath.Join(root, "echo", "bin", "echo")
+	if err := os.Remove(binary); err != nil {
+		t.Fatalf("unlink: %v", err)
+	}
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho not the reviewed binary\n"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	err := mgr.Enable(context.Background(), "echo")
+	if err == nil {
+		t.Fatal("Core executed a binary that no longer matched what it validated")
+	}
+	t.Logf("refused: %v", err)
+}

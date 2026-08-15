@@ -14,6 +14,7 @@ import (
 
 	"github.com/taills/moduless/core/hostsvc"
 	"github.com/taills/moduless/core/pluginhost"
+	"github.com/taills/moduless/manifest"
 	pb "github.com/taills/moduless/proto/plugin"
 )
 
@@ -491,4 +492,50 @@ func TestSlowRequestSurvivesAnUpgrade(t *testing.T) {
 	if !v1.ProcessExited() {
 		t.Error("the old instance was never stopped after draining")
 	}
+}
+
+// The log phase runs after the response has been written, on its own
+// goroutine. Its admission must be its own too.
+//
+// Admissions are held for the life of a request and released when the response
+// is written — but the log phase starts after that point, so it admits itself
+// into a request that has already let go. Nothing then releases it, every
+// request carrying a log filter leaks one in-flight count, and a drain waits
+// for a request that finished long ago. It surfaces as "drain timed out with N
+// request(s) in flight" on a perfectly idle plugin.
+func TestLogPhaseDoesNotLeakInFlight(t *testing.T) {
+	inst := launchPlugin(t, "hello", "1.0.0", nil)
+
+	reg := pluginhost.NewRegistry()
+	reg.InstallPlugin(pluginhost.Registration{
+		Key:       "hello",
+		Instances: []*pluginhost.Instance{inst},
+		Filters: compileFilters(t, "hello", manifest.FilterDecl{
+			Name:  "access-log",
+			Phase: manifest.PhaseLog,
+			Match: manifest.FilterMatch{Paths: []string{"/**"}},
+		}),
+	})
+
+	srv := newGateway(reg)
+	defer srv.Close()
+
+	client := warmClientPlain()
+	for range 20 {
+		if code := getStatus(t, client, srv.URL+"/api/plugins/hello/items"); code != 200 {
+			t.Fatalf("status = %d", code)
+		}
+	}
+
+	// The log phase is asynchronous, so give it time to finish before looking.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if inst.InFlight() == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	t.Errorf("in-flight = %d after 20 completed requests; a drain would wait 30s "+
+		"for requests that already finished", inst.InFlight())
 }

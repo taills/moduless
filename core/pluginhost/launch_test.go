@@ -87,15 +87,6 @@ func launchEcho(t testing.TB, env ...string) *Instance {
 	return inst
 }
 
-func fileChecksum(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	sum := sha256.Sum256(data)
-	return sum[:], nil
-}
-
 // TestLaunchEstablishesReverseChannel is the core Phase 0 assertion: Core
 // forks the plugin, the handshake succeeds, and the plugin can call back into
 // HostServices and get real data. The greeting is only obtainable through the

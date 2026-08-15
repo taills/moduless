@@ -4,10 +4,8 @@
 # from PLUGIN_DIR, so scaling and restarting them is Core's job rather than the
 # orchestrator's.
 #
-#   # build the example plugin into the mounted directory
-#   mkdir -p plugins/notes/bin
-#   CGO_ENABLED=0 GOOS=linux go build -o plugins/notes/bin/plugin ./extension-example/plugin
-#   cp extension-example/plugin/manifest.yaml plugins/notes/
+#   # build the example plugins into the mounted directory
+#   ./scripts/build-examples.sh
 #
 #   docker compose up --build
 #   # log in at http://localhost:8080 (admin / admin123)

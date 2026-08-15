@@ -235,3 +235,56 @@ func waitForSubscriber(t *testing.T, events *gateway.UIEvents) {
 	}
 	t.Fatal("the stream handler never registered a subscriber")
 }
+
+// A long-lived connection must not pin a plugin.
+//
+// The SSE stream passes through the filter pipeline like any other request, so
+// it admits itself on every plugin with a pre_route filter — and then does not
+// return for as long as the console stays open. Holding that admission for the
+// life of the connection means those plugins can never drain: an operator with
+// the console open makes every disable and every upgrade wait out the full
+// 30-second drain timeout before the process is killed anyway.
+//
+// Nothing after the pipeline hands off to Core's own handler calls a plugin
+// again — the log phase manages its own admission — so the reservation has no
+// reason to outlive the filters that took it.
+func TestLongLivedConnectionDoesNotPinAPlugin(t *testing.T) {
+	inst := launchPlugin(t, "hello", "1.0.0", nil)
+
+	reg := pluginhost.NewRegistry()
+	reg.InstallPlugin(pluginhost.Registration{
+		Key:       "hello",
+		Instances: []*pluginhost.Instance{inst},
+		Filters: compileFilters(t, "hello", manifest.FilterDecl{
+			Name:  "guard",
+			Phase: manifest.PhasePreRoute,
+			Match: manifest.FilterMatch{Paths: []string{"/**"}},
+		}),
+	})
+
+	events := gateway.NewUIEvents()
+	mux := http.NewServeMux()
+	mux.HandleFunc(gateway.UIEventsPath, events.Handler)
+
+	h := &gateway.PluginHandler{Registry: reg, Runner: &pipeline.Runner{}}
+	srv := httptest.NewServer(h.Middleware(mux))
+	defer srv.Close()
+
+	stream, closeStream := openStream(t, srv.URL)
+	defer closeStream()
+	waitForSubscriber(t, events)
+	_ = stream
+
+	// The stream is open and will stay open. The plugin must not be held by it.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if inst.InFlight() == 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	t.Errorf("in-flight = %d while an SSE stream is open; every disable and upgrade "+
+		"would wait out the drain timeout for as long as a console is connected",
+		inst.InFlight())
+}

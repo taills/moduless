@@ -86,7 +86,12 @@ func (r *Runner) RunAsync(ctx context.Context, chain *Chain, res Resolver, phase
 	if chain == nil || !chain.HasPhase(phase) {
 		return
 	}
-	go r.Run(ctx, chain, res, phase, rc)
+	go func() {
+		// This phase admits itself and frees what it took: the request that
+		// spawned it has already let go of everything it held.
+		defer rc.ReleaseAdmissions()
+		r.Run(ctx, chain, res, phase, rc)
+	}()
 }
 
 // runOne invokes a single filter and applies its decision. It returns a

@@ -420,11 +420,16 @@ func (m *Manager) launchOne(ctx context.Context, pkg *Package, index int) (*Inst
 	}
 
 	return Launch(ctx, LaunchSpec{
-		Key:                pkg.Key(),
-		InstanceID:         fmt.Sprintf("%s-%d", pkg.Key(), index),
-		Version:            pkg.Version(),
-		Weight:             pkg.Manifest.Weight,
-		BinaryPath:         pkg.BinaryPath,
+		Key:        pkg.Key(),
+		InstanceID: fmt.Sprintf("%s-%d", pkg.Key(), index),
+		Version:    pkg.Version(),
+		Weight:     pkg.Manifest.Weight,
+		BinaryPath: pkg.BinaryPath,
+		// Without this go-plugin runs whatever is at BinaryPath, unchecked.
+		// The verification exists precisely for the gap between validating a
+		// package and executing it, and leaving it unset made "SHA-256
+		// verified" true only of the launch path tests used directly.
+		Checksum:           pkg.Checksum,
 		HostImpl:           m.hostFor(pkg),
 		GrantedPermissions: pkg.Manifest.Permissions,
 		Config:             m.configFor(pkg.Key()),

@@ -1,7 +1,9 @@
 package pluginhost
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +25,11 @@ type Package struct {
 
 	// BinaryPath is the absolute path to the executable.
 	BinaryPath string
+
+	// Checksum is the SHA-256 of BinaryPath as it was when this package was
+	// loaded and validated. go-plugin re-verifies it immediately before exec,
+	// so the bytes that run are the bytes that were checked.
+	Checksum []byte
 
 	// FrontendDir is the built micro-frontend, or empty when the plugin has
 	// no UI. Unlike the reverse-tunnel model, these files live on disk and
@@ -81,10 +88,20 @@ func LoadPackage(dir string) (*Package, error) {
 		return nil, fmt.Errorf("plugin %s: %w", m.Key, err)
 	}
 
+	// Hash the bytes we just validated, so what executes is what was checked.
+	// go-plugin verifies this again immediately before exec, which closes the
+	// window between a package being inspected and its binary being run — the
+	// case where something replaces the file in between.
+	sum, err := fileChecksum(binary)
+	if err != nil {
+		return nil, fmt.Errorf("plugin %s: %w", m.Key, err)
+	}
+
 	pkg := &Package{
 		Dir:        dir,
 		Manifest:   m,
 		BinaryPath: binary,
+		Checksum:   sum,
 		Filters:    filters,
 	}
 	if fe := filepath.Join(dir, "frontend"); dirExists(fe) {
@@ -144,6 +161,21 @@ func ScanPackages(root string) (packages []*Package, failures map[string]error) 
 
 	sort.Slice(packages, func(i, j int) bool { return packages[i].Key() < packages[j].Key() })
 	return packages, failures
+}
+
+// fileChecksum is the SHA-256 of a file's contents.
+func fileChecksum(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return h.Sum(nil), nil
 }
 
 func dirExists(path string) bool {

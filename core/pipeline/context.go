@@ -83,7 +83,7 @@ func (rc *RequestContext) buildFilterRequest(phase pb.Phase, f *Filter) *pb.Filt
 		Method:        rc.Method,
 		Path:          rc.Path,
 		Query:         rc.Query,
-		Headers:       toProtoHeaders(rc.Header),
+		Headers:       ToProtoHeaders(rc.Header),
 		ClientIp:      rc.ClientIP,
 		Identity:      rc.Identity,
 		Context:       rc.Values,
@@ -94,7 +94,7 @@ func (rc *RequestContext) buildFilterRequest(phase pb.Phase, f *Filter) *pb.Filt
 	}
 	if isResponsePhase(phase) {
 		req.UpstreamStatus = int32(rc.ResponseStatus)
-		req.UpstreamHeaders = toProtoHeaders(rc.ResponseHeader)
+		req.UpstreamHeaders = ToProtoHeaders(rc.ResponseHeader)
 		if f.Decl.NeedsResponseBody {
 			req.UpstreamBody = rc.ResponseBody
 		}

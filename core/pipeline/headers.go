@@ -14,11 +14,11 @@ import (
 	pb "github.com/taills/moduless/proto/plugin"
 )
 
-// toProtoHeaders converts an http.Header into the wire representation,
+// ToProtoHeaders converts an http.Header into the wire representation,
 // preserving repeated values. The reverse tunnel used map[string]string here
 // and silently dropped every value but the first, which corrupted Set-Cookie
 // and any other legitimately repeated header.
-func toProtoHeaders(h http.Header) map[string]*pb.HeaderValues {
+func ToProtoHeaders(h http.Header) map[string]*pb.HeaderValues {
 	if len(h) == 0 {
 		return nil
 	}
@@ -29,8 +29,8 @@ func toProtoHeaders(h http.Header) map[string]*pb.HeaderValues {
 	return out
 }
 
-// fromProtoHeaders converts wire headers into an http.Header.
-func fromProtoHeaders(in map[string]*pb.HeaderValues) http.Header {
+// FromProtoHeaders converts wire headers into an http.Header.
+func FromProtoHeaders(in map[string]*pb.HeaderValues) http.Header {
 	if len(in) == 0 {
 		return nil
 	}

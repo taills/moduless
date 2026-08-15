@@ -192,7 +192,7 @@ func TestSwapDrainsDisplacedInstance(t *testing.T) {
 	r.Install("a", oldInst)
 
 	newInst, _, _ := readyInstance("a", 1)
-	r.Swap(context.Background(), "a", time.Second, newInst)
+	r.Swap(context.Background(), Registration{Key: "a", Instances: []*Instance{newInst}}, time.Second)
 
 	// Routing switches at the commit point, before the old instance finishes
 	// draining.

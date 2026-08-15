@@ -222,3 +222,24 @@ func (i *Instance) Kill() { i.terminate() }
 func (i *Instance) ProcessExited() bool {
 	return i.proc == nil || i.proc.Exited()
 }
+
+// --- pipeline.Target -------------------------------------------------------
+//
+// These adapt an instance to what the filter pipeline needs, so the pipeline
+// can depend on a narrow interface rather than on this package.
+
+// Filter invokes one lifecycle phase on the plugin.
+func (i *Instance) Filter(ctx context.Context, req *pb.FilterRequest) (*pb.FilterResponse, error) {
+	return i.Client.Filter(ctx, req)
+}
+
+// Allow reports whether the circuit breaker permits a call.
+func (i *Instance) Allow() bool { return i.Breaker.Allow() }
+
+// RecordSuccess and RecordFailure feed the breaker.
+func (i *Instance) RecordSuccess() { i.Breaker.RecordSuccess() }
+func (i *Instance) RecordFailure() { i.Breaker.RecordFailure() }
+
+// Begin reserves capacity for one call; it is BeginRequest under the name the
+// pipeline expects.
+func (i *Instance) Begin() (func(), bool) { return i.BeginRequest() }

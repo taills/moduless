@@ -3,11 +3,13 @@ package pluginhost
 import (
 	"context"
 	"fmt"
-	"maps"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/taills/moduless/core/pipeline"
+	"github.com/taills/moduless/manifest"
 )
 
 // DefaultDrainTimeout bounds how long a replaced instance may keep running to
@@ -83,11 +85,30 @@ func (rs *replicaSet) pick() (*Instance, bool) {
 // the old plugin's filters.
 type Snapshot struct {
 	plugins map[string]*replicaSet
+	chain   *pipeline.Chain
 	version uint64
 }
 
 func emptySnapshot() *Snapshot {
-	return &Snapshot{plugins: map[string]*replicaSet{}}
+	return &Snapshot{plugins: map[string]*replicaSet{}, chain: pipeline.EmptyChain()}
+}
+
+// Chain is the filter table for this snapshot. It is never nil.
+func (s *Snapshot) Chain() *pipeline.Chain {
+	if s.chain == nil {
+		return pipeline.EmptyChain()
+	}
+	return s.chain
+}
+
+// Target implements pipeline.Resolver, so the filter pipeline can reach
+// plugins without importing this package.
+func (s *Snapshot) Target(pluginKey string) (pipeline.Target, bool) {
+	inst, ok := s.Pick(pluginKey)
+	if !ok {
+		return nil, false
+	}
+	return inst, true
 }
 
 // Version increments on every change and is what the console's SSE stream
@@ -138,6 +159,19 @@ func (s *Snapshot) All() []*Instance {
 	return out
 }
 
+// Registration is everything the registry needs to know about one plugin:
+// which processes serve it, and what it declared.
+type Registration struct {
+	Key       string
+	Instances []*Instance
+
+	// Filters are the plugin's compiled lifecycle subscriptions.
+	Filters []manifest.CompiledFilter
+
+	// AllowIdentityMutation mirrors the filter:authenticate permission.
+	AllowIdentityMutation bool
+}
+
 // Registry owns the current snapshot and serialises every change to it.
 //
 // Reads go through Current, which is a single atomic load with no lock, so
@@ -149,6 +183,10 @@ type Registry struct {
 
 	mu      sync.Mutex
 	version uint64
+	regs    map[string]Registration
+
+	// filterDefaults fill in what a filter declaration leaves unset.
+	filterDefaults pipeline.Defaults
 
 	// onChange fires after every successful swap, with the new snapshot. Core
 	// uses it to push a console refresh over SSE.
@@ -156,9 +194,20 @@ type Registry struct {
 }
 
 func NewRegistry() *Registry {
-	r := &Registry{}
+	r := &Registry{
+		regs:           map[string]Registration{},
+		filterDefaults: pipeline.DefaultDefaults(),
+	}
 	r.current.Store(emptySnapshot())
 	return r
+}
+
+// SetFilterDefaults overrides the timeout and body ceiling applied to filters
+// that do not specify their own.
+func (r *Registry) SetFilterDefaults(d pipeline.Defaults) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.filterDefaults = d
 }
 
 // OnChange registers the post-swap callback. It is invoked synchronously while
@@ -174,43 +223,96 @@ func (r *Registry) OnChange(fn func(*Snapshot)) {
 // and reuse it, rather than calling this repeatedly mid-request.
 func (r *Registry) Current() *Snapshot { return r.current.Load() }
 
-// Install adds or replaces a plugin's replicas and returns the instances that
-// were displaced, if any. The caller owns draining them.
+// InstallPlugin registers a plugin — its processes and its declarations — and
+// returns the instances it displaced, if any. The caller owns draining them.
 //
 // Publishing happens after the new instances are already running and healthy,
-// so a failed launch never disturbs live traffic: the caller simply never
-// calls Install.
-func (r *Registry) Install(key string, instances ...*Instance) []*Instance {
+// so a failed launch never disturbs live traffic: the caller simply never gets
+// here.
+func (r *Registry) InstallPlugin(reg Registration) []*Instance {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	old := r.current.Load()
-	displaced := old.Replicas(key)
-
-	next := r.cloneLocked(old)
-	if len(instances) == 0 {
-		delete(next.plugins, key)
+	displaced := r.current.Load().Replicas(reg.Key)
+	if len(reg.Instances) == 0 {
+		delete(r.regs, reg.Key)
 	} else {
-		next.plugins[key] = newReplicaSet(instances)
+		r.regs[reg.Key] = reg
 	}
-	r.publishLocked(next)
+	r.rebuildLocked()
 	return displaced
+}
+
+// Install registers a plugin that declares no filters. It exists because most
+// callers and tests only care about routing.
+func (r *Registry) Install(key string, instances ...*Instance) []*Instance {
+	return r.InstallPlugin(Registration{Key: key, Instances: instances})
 }
 
 // Remove takes a plugin out of rotation and returns its instances for
 // draining. New requests stop reaching them the moment this returns.
 func (r *Registry) Remove(key string) []*Instance {
-	return r.Install(key)
+	return r.InstallPlugin(Registration{Key: key})
 }
 
-// Swap atomically replaces key's instances with fresh ones and drains the old
-// ones in the background. This is the blue-green upgrade commit point.
+// rebuildLocked constructs the next snapshot from the current registrations.
 //
-// The new instances must already be launched and health-checked: by the time
-// this is called there is no failure path left, which is exactly what makes
-// the upgrade safe to roll back before it.
-func (r *Registry) Swap(ctx context.Context, key string, drainTimeout time.Duration, instances ...*Instance) {
-	displaced := r.Install(key, instances...)
+// Replica sets whose instances are unchanged are carried over by pointer
+// rather than rebuilt, so enabling one plugin does not reset every other
+// plugin's round-robin position.
+func (r *Registry) rebuildLocked() {
+	old := r.current.Load()
+	next := &Snapshot{plugins: make(map[string]*replicaSet, len(r.regs))}
+
+	pfs := make([]pipeline.PluginFilters, 0, len(r.regs))
+	for key, reg := range r.regs {
+		if prev, ok := old.plugins[key]; ok && sameInstances(prev.instances, reg.Instances) {
+			next.plugins[key] = prev
+		} else {
+			next.plugins[key] = newReplicaSet(reg.Instances)
+		}
+		if len(reg.Filters) > 0 {
+			pfs = append(pfs, pipeline.PluginFilters{
+				Key:                   key,
+				Filters:               reg.Filters,
+				AllowIdentityMutation: reg.AllowIdentityMutation,
+			})
+		}
+	}
+
+	chain, err := pipeline.BuildChain(pfs, r.filterDefaults)
+	if err != nil {
+		// Filters are validated when a plugin is installed, so reaching here
+		// means a bug rather than bad input. Serving an empty chain is the
+		// safe response: filters stop running, but routing keeps working.
+		logf("filter chain rebuild failed, continuing without filters: %v", err)
+		chain = pipeline.EmptyChain()
+	}
+	next.chain = chain
+
+	r.publishLocked(next)
+}
+
+func sameInstances(a, b []*Instance) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// Swap atomically replaces a plugin's instances with fresh ones and drains the
+// old ones in the background. This is the blue-green upgrade commit point.
+//
+// The new instances must already be launched and health-checked. By the time
+// this is called there is no failure path left, which is precisely what makes
+// everything before it safely abortable.
+func (r *Registry) Swap(ctx context.Context, reg Registration, drainTimeout time.Duration) {
+	displaced := r.InstallPlugin(reg)
 	if len(displaced) == 0 {
 		return
 	}
@@ -232,8 +334,8 @@ func (r *Registry) Swap(ctx context.Context, key string, drainTimeout time.Durat
 func (r *Registry) DrainAll(ctx context.Context, drainTimeout time.Duration) {
 	r.mu.Lock()
 	old := r.current.Load()
-	next := emptySnapshot()
-	r.publishLocked(next)
+	r.regs = map[string]Registration{}
+	r.rebuildLocked()
 	r.mu.Unlock()
 
 	if drainTimeout <= 0 {
@@ -244,15 +346,6 @@ func (r *Registry) DrainAll(ctx context.Context, drainTimeout time.Duration) {
 		wg.Go(func() { _ = inst.Drain(ctx, drainTimeout) })
 	}
 	wg.Wait()
-}
-
-// cloneLocked copies the plugin map. Replica sets for untouched plugins are
-// shared by pointer rather than rebuilt, so their round-robin position is not
-// reset every time an unrelated plugin is enabled.
-func (r *Registry) cloneLocked(s *Snapshot) *Snapshot {
-	next := &Snapshot{plugins: make(map[string]*replicaSet, len(s.plugins)+1)}
-	maps.Copy(next.plugins, s.plugins)
-	return next
 }
 
 func (r *Registry) publishLocked(next *Snapshot) {

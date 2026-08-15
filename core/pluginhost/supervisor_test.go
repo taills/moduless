@@ -111,7 +111,7 @@ func TestSupervisorIgnoresSupersededInstance(t *testing.T) {
 	sup.Watch(context.Background(), oldInst)
 
 	newInst, _, _ := readyInstance("p", 1)
-	reg.Swap(context.Background(), "p", 100*time.Millisecond, newInst)
+	reg.Swap(context.Background(), Registration{Key: "p", Instances: []*Instance{newInst}}, 100*time.Millisecond)
 
 	waitFor(t, 2*time.Second, "the old process to be killed", func() bool { return oldProc.Exited() })
 	time.Sleep(60 * time.Millisecond)

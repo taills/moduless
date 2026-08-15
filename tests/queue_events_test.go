@@ -528,3 +528,55 @@ func TestQueueDoesNotRedeliverWhileLeased(t *testing.T) {
 		t.Errorf("a leased message was handed to a second consumer; two workers would run the same job")
 	}
 }
+
+// The backlog bound, end to end against a real queue.
+//
+// Depth is measured on a timer rather than counted on every enqueue: counting
+// rows per write would make the common path pay for a rare failure, and a
+// producer that has run away is not stopped meaningfully better by catching it
+// a few seconds sooner.
+func TestQueueDepthIsMeasuredAndEnforced(t *testing.T) {
+	handle := requireDB(t)
+	queue := db.NewQueue(handle)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if _, err := handle.ExecContext(ctx,
+		`DELETE FROM plugin_queue WHERE owner_key IN ('depthy', 'bystander')`); err != nil {
+		t.Fatalf("clearing earlier runs: %v", err)
+	}
+
+	pq := hostsvc.NewPGQueue(queue)
+	pq.MaxDepth = 5
+	pq.StartMaintenance(ctx, 100*time.Millisecond, time.Hour)
+
+	// Fill past the limit. These go in below it, so they are accepted.
+	for i := range 6 {
+		if _, _, err := pq.Enqueue(ctx, "depthy", "work",
+			[]byte(fmt.Sprintf("job %d", i)), hostsvc.EnqueueOptions{}); err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+	}
+
+	// Wait for maintenance to notice.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && pq.Depth("depthy") < 5 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Logf("measured depth: %d", pq.Depth("depthy"))
+
+	if _, _, err := pq.Enqueue(ctx, "depthy", "work", []byte("one too many"),
+		hostsvc.EnqueueOptions{}); err == nil {
+		t.Error("a plugin over its backlog limit was allowed to enqueue more")
+	} else {
+		t.Logf("refused: %v", err)
+	}
+
+	// A different plugin is unaffected — the bound is per plugin, so one
+	// runaway producer does not stop everyone else's work.
+	if _, _, err := pq.Enqueue(ctx, "bystander", "work", []byte("fine"),
+		hostsvc.EnqueueOptions{}); err != nil {
+		t.Errorf("an unrelated plugin was refused because of another's backlog: %v", err)
+	}
+}

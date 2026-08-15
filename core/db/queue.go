@@ -194,6 +194,33 @@ func (q *Queue) Nack(ctx context.Context, ownerKey string, id int64, reason stri
 	return nil
 }
 
+// PendingDepth counts the messages waiting for each plugin.
+//
+// Grouped in one pass rather than queried per plugin: this runs on a timer for
+// every plugin at once, and a per-plugin query would turn one scan into as
+// many scans as there are plugins.
+func (q *Queue) PendingDepth(ctx context.Context) (map[string]int64, error) {
+	rows, err := q.db.QueryContext(ctx,
+		`SELECT owner_key, count(*) FROM plugin_queue
+		  WHERE status IN ('pending', 'processing')
+		  GROUP BY owner_key`)
+	if err != nil {
+		return nil, fmt.Errorf("queue depth: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]int64{}
+	for rows.Next() {
+		var key string
+		var n int64
+		if err := rows.Scan(&key, &n); err != nil {
+			return nil, fmt.Errorf("scan queue depth: %w", err)
+		}
+		out[key] = n
+	}
+	return out, rows.Err()
+}
+
 // ReapExpired returns messages whose visibility timeout lapsed to the pending
 // pool, so a consumer that crashed mid-handler does not strand its work.
 func (q *Queue) ReapExpired(ctx context.Context) (int64, error) {

@@ -2,6 +2,8 @@ package hostsvc
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"time"
 
 	"github.com/taills/moduless/core/db"
@@ -15,13 +17,49 @@ type PGQueue struct {
 	// topic is empty. A queue backed by polling trades a little latency for
 	// not needing a broker; this is the knob for that trade.
 	PollInterval time.Duration
+
+	// MaxDepth bounds how many messages one plugin may have waiting.
+	//
+	// The queue is a shared table on a shared disk, so a producer in a loop
+	// fills the disk for everyone rather than only for itself. The bound is
+	// high because a legitimate batch is large; what it stops is the case with
+	// no ceiling at all.
+	MaxDepth int64
+
+	// depth is what the maintenance loop last measured, per plugin, and the
+	// flag Enqueue reads.
+	//
+	// Checked on a timer rather than per enqueue on purpose: counting rows on
+	// every write would make the common path pay for the rare failure, and a
+	// producer that has run away is not going to be stopped any better by
+	// catching it a few seconds earlier.
+	depthMu sync.RWMutex
+	depth   map[string]int64
 }
 
+// DefaultMaxQueueDepth is the per-plugin ceiling on waiting messages.
+const DefaultMaxQueueDepth = 100_000
+
 func NewPGQueue(q *db.Queue) *PGQueue {
-	return &PGQueue{q: q, PollInterval: 500 * time.Millisecond}
+	return &PGQueue{
+		q:            q,
+		PollInterval: 500 * time.Millisecond,
+		MaxDepth:     DefaultMaxQueueDepth,
+		depth:        map[string]int64{},
+	}
+}
+
+// Depth reports the last measured backlog for a plugin, for the console.
+func (p *PGQueue) Depth(pluginKey string) int64 {
+	p.depthMu.RLock()
+	defer p.depthMu.RUnlock()
+	return p.depth[pluginKey]
 }
 
 func (p *PGQueue) Enqueue(ctx context.Context, pluginKey, topic string, payload []byte, opts EnqueueOptions) (int64, bool, error) {
+	if err := p.checkDepth(pluginKey); err != nil {
+		return 0, false, err
+	}
 	return p.q.Enqueue(ctx, pluginKey, topic, payload, db.EnqueueOptions{
 		Delay:       opts.Delay,
 		DedupKey:    opts.DedupKey,
@@ -115,6 +153,17 @@ func (p *PGQueue) StartMaintenance(ctx context.Context, interval, retention time
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if depth, err := p.q.PendingDepth(ctx); err == nil {
+					p.depthMu.Lock()
+					p.depth = depth
+					p.depthMu.Unlock()
+					for key, n := range depth {
+						if limit := p.maxDepth(); limit > 0 && n >= limit {
+							logf("queue: plugin %s has %d messages waiting, at the limit of %d; "+
+								"further enqueues are refused until it drains", key, n, limit)
+						}
+					}
+				}
 				if n, err := p.q.ReapExpired(ctx); err == nil && n > 0 {
 					logf("queue: returned %d message(s) whose consumer stopped responding", n)
 				}
@@ -124,6 +173,34 @@ func (p *PGQueue) StartMaintenance(ctx context.Context, interval, retention time
 			}
 		}
 	}()
+}
+
+// checkDepth refuses a plugin that is at or over its backlog limit.
+func (p *PGQueue) checkDepth(pluginKey string) error {
+	limit := p.maxDepth()
+	if limit <= 0 {
+		return nil
+	}
+	if depth := p.Depth(pluginKey); depth >= limit {
+		return fmt.Errorf("plugin %s has %d messages waiting, at or over the limit of %d; "+
+			"the queue is a shared table, so a backlog this size is everyone's problem",
+			pluginKey, depth, limit)
+	}
+	return nil
+}
+
+// setDepthForTest overrides the measured backlog. Test-only.
+func (p *PGQueue) setDepthForTest(pluginKey string, n int64) {
+	p.depthMu.Lock()
+	defer p.depthMu.Unlock()
+	p.depth[pluginKey] = n
+}
+
+func (p *PGQueue) maxDepth() int64 {
+	if p.MaxDepth > 0 {
+		return p.MaxDepth
+	}
+	return DefaultMaxQueueDepth
 }
 
 // logf is a seam so this package does not hard-depend on a logger.

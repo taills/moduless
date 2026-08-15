@@ -2,6 +2,7 @@ package hostsvc
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -315,3 +316,41 @@ type testClock struct{ t time.Time }
 
 func (c *testClock) Now() time.Time          { return c.t }
 func (c *testClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+// The queue is a shared table on a shared disk, so a producer stuck in a loop
+// fills it for every plugin rather than only for itself. The depth bound is
+// what stops "no ceiling at all"; it is deliberately high, because a real
+// batch is large and being refused mid-batch is its own kind of failure.
+func TestQueueDepthLimitRefusesAndRecovers(t *testing.T) {
+	q := &PGQueue{MaxDepth: 10, depth: map[string]int64{}}
+
+	// Below the limit: accepted, as far as the depth check is concerned.
+	q.setDepthForTest("noisy", 9)
+	if err := q.checkDepth("noisy"); err != nil {
+		t.Errorf("refused below the limit: %v", err)
+	}
+
+	// At and over it: refused, and the message says which plugin and why.
+	q.setDepthForTest("noisy", 10)
+	err := q.checkDepth("noisy")
+	if err == nil {
+		t.Fatal("a plugin at the depth limit was allowed to enqueue more")
+	}
+	t.Logf("refused: %v", err)
+	if !strings.Contains(err.Error(), "noisy") {
+		t.Errorf("the refusal does not name the plugin: %v", err)
+	}
+
+	// Another plugin is unaffected: the bound is per plugin, so one runaway
+	// producer does not stop everyone else's work.
+	if err := q.checkDepth("quiet"); err != nil {
+		t.Errorf("an unrelated plugin was refused: %v", err)
+	}
+
+	// Draining below the limit lets it through again — the refusal is a state,
+	// not a punishment.
+	q.setDepthForTest("noisy", 3)
+	if err := q.checkDepth("noisy"); err != nil {
+		t.Errorf("still refused after draining: %v", err)
+	}
+}

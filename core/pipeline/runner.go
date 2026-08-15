@@ -129,7 +129,13 @@ func (r *Runner) runOne(ctx context.Context, res Resolver, phase pb.Phase, f *Fi
 	if err != nil {
 		target.RecordFailure()
 		r.report(f, err)
-		return r.failure(f, http.StatusBadGateway, "filter "+f.Label()+" failed")
+		// 503 rather than 502, and deliberately the same code the unavailable,
+		// unhealthy and draining paths above return. To a caller they are one
+		// situation — this filter could not reach a decision, so a fail-closed
+		// filter is refusing the request — and a client that retries on one
+		// should retry on all of them. Splitting them across status codes only
+		// invites handling the same condition two different ways.
+		return r.failure(f, http.StatusServiceUnavailable, "filter "+f.Label()+" failed")
 	}
 	target.RecordSuccess()
 

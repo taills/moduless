@@ -8,6 +8,7 @@ package manifest
 
 import (
 	"fmt"
+	"maps"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -50,6 +51,78 @@ type Manifest struct {
 	// EgressAllow is the hostname allow-list for outbound HTTP made through
 	// Core's proxy. Plugins have no direct network access.
 	EgressAllow []string `yaml:"egress_allow"`
+
+	// Config declares the settings an operator can fill in for this plugin.
+	//
+	// Without it, the key names a plugin reads are an unwritten agreement
+	// between whoever wrote the code and whoever fills in the console: a typo
+	// on either side produces a plugin silently running on its compiled-in
+	// defaults, and there is no moment at which anything could notice. The
+	// declaration gives the console something to render, gives Core the
+	// defaults to supply, and gives a reviewer a list of what the plugin is
+	// configurable to do.
+	Config []ConfigDecl `yaml:"config"`
+}
+
+// ConfigDecl is one setting a plugin accepts.
+type ConfigDecl struct {
+	Key string `yaml:"key"`
+
+	// Label and Description are what the console shows. Label falls back to
+	// the key.
+	Label       string `yaml:"label"`
+	Description string `yaml:"description"`
+
+	// Type drives the console's input and nothing else: values always reach
+	// the plugin as strings, because a manifest cannot be trusted to describe
+	// what an operator actually typed.
+	Type string `yaml:"type"`
+
+	// Default is supplied to the plugin when an operator has set no value.
+	Default string `yaml:"default"`
+
+	// Required marks a setting the plugin cannot run without. Core does not
+	// refuse to start the plugin over it — that would make a missing value an
+	// outage — but the console can mark it and an operator can see it.
+	Required bool `yaml:"required"`
+
+	// Secret hides the value in the console and in any dump of the config.
+	Secret bool `yaml:"secret"`
+}
+
+// ConfigTypes are the input kinds the console knows how to render.
+var ConfigTypes = map[string]struct{}{
+	"string": {}, "int": {}, "bool": {}, "duration": {}, "text": {},
+}
+
+// ConfigDefaults returns the declared defaults, keyed by setting.
+func (m *Manifest) ConfigDefaults() map[string]string {
+	if len(m.Config) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m.Config))
+	for _, c := range m.Config {
+		if c.Default != "" {
+			out[c.Key] = c.Default
+		}
+	}
+	return out
+}
+
+// MergeConfig fills in declared defaults for anything an operator left unset,
+// so a plugin's OnConfigChanged always receives a complete map.
+//
+// Values an operator did set win, including empty ones: clearing a field is a
+// decision, and re-supplying the default would make it impossible to express.
+func (m *Manifest) MergeConfig(set map[string]string) map[string]string {
+	defaults := m.ConfigDefaults()
+	if len(defaults) == 0 {
+		return set
+	}
+	out := make(map[string]string, len(defaults)+len(set))
+	maps.Copy(out, defaults)
+	maps.Copy(out, set)
+	return out
 }
 
 // MenuItem is one node in a plugin's menu tree.

@@ -249,6 +249,25 @@ func (m *Manifest) Validate() error {
 	if m.Runtime.Replicas < 0 {
 		return fmt.Errorf("manifest: runtime.replicas must not be negative")
 	}
+
+	seenConfig := map[string]struct{}{}
+	for _, c := range m.Config {
+		if c.Key == "" {
+			return fmt.Errorf("manifest: a config entry is missing its key")
+		}
+		if _, dup := seenConfig[c.Key]; dup {
+			// Two entries for one key means the console renders two inputs
+			// that write to the same place, and the second silently wins.
+			return fmt.Errorf("manifest: config key %q is declared twice", c.Key)
+		}
+		seenConfig[c.Key] = struct{}{}
+		if c.Type == "" {
+			continue // string by default
+		}
+		if _, ok := ConfigTypes[c.Type]; !ok {
+			return fmt.Errorf("manifest: config key %q has unknown type %q", c.Key, c.Type)
+		}
+	}
 	return nil
 }
 

@@ -100,3 +100,85 @@ func TestLoadReportsMalformedYAML(t *testing.T) {
 		t.Error("Load accepted malformed YAML")
 	}
 }
+
+func TestConfigDeclarationValidation(t *testing.T) {
+	base := func(cfg []ConfigDecl) *Manifest {
+		return &Manifest{
+			Key:     "p",
+			Version: "1.0.0",
+			Runtime: Runtime{Entrypoint: "bin/p"},
+			Config:  cfg,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		config  []ConfigDecl
+		wantErr bool
+	}{
+		{"empty is fine", nil, false},
+		{"a plain key", []ConfigDecl{{Key: "retention_days"}}, false},
+		{"known types", []ConfigDecl{
+			{Key: "a", Type: "string"}, {Key: "b", Type: "int"},
+			{Key: "c", Type: "bool"}, {Key: "d", Type: "duration"},
+			{Key: "e", Type: "text"},
+		}, false},
+		{"missing key", []ConfigDecl{{Label: "no key"}}, true},
+		{"duplicate key", []ConfigDecl{{Key: "x"}, {Key: "x"}}, true},
+		{"unknown type", []ConfigDecl{{Key: "x", Type: "json"}}, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := base(tc.config).Validate()
+			if tc.wantErr && err == nil {
+				t.Error("Validate accepted an invalid config declaration")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("Validate rejected a valid one: %v", err)
+			}
+		})
+	}
+}
+
+// Declared defaults reach the plugin, so its OnConfigChanged sees a complete
+// map rather than having to re-state every default in code.
+func TestMergeConfigSuppliesDefaults(t *testing.T) {
+	m := &Manifest{Config: []ConfigDecl{
+		{Key: "retention_days", Default: "30"},
+		{Key: "verbose", Default: "false"},
+		{Key: "no_default"},
+	}}
+
+	got := m.MergeConfig(map[string]string{"verbose": "true"})
+
+	if got["retention_days"] != "30" {
+		t.Errorf("retention_days = %q, want the declared default", got["retention_days"])
+	}
+	if got["verbose"] != "true" {
+		t.Errorf("verbose = %q; an operator's value must win over the default", got["verbose"])
+	}
+	if _, present := got["no_default"]; present {
+		t.Error("a key with no default was invented out of nothing")
+	}
+}
+
+// Clearing a field is a decision. Re-supplying the default would make an empty
+// value impossible to express.
+func TestMergeConfigKeepsAnExplicitEmptyValue(t *testing.T) {
+	m := &Manifest{Config: []ConfigDecl{{Key: "prefix", Default: "audit-"}}}
+
+	got := m.MergeConfig(map[string]string{"prefix": ""})
+	if got["prefix"] != "" {
+		t.Errorf("prefix = %q; an operator clearing a field had it filled back in", got["prefix"])
+	}
+}
+
+// A manifest declaring nothing behaves exactly as before.
+func TestMergeConfigWithoutDeclarations(t *testing.T) {
+	m := &Manifest{}
+	set := map[string]string{"whatever": "1"}
+	if got := m.MergeConfig(set); got["whatever"] != "1" || len(got) != 1 {
+		t.Errorf("MergeConfig altered an undeclared config: %v", got)
+	}
+}

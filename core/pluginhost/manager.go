@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/taills/moduless/manifest"
 	pb "github.com/taills/moduless/proto/plugin"
 )
 
@@ -75,6 +76,11 @@ type Status struct {
 	// One of those resolves itself and the other never will.
 	Quarantined   bool      `json:"quarantined,omitempty"`
 	QuarantinedAt time.Time `json:"quarantined_at,omitempty"`
+
+	// Config is what the plugin declares it can be configured with, so the
+	// console can render a form instead of a free-text key/value editor where
+	// a typo goes unnoticed by both sides.
+	Config []manifest.ConfigDecl `json:"config,omitempty"`
 }
 
 // Manager owns installed packages and drives their lifecycle: enable, disable
@@ -294,6 +300,7 @@ func (m *Manager) List() []Status {
 			Jobs:        len(pkg.Manifest.Jobs),
 			HasFrontend: pkg.FrontendDir != "",
 			LoadError:   m.errors[key],
+			Config:      pkg.Manifest.Config,
 		}
 		for _, inst := range snap.Replicas(key) {
 			st.Replicas++
@@ -339,6 +346,15 @@ func (m *Manager) Package(key string) (*Package, bool) {
 //
 // A plugin that is not running is not an error: there is nobody to tell.
 func (m *Manager) SetConfig(ctx context.Context, key string, cfg map[string]string) error {
+	// Merged the same way a launch merges, so a plugin cannot see one shape of
+	// config at start-up and another after an edit.
+	m.mu.Lock()
+	pkg, ok := m.packages[key]
+	m.mu.Unlock()
+	if ok && pkg.Manifest != nil {
+		cfg = pkg.Manifest.MergeConfig(cfg)
+	}
+
 	replicas := m.registry.Current().Replicas(key)
 
 	var firstErr error
@@ -356,11 +372,26 @@ func (m *Manager) SetConfig(ctx context.Context, key string, cfg map[string]stri
 	return firstErr
 }
 
+// configFor is what a plugin receives: whatever an operator set, with the
+// manifest's declared defaults filled in for anything they did not.
+//
+// Supplying defaults here rather than leaving it to each plugin means a
+// setting has one stated default — the one a reviewer reads in the manifest
+// and an operator sees in the console — instead of that value and a second
+// copy buried in the plugin's own fallback logic, free to disagree with it.
 func (m *Manager) configFor(key string) map[string]string {
-	if m.cfg.ConfigSource == nil {
-		return nil
+	var set map[string]string
+	if m.cfg.ConfigSource != nil {
+		set = m.cfg.ConfigSource(key)
 	}
-	return m.cfg.ConfigSource(key)
+
+	m.mu.Lock()
+	pkg, ok := m.packages[key]
+	m.mu.Unlock()
+	if !ok || pkg.Manifest == nil {
+		return set
+	}
+	return pkg.Manifest.MergeConfig(set)
 }
 
 // launchAll starts every replica a package asks for, killing any that already

@@ -392,3 +392,97 @@ func TestExamplesStart(t *testing.T) {
 		})
 	}
 }
+
+// Declared defaults must reach the plugin, so a setting has one stated default
+// rather than one in the manifest and a second in the plugin's fallback code,
+// free to disagree.
+//
+// The ratelimit example declares 100/min and a burst of 20. With nothing
+// configured at all, that is what the running plugin should report.
+func TestExampleConfigDefaultsReachThePlugin(t *testing.T) {
+	// Deliberately no config: the operator has set nothing.
+	url, _, cleanup := exampleStack(t, nil)
+	defer cleanup()
+
+	resp, err := http.Get(url + "/api/plugins/ratelimit/stats")
+	if err != nil {
+		t.Fatalf("GET stats: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var stats struct {
+		RequestsPerMinute float64 `json:"requests_per_minute"`
+		Burst             float64 `json:"burst"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		t.Fatalf("decoding stats: %v", err)
+	}
+	t.Logf("with nothing configured: %.0f/min, burst %.0f", stats.RequestsPerMinute, stats.Burst)
+
+	if stats.RequestsPerMinute != 100 {
+		t.Errorf("rate = %.0f, want the manifest's declared default of 100", stats.RequestsPerMinute)
+	}
+	if stats.Burst != 20 {
+		t.Errorf("burst = %.0f, want the manifest's declared default of 20", stats.Burst)
+	}
+}
+
+// And an operator's value still wins over the declared default.
+func TestExampleConfigOperatorValueWins(t *testing.T) {
+	url, _, cleanup := exampleStack(t, map[string]string{"burst": "3"})
+	defer cleanup()
+
+	resp, err := http.Get(url + "/api/plugins/ratelimit/stats")
+	if err != nil {
+		t.Fatalf("GET stats: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var stats struct {
+		RequestsPerMinute float64 `json:"requests_per_minute"`
+		Burst             float64 `json:"burst"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		t.Fatalf("decoding stats: %v", err)
+	}
+
+	if stats.Burst != 3 {
+		t.Errorf("burst = %.0f, want the operator's 3", stats.Burst)
+	}
+	// The one they did not set still gets its default.
+	if stats.RequestsPerMinute != 100 {
+		t.Errorf("rate = %.0f; setting one key should not drop the others' defaults", stats.RequestsPerMinute)
+	}
+}
+
+// The declarations are served to the console, which is what lets it render a
+// form instead of a free-text editor where a typo goes unnoticed.
+func TestExampleConfigDeclarationsAreVisible(t *testing.T) {
+	root := t.TempDir()
+	installExampleAs(t, root, "ratelimit", "ratelimit", "../extension-example/ratelimit")
+
+	mgr, _ := newManagerOver(t, root, nil)
+	mgr.Scan()
+
+	for _, st := range mgr.List() {
+		if st.Key != "ratelimit" {
+			continue
+		}
+		if len(st.Config) == 0 {
+			t.Fatal("the plugin's config declarations are not reported; the console has nothing to render")
+		}
+		byKey := map[string]string{}
+		for _, c := range st.Config {
+			byKey[c.Key] = c.Type
+		}
+		t.Logf("declared settings: %v", byKey)
+		if byKey["requests_per_minute"] != "int" {
+			t.Errorf("requests_per_minute declared as %q, want int", byKey["requests_per_minute"])
+		}
+		if _, ok := byKey["exempt_paths"]; !ok {
+			t.Error("exempt_paths is missing from the declarations")
+		}
+		return
+	}
+	t.Fatal("ratelimit is not in the plugin list")
+}

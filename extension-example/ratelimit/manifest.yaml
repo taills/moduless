@@ -25,6 +25,26 @@ runtime:
 # a privilege.
 permissions: []
 
+# What an operator can set. Declaring it means the console renders a form
+# rather than a free-text key/value editor, Core supplies these defaults so the
+# plugin sees a complete map, and a reviewer can see what this plugin is
+# tunable to do without reading its source.
+config:
+  - key: requests_per_minute
+    label: 每分钟请求数
+    description: 每个调用方的稳态速率
+    type: int
+    default: "100"
+  - key: burst
+    label: 突发容量
+    description: 空闲后可攒的上限，也是瞬时可用的最大令牌数
+    type: int
+    default: "20"
+  - key: exempt_paths
+    label: 豁免路径
+    description: 逗号分隔的路径前缀，命中则不限流
+    type: string
+
 filters:
   - name: token-bucket
     phase: pre_route

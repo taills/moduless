@@ -49,3 +49,10 @@ filters:
 jobs:
   - name: purge-expired
     cron: "13 4 * * *"
+
+config:
+  - key: retention_days
+    label: 保留天数
+    description: 超过这个天数的审计记录会被定时任务删除
+    type: int
+    default: "30"

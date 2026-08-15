@@ -131,6 +131,15 @@ filters:
     needs_response_body: false # post_handler/on_error 想读响应体时必须开
     max_body_bytes: 65536
 
+config:                       # 管理员能配什么，见下方「配置」
+  - key: retention_days
+    label: 保留天数            # 控制台上的字段名，省略则用 key
+    description: 超过这个天数的记录会被清理
+    type: int                 # string | int | bool | duration | text
+    default: "30"             # 未设置时 Core 补给插件的值
+    required: false
+    secret: false             # true 时控制台隐藏取值
+
 jobs:
   - name: nightly-summary
     cron: "17 3 * * *"        # Core 调度，多副本只跑一个，禁用即停
@@ -286,7 +295,11 @@ resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 
 ### 配置
 
-管理员在控制台为每个插件维护一份键值配置。保存后 Core 立即推送给运行中的进程，**不需要重启插件**。
+**先在 manifest 里声明你接受哪些配置项**，再在代码里读。不声明也能读到管理员随手填的键，但那样键名就成了你和运维之间的口头约定 —— 任何一边拼错，插件都会安静地用编译内的默认值跑下去，而控制台上显示着管理员以为生效了的值，两边都看不出问题。
+
+声明之后：控制台按声明渲染表单而不是自由文本编辑器；`default` 由 Core 补齐，所以你的 `OnConfigChanged` 拿到的 map 总是完整的，不用在代码里再写一遍默认值；审核插件的人能一眼看到它可以被配置成做什么。
+
+管理员改动后 Core 立即推送给运行中的进程，**不需要重启插件**。
 
 ```go
 sdk.Serve(sdk.Config{
@@ -313,7 +326,9 @@ func main() {
 
 配置来自 Core，而 Core 是在 `sdk.Serve` 之后才发过来的。在 `Serve` 之前调用 `sdk.GetConfig()` 必然拿到空 map，插件于是悄悄用编译内的默认值运行，而控制台上显示的是管理员设的值 —— 两边都看不出问题。`sdk.GetConfig()` 只在请求处理期间有意义；配置初始化一律走 `OnConfigChanged`。
 
-无法解析的配置值应当回落到默认值，而不是关掉这项功能。控制台上的一个笔误不应该变成一扇敞开的门。
+值仍然一律是字符串 —— `type` 只影响控制台用什么输入框，因为 manifest 说了不算，实际生效的是管理员键入的东西。所以解析仍然要做，而且**无法解析时要回落到默认值，不要关掉这项功能**：控制台上的一个笔误不应该变成一扇敞开的门。
+
+管理员显式清空一个字段时，你收到的是空字符串而不是声明的默认值 —— 清空是一个决定，Core 不会替他们改回去。
 
 完整例子见 [`extension-example/ratelimit`](../extension-example/ratelimit)。
 

@@ -51,6 +51,14 @@ permissions:
 
 这条不是纸面上的：`tests/apikey_test.go` 用同一个插件二进制、只改授予的权限跑两遍，确认没有权限时身份不会被采纳 —— 检查在 Core 那一侧，插件无法选择不被检查。
 
+## 它修好的东西
+
+写这个示例之前，它描述的场景**在生产里根本不成立**：Core 解析 session 失败就直接 401，而那发生在 authenticate 阶段之前。一个带着 API key 但没有 session cookie 的请求，会在那个懂它凭据的插件被问到之前就被拒掉。`filter:authenticate` 这套机制存在、被文档描述、有权限门禁保护，但没有任何请求能走到它。
+
+现在 Core 把那个 401 推迟到 authenticate 和 authorize 之后 —— 问题还是同一个问题，只是换了个时机问，好让该回答的人有机会回答。没装 authenticate filter 的部署行为完全不变。
+
+代价写在文档里：插件路由仍然不能是公开的，因为那个 401 是无条件的。
+
 ## 菜单上的 roles 不保护路由
 
 ```go

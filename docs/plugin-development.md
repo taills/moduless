@@ -341,6 +341,24 @@ resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 
 同理，对不存在的文件调 `DeleteFile` 或 `GenerateDownloadToken` 拿到的是 `NotFound` 而不是 `Internal`。`GetFileMetadata` 不同 —— 它问的是「存不存在」，所以返回 `Found: false` 而不是错误。另一个插件的文件与不存在的文件在这三个调用上完全一样，这是故意的：能确认某个 id 真实存在，正是探测想要的东西。
 
+### 用非 session 的方式鉴权
+
+`authenticate` 阶段的 filter 可以调用 `SetIdentity` 告诉 Core 调用者是谁 —— API key、JWT、mTLS、签名请求，任何 Core 自己不认识的凭据都走这条路。前提是插件声明了 `filter:authenticate`，否则 Core 会丢弃这个 mutation 并记一行日志。
+
+顺序是这样的：
+
+1. Core 先解析自己的 session。解析不出来**不是拒绝**，只是这个请求暂时匿名。
+2. `authenticate` 阶段的 filter 依次跑，可以设置或替换身份。
+3. `authorize` 阶段的 filter 跑，可以短路拒绝。
+4. 到这里身份仍然是空的话，Core 返回 401。
+5. `pre_handler`、后端、`post_handler`。
+
+第 1 步和第 4 步分开是后来才修的。原先 Core 在第 1 步解析失败就直接 401，于是第 2 步永远跑不到 —— 一个带着 API key 但没有 session cookie 的请求，会被 Core 在那个懂它凭据的插件被问到之前就拒掉。整套 `filter:authenticate` 机制存在，但用不了。
+
+**一个必须知道的限制**：插件路由不能是公开的。第 4 步是无条件的，所以一个 `authorize` filter 返回 Continue 并不能放行匿名请求。没装 authenticate filter 的部署行为和以前完全一致。
+
+[`apikey` 示例](../extension-example/apikey)是这条路的完整写法。
+
 ### `sdk.Cache` 是一次 RPC，不是本地缓存
 
 缓存在 Core 里，所以一次「缓存命中」仍然是一次跨进程往返。用 [`apikey` 示例](../extension-example/apikey)实测每次调用：

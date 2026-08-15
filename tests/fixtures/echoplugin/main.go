@@ -319,8 +319,15 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 			"X-Echo-Path":  {Values: []string{req.GetPath()}},
 			// Which replica answered, so load-balancing can be observed from
 			// outside rather than inferred.
-			"X-Instance":      {Values: []string{instance}},
-			"X-Host-Config":   {Values: []string{greeting}},
+			"X-Instance":    {Values: []string{instance}},
+			"X-Host-Config": {Values: []string{greeting}},
+			// Who Core says is calling. Echoed so a test can check that an
+			// identity another plugin established in the authenticate phase
+			// actually reaches this one's handler — which is the whole claim
+			// of a shared request pipeline, and was not covered until it
+			// turned out not to work at the gateway.
+			"X-Caller":        {Values: []string{req.GetIdentity().GetUsername()}},
+			"X-Caller-Roles":  {Values: []string{strings.Join(req.GetIdentity().GetRoles(), ",")}},
 			"X-Launch-Config": {Values: []string{launched}},
 			// Two values on one header, to prove repeated headers survive the
 			// round trip. The legacy tunnel dropped all but the first.

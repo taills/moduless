@@ -138,32 +138,58 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 }
 
 func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap *pluginhost.Snapshot, chain *pipeline.Chain, rc *pipeline.RequestContext) {
-	// Identity is established before the authentication filters run, so a
-	// filter sees whatever Core already resolved and can enrich or replace it.
+	// Core resolves the session first, so a filter sees whatever Core already
+	// knows and can enrich or replace it.
+	//
+	// A session that does not resolve leaves the request anonymous rather than
+	// refusing it here. That refusal used to happen before the authenticate
+	// phase ran, which made the phase unreachable: a caller holding an API
+	// key, a JWT, a signature — anything that is not one of Core's own session
+	// cookies — was answered 401 by Core before the plugin that understands
+	// their credential was ever asked. The whole filter:authenticate mechanism
+	// existed and could not be used.
 	if h.Auth != nil {
-		user, ok := h.Auth.Resolve(SessionToken(r))
-		if !ok {
-			http.Error(w, "unauthenticated", http.StatusUnauthorized)
-			h.logPhase(chain, snap, rc)
-			return
-		}
-		rc.Identity = &pb.Identity{
-			UserId:   strconv.Itoa(int(user.ID)),
-			Username: user.Username,
-			Roles:    []string{user.Role},
+		if user, ok := h.Auth.Resolve(SessionToken(r)); ok {
+			rc.Identity = &pb.Identity{
+				UserId:   strconv.Itoa(int(user.ID)),
+				Username: user.Username,
+				Roles:    []string{user.Role},
+			}
 		}
 	}
 
 	for _, phase := range []pb.Phase{
 		pb.Phase_PHASE_AUTHENTICATE,
 		pb.Phase_PHASE_AUTHORIZE,
-		pb.Phase_PHASE_PRE_HANDLER,
 	} {
 		if out := h.Runner.Run(r.Context(), chain, snap, phase, rc); out.Stopped() {
 			h.writeResponse(w, out.ShortCircuit)
 			h.logPhase(chain, snap, rc)
 			return
 		}
+	}
+
+	// The refusal, moved to after the phase whose job is to prevent it.
+	//
+	// Still unconditional: a plugin route reached by a caller nobody could
+	// identify is refused exactly as before. What changed is only *when* the
+	// question is asked, so that a plugin holding filter:authenticate gets to
+	// answer it first. A deployment with no authenticate filter installed
+	// behaves identically to before.
+	//
+	// The consequence worth stating: a plugin route cannot be public. If that
+	// is ever wanted it belongs in the manifest, as a declaration an operator
+	// approves, and not as an authorize filter quietly returning Continue.
+	if h.Auth != nil && rc.Identity == nil {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		h.logPhase(chain, snap, rc)
+		return
+	}
+
+	if out := h.Runner.Run(r.Context(), chain, snap, pb.Phase_PHASE_PRE_HANDLER, rc); out.Stopped() {
+		h.writeResponse(w, out.ShortCircuit)
+		h.logPhase(chain, snap, rc)
+		return
 	}
 
 	// Route on the possibly-rewritten path, so a pre_handler filter can send a

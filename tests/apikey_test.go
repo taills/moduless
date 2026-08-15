@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/taills/moduless/core/auth"
 	"github.com/taills/moduless/core/db"
+	"github.com/taills/moduless/core/gateway"
 	"github.com/taills/moduless/core/hostsvc"
 	"github.com/taills/moduless/core/pipeline"
 	"github.com/taills/moduless/core/pluginhost"
@@ -398,5 +400,193 @@ func TestAuthenticateFilterCost(t *testing.T) {
 		t.Errorf("a cached lookup costs %s against %s for no credential at all — more than "+
 			"double. An authenticate filter is paid by every request in the system, so this "+
 			"is not the plugin's own latency, it is everyone's", perCall, perAnon)
+	}
+}
+
+// --- the gateway ---------------------------------------------------------------
+
+// stubResolver resolves exactly one session token and nothing else, which is
+// what a Core with authentication enabled looks like.
+type stubResolver struct{ token string }
+
+func (s stubResolver) Resolve(tok string) (auth.User, bool) {
+	if tok != "" && tok == s.token {
+		return auth.User{ID: 1, Username: "admin", Role: "admin"}, true
+	}
+	return auth.User{}, false
+}
+
+// authGateway serves a backend plugin behind an authenticate filter belonging
+// to a different plugin — the arrangement the whole model exists for.
+func authGateway(t *testing.T, authInst *pluginhost.Instance) (string, *pluginhost.Registry) {
+	t.Helper()
+
+	backend := launchPlugin(t, "hello", "1.0.0", nil)
+
+	reg := pluginhost.NewRegistry()
+	reg.InstallPlugin(pluginhost.Registration{
+		Key:       "apikey",
+		Instances: []*pluginhost.Instance{authInst},
+		Filters: compileFilters(t, "apikey", manifest.FilterDecl{
+			Name:  "authenticate",
+			Phase: manifest.PhaseAuthenticate,
+			Match: manifest.FilterMatch{Paths: []string{"/**"}},
+		}),
+		AllowIdentityMutation: true,
+	})
+	reg.InstallPlugin(pluginhost.Registration{
+		Key:       "hello",
+		Instances: []*pluginhost.Instance{backend},
+	})
+
+	h := &gateway.PluginHandler{
+		Registry: reg,
+		Runner:   &pipeline.Runner{},
+		// Core has authentication enabled, which is the normal deployment.
+		Auth: stubResolver{token: "good-session"},
+	}
+	srv := httptest.NewServer(h.Middleware(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) })))
+	t.Cleanup(srv.Close)
+	return srv.URL, reg
+}
+
+// A caller with an API key and no session reaches the plugin.
+//
+// This is the whole point of an authenticate-phase filter and it did not work:
+// Core resolved the session, found none, and answered 401 before the
+// authenticate phase ran. Every non-session scheme — API keys, JWTs, mTLS,
+// signed requests — was unreachable, in a framework whose fourth requirement
+// is that plugins intervene in each phase of the request lifecycle.
+func TestApiKeyAuthenticatesAtTheGateway(t *testing.T) {
+	inst, _ := authPlugin(t, t.TempDir(), []string{"db", "cache", "filter:authenticate"})
+	key := mintKey(t, inst, "42", "svc", []string{"reader"})
+
+	url, _ := authGateway(t, inst)
+
+	req, _ := http.NewRequest(http.MethodGet, url+"/api/plugins/hello/items", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		t.Fatal("Core refused a request the authenticate phase would have authenticated; " +
+			"the phase never ran")
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d", resp.StatusCode)
+	}
+}
+
+// The other direction, which is the protection this must not remove: a caller
+// with neither a session nor a key still gets nothing.
+func TestNoCredentialStillGetsNothing(t *testing.T) {
+	inst, _ := authPlugin(t, t.TempDir(), []string{"db", "cache", "filter:authenticate"})
+	url, _ := authGateway(t, inst)
+
+	resp, err := http.Get(url + "/api/plugins/hello/items")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401; an anonymous caller reached a plugin", resp.StatusCode)
+	}
+}
+
+// A wrong key is the same as no key. Worth its own case because "the filter
+// ran" and "the filter approved" are different things, and a fix that runs the
+// phase but ignores its verdict would pass the test above.
+func TestAWrongKeyGetsNothing(t *testing.T) {
+	inst, _ := authPlugin(t, t.TempDir(), []string{"db", "cache", "filter:authenticate"})
+	url, _ := authGateway(t, inst)
+
+	req, _ := http.NewRequest(http.MethodGet, url+"/api/plugins/hello/items", nil)
+	req.Header.Set("Authorization", "Bearer not-a-real-key")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// And a session still works, unchanged. Whatever the fix is, it must not be
+// "stop checking".
+func TestSessionStillAuthenticates(t *testing.T) {
+	inst, _ := authPlugin(t, t.TempDir(), []string{"db", "cache", "filter:authenticate"})
+	url, _ := authGateway(t, inst)
+
+	req, _ := http.NewRequest(http.MethodGet, url+"/api/plugins/hello/items", nil)
+	req.Header.Set("Authorization", "Bearer good-session")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 for a valid session", resp.StatusCode)
+	}
+}
+
+// The identity one plugin establishes reaches another plugin's handler.
+//
+// This is the product claim — plugins from different teams intervening at
+// different phases of one request — and it had no test. Everything before this
+// checked one plugin at a time: that the authenticate filter returns a
+// mutation, that Core applies it. Nobody had checked that the plugin actually
+// serving the request is told who the caller is.
+func TestIdentityFromOnePluginReachesAnother(t *testing.T) {
+	inst, _ := authPlugin(t, t.TempDir(), []string{"db", "cache", "filter:authenticate"})
+	key := mintKey(t, inst, "42", "svc-reporting", []string{"reader", "writer"})
+
+	url, _ := authGateway(t, inst)
+
+	req, _ := http.NewRequest(http.MethodGet, url+"/api/plugins/hello/items", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("X-Caller"); got != "svc-reporting" {
+		t.Errorf("the backend plugin saw caller %q; the identity the authenticate filter "+
+			"established did not reach it", got)
+	}
+	if got := resp.Header.Get("X-Caller-Roles"); got != "reader,writer" {
+		t.Errorf("roles = %q; want the ones the key carries", got)
+	}
+}
+
+// A session identity reaches the backend too, and is not overwritten by an
+// authenticate filter that had nothing to add. A filter returning Continue
+// must leave what Core resolved alone.
+func TestSessionIdentityReachesTheBackendUnchanged(t *testing.T) {
+	inst, _ := authPlugin(t, t.TempDir(), []string{"db", "cache", "filter:authenticate"})
+	url, _ := authGateway(t, inst)
+
+	req, _ := http.NewRequest(http.MethodGet, url+"/api/plugins/hello/items", nil)
+	req.Header.Set("Authorization", "Bearer good-session")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("X-Caller"); got != "admin" {
+		t.Errorf("the backend saw caller %q; Core's own session identity was lost or "+
+			"overwritten by a filter that returned Continue", got)
 	}
 }

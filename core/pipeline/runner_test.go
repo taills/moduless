@@ -730,3 +730,88 @@ func TestMutatedHeadersReachLaterFilters(t *testing.T) {
 		t.Error("the second filter still sees a header the first one removed")
 	}
 }
+
+// What one filter costs in allocations.
+//
+// Wall-clock benchmarks exist and are the honest measure of latency, but they
+// cannot guard against regression on a laptop: run-to-run variance on the
+// filter-depth benchmark is comfortably wider than a change worth catching,
+// and the first run of a set is reliably wrong. Allocation counts do not move
+// with CPU load, so this is the part of the hot path that can actually be
+// pinned.
+//
+// The number is a ceiling with room in it, not a target. It is here to catch
+// something that starts copying per request — a header map cloned on every
+// filter, a []byte round-tripped through a string — not to police a couple of
+// allocations either way.
+func TestFilterCallAllocationBudget(t *testing.T) {
+	// The fake target answers in-process, so what is measured is the
+	// pipeline's own work: matching, building the request, applying the
+	// verdict. A real filter adds the gRPC round trip on top, and that cost is
+	// in the benchmarks rather than here.
+	target := newFakeTarget(continueResp())
+	res := fakeResolver{"p": target}
+	ctx := context.Background()
+
+	one := buildChain(t, "p", false, decl(manifest.PhasePreRoute, []string{"/**"}, nil))
+	three := buildChain(t, "p", false,
+		decl(manifest.PhasePreRoute, []string{"/**"}, func(d *manifest.FilterDecl) { d.Name = "a" }),
+		decl(manifest.PhasePreRoute, []string{"/**"}, func(d *manifest.FilterDecl) { d.Name = "b"; d.Order = 2 }),
+		decl(manifest.PhasePreRoute, []string{"/**"}, func(d *manifest.FilterDecl) { d.Name = "c"; d.Order = 3 }),
+	)
+
+	var r Runner
+	measure := func(chain *Chain) float64 {
+		// Headers a real request carries. The first version of this test used
+		// an empty header map, which made it blind to the regression it exists
+		// to catch: converting headers per filter instead of once allocates
+		// nothing when there are no headers to convert.
+		rc := newCtx()
+		rc.Header = http.Header{
+			"Accept":          {"application/json"},
+			"Accept-Encoding": {"gzip, deflate"},
+			"Authorization":   {"Bearer abcdefghijklmnop"},
+			"Content-Type":    {"application/json"},
+			"Cookie":          {"moduless_token=abcdef; theme=dark"},
+			"User-Agent":      {"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+			"X-Request-Id":    {"01JBQ0Z3N9K2M4P6R8T0V2X4Z6"},
+		}
+		return testing.AllocsPerRun(200, func() {
+			r.Run(ctx, chain, res, pb.Phase_PHASE_PRE_ROUTE, rc)
+		})
+	}
+
+	got1 := measure(one)
+	got3 := measure(three)
+	marginal := (got3 - got1) / 2
+
+	t.Logf("1 filter: %.0f allocs; 3 filters: %.0f; marginal %.1f per extra filter",
+		got1, got3, marginal)
+
+	// Roughly double what it costs today, which leaves room for a refactor
+	// and still catches anything that starts copying. Measured at five
+	// allocations per filter — worth putting next to the end-to-end benchmark,
+	// which shows about 129 per filter in total: the other ~124 are the gRPC
+	// round trip, not the pipeline. Deep pipelines are expensive because of
+	// the process boundary, and this test exists to keep it that way.
+	const (
+		maxFirst    = 12
+		maxMarginal = 10
+	)
+	if got1 > maxFirst {
+		t.Errorf("one filter allocates %.0f times, over the %d budget; something is copying "+
+			"per request", got1, maxFirst)
+	}
+	if marginal > maxMarginal {
+		t.Errorf("each extra filter allocates %.1f times, over the %d budget; per-filter cost "+
+			"is what makes a deep pipeline expensive", marginal, maxMarginal)
+	}
+	// The other direction: if this ever reads zero, the chain is not running
+	// and the budget is measuring nothing.
+	if got1 == 0 {
+		t.Error("a filter that ran allocated nothing; the chain is probably empty")
+	}
+	if target.calls.Load() == 0 {
+		t.Error("the filter was never called")
+	}
+}

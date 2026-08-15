@@ -81,6 +81,18 @@ type Status struct {
 	// console can render a form instead of a free-text key/value editor where
 	// a typo goes unnoticed by both sides.
 	Config []manifest.ConfigDecl `json:"config,omitempty"`
+
+	// Tripped counts replicas whose circuit breaker is currently rejecting
+	// calls, and OldestStartedAt is when the longest-running replica began.
+	//
+	// Both were readable on an Instance and reached nobody. A tripped breaker
+	// looks from the console exactly like a plugin that is merely slow —
+	// enabled, ready, returning errors — and those need opposite responses:
+	// one is Core deliberately not calling a plugin that has been failing, and
+	// it clears itself; the other does not. The start time is what tells an
+	// operator whether a plugin has been quietly restarting all morning.
+	Tripped         int       `json:"tripped,omitempty"`
+	OldestStartedAt time.Time `json:"oldest_started_at,omitempty"`
 }
 
 // Manager owns installed packages and drives their lifecycle: enable, disable
@@ -307,6 +319,16 @@ func (m *Manager) List() []Status {
 			st.InFlight += inst.InFlight()
 			if inst.State() == StateReady {
 				st.Ready++
+			}
+			// Open rather than Allow: Allow consumes the half-open probe, so
+			// reading the state through it would starve the recovery it is
+			// reporting on.
+			if inst.Breaker != nil && inst.Breaker.Open() {
+				st.Tripped++
+			}
+			if at := inst.StartedAt(); !at.IsZero() &&
+				(st.OldestStartedAt.IsZero() || at.Before(st.OldestStartedAt)) {
+				st.OldestStartedAt = at
 			}
 		}
 		if at, isolated := m.sup.QuarantinedSince(key); isolated {

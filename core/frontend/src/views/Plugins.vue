@@ -61,13 +61,31 @@ function statusText(p) {
   if (p.load_error) return "加载失败";
   if (!p.enabled) return "已停用";
   if (p.ready === 0) return "启动中";
+  // A tripped breaker outranks "running": the replica is up and Core has
+  // stopped calling it, which looks identical to a slow plugin unless it says
+  // so. It clears itself, which "部分就绪" does not.
+  if (p.tripped) return `熔断中 ${p.tripped}/${p.replicas}`;
   if (p.ready < p.replicas) return `部分就绪 ${p.ready}/${p.replicas}`;
   return "运行中";
+}
+
+// How long the longest-running replica has been up. A plugin that keeps
+// restarting reads as "running" on every refresh; this is what shows it.
+function uptime(p) {
+  if (!p.oldest_started_at) return "";
+  const started = new Date(p.oldest_started_at).getTime();
+  if (Number.isNaN(started)) return "";
+  const secs = Math.max(0, Math.floor((Date.now() - started) / 1000));
+  if (secs < 60) return `${secs} 秒`;
+  if (secs < 3600) return `${Math.floor(secs / 60)} 分钟`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)} 小时`;
+  return `${Math.floor(secs / 86400)} 天`;
 }
 
 function statusClass(p) {
   if (p.load_error) return "bad";
   if (!p.enabled) return "off";
+  if (p.tripped) return "bad";
   if (p.ready === 0 || p.ready < p.replicas) return "warn";
   return "ok";
 }
@@ -106,7 +124,10 @@ onMounted(load);
             <span class="badge" :class="statusClass(p)">{{ statusText(p) }}</span>
             <div v-if="p.load_error" class="load-error">{{ p.load_error }}</div>
           </td>
-          <td>{{ p.ready }}/{{ p.replicas }}<span v-if="p.in_flight"> · 处理中 {{ p.in_flight }}</span></td>
+          <td>
+            {{ p.ready }}/{{ p.replicas }}<span v-if="p.in_flight"> · 处理中 {{ p.in_flight }}</span>
+            <div v-if="uptime(p)" class="uptime">已运行 {{ uptime(p) }}</div>
+          </td>
           <td>{{ p.filters || 0 }}</td>
           <td class="perms">
             <span v-for="perm in p.permissions || []" :key="perm" class="perm">{{ perm }}</span>
@@ -178,6 +199,11 @@ code {
 .badge.bad {
   background: #fee2e2;
   color: #991b1b;
+}
+.uptime {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #6b7280;
 }
 .load-error {
   margin-top: 4px;

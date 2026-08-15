@@ -228,3 +228,75 @@ func TestConfigDoesNotLeakBetweenPlugins(t *testing.T) {
 		t.Errorf("beta sees %q; alpha's setting reached it", asked)
 	}
 }
+
+// A tripped circuit breaker is visible from outside.
+//
+// Breaker.Open() existed, said in its own comment that it was safe for
+// diagnostics, and was called by nothing but tests: Status carried no breaker
+// state, so the console could not show it. From there a plugin Core has
+// stopped calling looks exactly like one that is merely slow — enabled,
+// ready, failing — and the two need opposite responses. One is Core protecting
+// itself from a plugin that has been erroring, and it clears on its own; the
+// other does not.
+func TestStatusReportsATrippedBreaker(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "alpha", "1.0.0", 0, "")
+
+	mgr, _ := configuredManager(t, root)
+	mgr.Scan()
+	if err := mgr.Enable(context.Background(), "alpha"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	inst := firstReplica(t, mgr.registry, "alpha")
+
+	if got := statusFor(t, mgr, "alpha"); got.Tripped != 0 {
+		t.Fatalf("a healthy plugin reports %d tripped replica(s)", got.Tripped)
+	}
+
+	// Fail it until the breaker opens.
+	for range 20 {
+		inst.Breaker.RecordFailure()
+	}
+	if !inst.Breaker.Open() {
+		t.Fatal("the breaker did not open after 20 failures; this test is not testing anything")
+	}
+
+	if got := statusFor(t, mgr, "alpha"); got.Tripped != 1 {
+		t.Errorf("tripped = %d, want 1; an operator cannot tell this plugin from a slow one",
+			got.Tripped)
+	}
+}
+
+// The start time reaches the console too, which is what says whether a plugin
+// has been quietly restarting rather than running since Core came up.
+func TestStatusReportsWhenAReplicaStarted(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "alpha", "1.0.0", 0, "")
+
+	mgr, _ := configuredManager(t, root)
+	mgr.Scan()
+	before := time.Now()
+	if err := mgr.Enable(context.Background(), "alpha"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	got := statusFor(t, mgr, "alpha")
+	if got.OldestStartedAt.IsZero() {
+		t.Fatal("no start time reported for a running plugin")
+	}
+	if got.OldestStartedAt.Before(before.Add(-time.Minute)) {
+		t.Errorf("start time %s is not from this run", got.OldestStartedAt)
+	}
+}
+
+func statusFor(t *testing.T, mgr *Manager, key string) Status {
+	t.Helper()
+	for _, s := range mgr.List() {
+		if s.Key == key {
+			return s
+		}
+	}
+	t.Fatalf("no status for %s", key)
+	return Status{}
+}

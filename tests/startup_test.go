@@ -33,6 +33,10 @@ func newManagerOver(t *testing.T, root string, cfg map[string]string) (*pluginho
 		Dir:         root,
 		DataDirRoot: filepath.Join(root, "data"),
 		DevMode:     true,
+		// A short poll so a watcher notices its instance is gone promptly.
+		// With the production default of one second, a test measuring what is
+		// left after a teardown would be sampling between two polls.
+		Supervisor: pluginhost.SupervisorConfig{PollInterval: 20 * time.Millisecond},
 		ConfigSource: func(key string) map[string]string {
 			out, _ := store.Get(context.Background(), key)
 			return out

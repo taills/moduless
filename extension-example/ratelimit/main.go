@@ -237,6 +237,6 @@ func (l *limiter) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(stats); err != nil {
-		sdk.Log.Error(r.Context(), "writing stats", "err", err.Error())
+		sdk.Log.Error(r.Context(), "writing stats", "err", err)
 	}
 }

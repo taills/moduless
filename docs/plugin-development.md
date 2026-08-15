@@ -182,6 +182,33 @@ err := sdk.DB.Tx(ctx, 30*time.Second, func(tx *sdk.TxClient) error {
 })
 ```
 
+完整的查询方法：
+
+| 条件 | 说明 |
+|---|---|
+| `Eq` `Ne` | 等于 / 不等于 |
+| `Gt` `Gte` `Lt` `Lte` | 大小比较 |
+| `Like` | SQL LIKE，`%` 通配 |
+| `In(field, v...)` | 属于集合 |
+| `Between(field, lo, hi)` | 闭区间 |
+| `IsNull` `IsNotNull` | 字段是否存在 |
+| `Sort` `SortDesc` | 排序，可叠加多个 |
+| `Limit` `After(cursor)` | 分页 |
+
+终结方法：`All(ctx, &dest)` 取一页并返回下一页游标，`Count(ctx)`，以及 `Sum` / `Avg` / `Min` / `Max`（都可选传 group by 字段）。
+
+单条操作：`Put`、`PutIfVersion`、`Get`、`Delete(ctx, collection, id) (found bool, err error)`。删除不需要事务；`Delete` 返回的第一个值告诉你那条记录本来是否存在。
+
+**所有比较值都是字符串**，包括数字和时间。这是因为文档存储的字段类型由 JSON 决定，而比较需要一个确定的顺序。实际影响是：**要按时间范围查询，就得把时间存成按字典序可比的格式** —— RFC3339（`2026-08-16T03:17:00Z`）可以，Unix 时间戳整数不行（`"9"` 排在 `"10"` 后面）。
+
+```go
+// 可以：字典序等于时间序
+Gt("created", "2026-01-01T00:00:00Z")
+
+// 不行：字符串比较下 "999" > "1000"
+Gt("created_unix", strconv.FormatInt(ts, 10))
+```
+
 **分页用游标不用 offset**。offset 会让数据库逐行跳过并丢弃，翻得越深越慢，而且期间有行插入或删除会导致重复或遗漏。游标基于排序键加主键做行值比较，翻到第一百页和第一页一样快。代价是所有排序字段必须同方向 —— 方向混用会被拒绝，而不是悄悄返回错误的分页。
 
 **事务有超时**。它占着一个数据库连接，所以插件崩溃时 Core 会到期回滚，不会永久占用。把事务里的活儿写短。
@@ -237,7 +264,7 @@ _ = sdk.Events.Publish(ctx, "note.created", note)
 // 订阅是阻塞的：它一直收到 ctx 取消或出错才返回，所以要自己起 goroutine
 go func() {
     if err := sdk.Events.Subscribe(ctx, "otherplugin:thing.happened", handler); err != nil {
-        sdk.Log.Error(ctx, "订阅结束", "err", err.Error())
+        sdk.Log.Error(ctx, "订阅结束", "err", err)
     }
 }()
 
@@ -285,6 +312,16 @@ func main() {
 无法解析的配置值应当回落到默认值，而不是关掉这项功能。控制台上的一个笔误不应该变成一扇敞开的门。
 
 完整例子见 [`extension-example/ratelimit`](../extension-example/ratelimit)。
+
+### 日志与指标
+
+```go
+sdk.Log.Info(ctx, "订单已创建", "order_id", id, "total", total)
+sdk.Log.Error(ctx, "支付回调失败", "err", err, "attempt", n)
+sdk.Log.Metric(ctx, "orders_created", 1, map[string]string{"region": region})
+```
+
+字段是交替的键值对，值可以是任意类型 —— 字符串、数字、error 都行，Core 侧统一格式化。trace id 自动附加，不用手工传。
 
 ### 定时任务
 

@@ -671,28 +671,35 @@ func (h *HTTPClient) Get(ctx context.Context, url string) (*http.Response, error
 // startup handshake.
 type Logger struct{ c pb.HostServicesClient }
 
-func (l *Logger) Debug(ctx context.Context, msg string, fields ...string) {
+func (l *Logger) Debug(ctx context.Context, msg string, fields ...any) {
 	l.log(ctx, pb.LogLevel_LOG_DEBUG, msg, fields)
 }
-func (l *Logger) Info(ctx context.Context, msg string, fields ...string) {
+func (l *Logger) Info(ctx context.Context, msg string, fields ...any) {
 	l.log(ctx, pb.LogLevel_LOG_INFO, msg, fields)
 }
-func (l *Logger) Warn(ctx context.Context, msg string, fields ...string) {
+func (l *Logger) Warn(ctx context.Context, msg string, fields ...any) {
 	l.log(ctx, pb.LogLevel_LOG_WARN, msg, fields)
 }
-func (l *Logger) Error(ctx context.Context, msg string, fields ...string) {
+func (l *Logger) Error(ctx context.Context, msg string, fields ...any) {
 	l.log(ctx, pb.LogLevel_LOG_ERROR, msg, fields)
 }
 
 // log accepts fields as alternating key/value pairs.
-func (l *Logger) log(ctx context.Context, level pb.LogLevel, msg string, fields []string) {
+// log turns alternating key/value pairs into a field map.
+//
+// Values are any, not string, because the alternative is that every call site
+// converts by hand — strconv.Itoa around a count, err.Error() around an error
+// — and a plugin author following the structured-logging convention every
+// other Go library uses would not expect to. Anything that is not already a
+// string is formatted here instead.
+func (l *Logger) log(ctx context.Context, level pb.LogLevel, msg string, fields []any) {
 	stream, err := l.c.Log(outgoing(ctx))
 	if err != nil {
 		return
 	}
 	kv := make(map[string]string, len(fields)/2)
 	for i := 0; i+1 < len(fields); i += 2 {
-		kv[fields[i]] = fields[i+1]
+		kv[asLogValue(fields[i])] = asLogValue(fields[i+1])
 	}
 	_ = stream.Send(&pb.LogRecord{
 		Level:              level,
@@ -705,6 +712,19 @@ func (l *Logger) log(ctx context.Context, level pb.LogLevel, msg string, fields 
 }
 
 // Metric records a measurement.
+// asLogValue renders one field value. Errors use their message rather than
+// their Go representation, which is what a reader of the log wants.
+func asLogValue(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case error:
+		return t.Error()
+	default:
+		return fmt.Sprint(v)
+	}
+}
+
 func (l *Logger) Metric(ctx context.Context, name string, value float64, labels map[string]string) {
 	_, _ = l.c.RecordMetric(outgoing(ctx), &pb.MetricRequest{
 		Name: name, Kind: pb.MetricKind_METRIC_COUNTER, Value: value, Labels: labels,

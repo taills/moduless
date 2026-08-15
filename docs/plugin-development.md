@@ -17,11 +17,13 @@ import (
 func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /hello", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "hello %s", sdk.User(r.Context()).Username)
+		fmt.Fprintf(w, "hello %s", sdk.User(r.Context()).Name())
 	})
 	sdk.Serve(sdk.Config{Handler: mux})
 }
 ```
+
+`sdk.User(ctx)` 在没有登录用户时返回 `nil`，所以用 `.Name()` / `.ID()` / `.HasRole()` 这些方法读取 —— 它们对 `nil` 安全。直接写 `.Username` 会在未认证请求上 panic，而**插件里的 panic 会杀掉插件进程**：一个匿名请求就能让这个插件下线。
 
 `sdk.Serve` 接收标准 `http.Handler`，所以 chi、gin、echo 或任何中间件都能直接用 —— SDK 把 Core 的请求还原成真正的 `*http.Request`，而不是让你面向一套自定义接口编程。
 
@@ -361,6 +363,19 @@ Filter 是 IIS Filter / ASP.NET HttpModule 那套模型：插件可以介入**�
 | `post_handler` | 后端返回后 | 改写响应 |
 | `on_error` | 后端 5xx 或超时 | 兜底、告警 |
 | `log` | 响应已发出 | 审计、埋点（异步，不影响响应） |
+
+filter 收到的 `*sdk.FilterRequest` 字段：
+
+| 字段 | 何时有值 |
+|---|---|
+| `Phase` `TraceID` `Method` `Path` `Query` `ClientIP` `Header` | 一直有 |
+| `Identity` | Core 解析出登录用户时；未认证是 `nil` |
+| `Body` | 仅当声明了 `needs_request_body` |
+| `ResponseStatus` `ResponseHeader` | `post_handler`、`on_error`、`log` 阶段 |
+| `ResponseBody` | 上述阶段且声明了 `needs_response_body` |
+| `Values` | 同一请求里更早的 filter 用 `SetValue` 放进去的 |
+
+`sdk.User(ctx)` 在 filter 里同样可用，读到的是 Core 解析出的调用者 —— 和 `req.Identity` 是同一份。
 
 ```go
 sdk.Serve(sdk.Config{

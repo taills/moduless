@@ -17,6 +17,30 @@ type UserContext struct {
 	Roles    []string
 }
 
+// Name is the username, or "" when there is no authenticated caller.
+//
+// Nil-safe on purpose. User returns nil for an unauthenticated request, so
+// reaching straight for .Username panics — and a panic inside a plugin kills
+// the process, turning one anonymous request into an outage. Every accessor
+// here tolerates nil so that the obvious code is also the correct code.
+func (u *UserContext) Name() string {
+	if u == nil {
+		return ""
+	}
+	return u.Username
+}
+
+// ID is the caller's user id, or "" when there is none.
+func (u *UserContext) ID() string {
+	if u == nil {
+		return ""
+	}
+	return u.UserID
+}
+
+// Authenticated reports whether Core resolved a caller for this request.
+func (u *UserContext) Authenticated() bool { return u != nil && u.UserID != "" }
+
 // HasRole reports whether the caller holds a role.
 func (u *UserContext) HasRole(role string) bool {
 	if u == nil {

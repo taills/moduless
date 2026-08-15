@@ -1,0 +1,51 @@
+key: audit
+display_name: 审计日志
+version: 1.0.0
+weight: 1
+
+runtime:
+  entrypoint: bin/plugin
+  replicas: 1
+
+# db: 存储审计记录。cron: 定期清理过期记录。
+# 没有声明 filter:authenticate —— 这个插件只读身份，不改写它。
+permissions:
+  - db
+  - cron
+
+database:
+  collections:
+    - name: audit_log
+      indexes:
+        - fields: [user]
+        - fields: [at]
+          unique: false
+
+# 猜测点：叶子节点只声明 entry: ""，但本插件没有提供 frontend/ 目录。
+# 指南没说这种情况下控制台会怎么处理（空白页？报错？回退成占位符？）。
+menus:
+  - path: /audit
+    title: 审计日志
+    icon: file-text
+    order: 50
+    entry: ""
+
+# phase 用的是文档表格里的名字 "log"；对应的 Go 常量名字（下方 main.go 里
+# 用的 sdk.PhaseLog）是猜的 —— 指南只给出过 sdk.PhasePreRoute 和
+# sdk.PhasePreHandler 两个例子，log 阶段没有任何代码示例。
+#
+# match.paths 写成 /** 是因为审计要求覆盖网关上的所有写请求，不只是本插件
+# 自己的路由。指南明确提示过这个代价："写 /** 意味着每个请求都要跨进程一次"。
+filters:
+  - name: record-writes
+    phase: log
+    order: 10
+    match:
+      paths: ["/**"]
+      methods: ["POST", "PUT", "PATCH", "DELETE"]
+    timeout_ms: 50
+    fail_closed: false
+
+jobs:
+  - name: purge-expired
+    cron: "13 4 * * *"

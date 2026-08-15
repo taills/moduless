@@ -330,3 +330,35 @@ func TestPutSerialisesValue(t *testing.T) {
 		t.Errorf("stored %+v, want the value passed in", round)
 	}
 }
+
+// User returns nil for an unauthenticated request, and a plugin reading the
+// caller is the most ordinary thing there is. Every accessor therefore has to
+// tolerate nil — a panic inside a plugin kills the process, so one anonymous
+// request would otherwise take the plugin down.
+func TestUserAccessorsAreNilSafe(t *testing.T) {
+	var absent *UserContext
+
+	if got := absent.Name(); got != "" {
+		t.Errorf("Name() = %q on a nil user", got)
+	}
+	if got := absent.ID(); got != "" {
+		t.Errorf("ID() = %q on a nil user", got)
+	}
+	if absent.Authenticated() {
+		t.Error("Authenticated() is true for a nil user")
+	}
+	if absent.HasRole("admin") {
+		t.Error("HasRole() is true for a nil user")
+	}
+
+	present := &UserContext{UserID: "7", Username: "ann", Roles: []string{"admin"}}
+	if present.Name() != "ann" || present.ID() != "7" {
+		t.Errorf("accessors returned %q/%q for a present user", present.Name(), present.ID())
+	}
+	if !present.Authenticated() || !present.HasRole("admin") {
+		t.Error("a present user reports as unauthenticated or roleless")
+	}
+	if present.HasRole("nope") {
+		t.Error("HasRole matched a role the user does not hold")
+	}
+}

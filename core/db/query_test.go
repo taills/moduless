@@ -73,7 +73,7 @@ func TestQuerySortAndCursorPagination(t *testing.T) {
 	cursor := ""
 	pages := 0
 	for {
-		res, err := m.Query(ctx, ext, "items", QueryOptions{
+		res, err := m.Query(ctx, nil, ext, "items", QueryOptions{
 			Sort:   []SortField{{Field: "rank"}},
 			Limit:  3,
 			Cursor: cursor,
@@ -117,7 +117,7 @@ func TestQueryDescendingCursor(t *testing.T) {
 		})
 	}
 
-	res, err := m.Query(ctx, ext, "items", QueryOptions{
+	res, err := m.Query(ctx, nil, ext, "items", QueryOptions{
 		Sort:  []SortField{{Field: "rank", Descending: true}},
 		Limit: 2,
 	})
@@ -128,7 +128,7 @@ func TestQueryDescendingCursor(t *testing.T) {
 		t.Fatalf("first page = %v, want [item-5 item-4]", got)
 	}
 
-	next, err := m.Query(ctx, ext, "items", QueryOptions{
+	next, err := m.Query(ctx, nil, ext, "items", QueryOptions{
 		Sort:   []SortField{{Field: "rank", Descending: true}},
 		Limit:  2,
 		Cursor: res.NextCursor,
@@ -146,7 +146,7 @@ func TestQueryDescendingCursor(t *testing.T) {
 func TestQueryRejectsMixedSortDirections(t *testing.T) {
 	m, ext := queryTestDB(t, "items")
 
-	_, err := m.Query(context.Background(), ext, "items", QueryOptions{
+	_, err := m.Query(context.Background(), nil, ext, "items", QueryOptions{
 		Sort: []SortField{{Field: "a"}, {Field: "b", Descending: true}},
 	})
 	if err == nil {
@@ -187,7 +187,7 @@ func TestQueryPredicates(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			res, err := m.Query(ctx, ext, "items", QueryOptions{Predicates: tc.preds, Limit: 50})
+			res, err := m.Query(ctx, nil, ext, "items", QueryOptions{Predicates: tc.preds, Limit: 50})
 			if err != nil {
 				t.Fatalf("Query: %v", err)
 			}
@@ -211,7 +211,7 @@ func TestQueryNestedJSONPath(t *testing.T) {
 		"profile": map[string]any{"address": map[string]any{"city": "Beijing"}},
 	})
 
-	res, err := m.Query(ctx, ext, "items", QueryOptions{
+	res, err := m.Query(ctx, nil, ext, "items", QueryOptions{
 		Predicates: []Predicate{{Field: "profile.address.city", Op: OpEq, Values: []string{"Shanghai"}}},
 	})
 	if err != nil {
@@ -238,7 +238,7 @@ func TestQueryRejectsInjectionAttempts(t *testing.T) {
 
 	for _, field := range hostile {
 		t.Run(field, func(t *testing.T) {
-			_, err := m.Query(ctx, ext, "items", QueryOptions{
+			_, err := m.Query(ctx, nil, ext, "items", QueryOptions{
 				Predicates: []Predicate{{Field: field, Op: OpEq, Values: []string{"x"}}},
 			})
 			if err == nil {
@@ -247,7 +247,7 @@ func TestQueryRejectsInjectionAttempts(t *testing.T) {
 		})
 	}
 
-	_, err := m.Query(ctx, ext, "items", QueryOptions{
+	_, err := m.Query(ctx, nil, ext, "items", QueryOptions{
 		Predicates: []Predicate{{Field: "name", Op: "; DROP TABLE x; --", Values: []string{"a"}}},
 	})
 	if err == nil {
@@ -263,7 +263,7 @@ func TestAggregate(t *testing.T) {
 	putDoc(t, m, ext, "items", "b", map[string]any{"team": "red", "score": 20})
 	putDoc(t, m, ext, "items", "c", map[string]any{"team": "blue", "score": 7})
 
-	total, err := m.Aggregate(ctx, ext, "items", AggregateOptions{Func: AggCount})
+	total, err := m.Aggregate(ctx, nil, ext, "items", AggregateOptions{Func: AggCount})
 	if err != nil {
 		t.Fatalf("Aggregate count: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestAggregate(t *testing.T) {
 		t.Fatalf("count = %+v, want a single bucket of 3", total)
 	}
 
-	grouped, err := m.Aggregate(ctx, ext, "items", AggregateOptions{
+	grouped, err := m.Aggregate(ctx, nil, ext, "items", AggregateOptions{
 		Func:    AggSum,
 		Field:   "score",
 		GroupBy: []string{"team"},

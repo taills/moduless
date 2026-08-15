@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"regexp"
@@ -222,10 +223,13 @@ func (m *CMDSManager) Delete(extKey, collection, docID string) error {
 }
 
 // Find returns documents matching all filters with pagination.
-func (m *CMDSManager) Find(extKey, collection string, filters []Filter, limit, offset int) ([][]byte, error) {
+func (m *CMDSManager) Find(ctx context.Context, ex execer, extKey, collection string, filters []Filter, limit, offset int) ([][]byte, error) {
 	table, err := tableName(extKey, collection)
 	if err != nil {
 		return nil, err
+	}
+	if ex == nil {
+		ex = m.db
 	}
 
 	var whereClauses []string
@@ -259,7 +263,7 @@ func (m *CMDSManager) Find(extKey, collection string, filters []Filter, limit, o
 		table, where, argIdx, argIdx+1)
 	args = append(args, limit, offset)
 
-	rows, err := m.db.Query(query, args...)
+	rows, err := ex.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("find %s: %w", collection, err)
 	}

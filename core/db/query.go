@@ -195,10 +195,13 @@ func decodeCursor(s string) (cursorPayload, error) {
 // Results are always ordered by id as the final key. Without a unique
 // tie-breaker, rows sharing a sort value could be returned twice or skipped
 // entirely across pages.
-func (m *CMDSManager) Query(ctx context.Context, extKey, collection string, opts QueryOptions) (QueryResult, error) {
+func (m *CMDSManager) Query(ctx context.Context, ex execer, extKey, collection string, opts QueryOptions) (QueryResult, error) {
 	table, err := tableName(extKey, collection)
 	if err != nil {
 		return QueryResult{}, err
+	}
+	if ex == nil {
+		ex = m.db
 	}
 
 	limit := opts.Limit
@@ -279,7 +282,7 @@ func (m *CMDSManager) Query(ctx context.Context, extKey, collection string, opts
 	query := fmt.Sprintf("SELECT id, data FROM %s%s ORDER BY %s LIMIT $%d",
 		table, where, strings.Join(orderBy, ", "), len(args))
 
-	rows, err := m.db.QueryContext(ctx, query, args...)
+	rows, err := ex.QueryContext(ctx, query, args...)
 	if err != nil {
 		return QueryResult{}, fmt.Errorf("query %s: %w", table, err)
 	}
@@ -394,10 +397,13 @@ type AggregateBucket struct {
 
 // Aggregate runs a grouped aggregation, so a plugin can count or total rows
 // without pulling them all into its own memory.
-func (m *CMDSManager) Aggregate(ctx context.Context, extKey, collection string, opts AggregateOptions) ([]AggregateBucket, error) {
+func (m *CMDSManager) Aggregate(ctx context.Context, ex execer, extKey, collection string, opts AggregateOptions) ([]AggregateBucket, error) {
 	table, err := tableName(extKey, collection)
 	if err != nil {
 		return nil, err
+	}
+	if ex == nil {
+		ex = m.db
 	}
 
 	fn := strings.ToUpper(strings.TrimSpace(opts.Func))
@@ -442,7 +448,7 @@ func (m *CMDSManager) Aggregate(ctx context.Context, extKey, collection string, 
 		query += " GROUP BY " + strings.Join(groupExprs, ", ")
 	}
 
-	rows, err := m.db.QueryContext(ctx, query, args...)
+	rows, err := ex.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate %s: %w", table, err)
 	}

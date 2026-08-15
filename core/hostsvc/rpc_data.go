@@ -113,6 +113,9 @@ func (s *Server) Find(ctx context.Context, req *pb.FindRequest) (*pb.FindRespons
 	if err := s.require(PermDB); err != nil {
 		return nil, err
 	}
+	if err := s.requireTx(req.GetTxId()); err != nil {
+		return nil, err
+	}
 	data, err := s.dataBackend()
 	if err != nil {
 		return nil, err
@@ -163,6 +166,9 @@ func (s *Server) Query(ctx context.Context, req *pb.QueryRequest) (*pb.QueryResp
 
 func (s *Server) Aggregate(ctx context.Context, req *pb.AggregateRequest) (*pb.AggregateResponse, error) {
 	if err := s.require(PermDB); err != nil {
+		return nil, err
+	}
+	if err := s.requireTx(req.GetTxId()); err != nil {
 		return nil, err
 	}
 	data, err := s.dataBackend()

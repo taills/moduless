@@ -80,6 +80,10 @@ func (d *CMDSData) Find(ctx context.Context, pluginKey, collection string, filte
 	// reach for in new code: offset makes the database walk and discard every
 	// skipped row, so deep pages get slower, and rows shifting between
 	// requests silently duplicate or skip entries.
+	ex, err := d.execFor(pluginKey, txID)
+	if err != nil {
+		return nil, err
+	}
 	legacy := make([]db.Filter, 0, len(filters))
 	for _, f := range filters {
 		value := ""
@@ -88,10 +92,20 @@ func (d *CMDSData) Find(ctx context.Context, pluginKey, collection string, filte
 		}
 		legacy = append(legacy, db.Filter{Field: f.Field, Operator: f.Op, Value: value})
 	}
-	return d.cmds.Find(pluginKey, collection, legacy, limit, offset)
+	return d.cmds.Find(ctx, ex, pluginKey, collection, legacy, limit, offset)
 }
 
 func (d *CMDSData) Query(ctx context.Context, pluginKey, collection string, opts QueryOptions, txID string) (QueryResult, error) {
+	// Reads run inside the caller's transaction when it gave one. Without
+	// this, a plugin that writes a document and then queries for it in the
+	// same transaction does not find it — the write is uncommitted and the
+	// query is running on a different connection. Nothing reports an error;
+	// the plugin simply gets an answer that is wrong.
+	ex, err := d.execFor(pluginKey, txID)
+	if err != nil {
+		return QueryResult{}, err
+	}
+
 	preds := make([]db.Predicate, 0, len(opts.Filters))
 	for _, f := range opts.Filters {
 		preds = append(preds, db.Predicate{Field: f.Field, Op: f.Op, Values: f.Values})
@@ -101,7 +115,7 @@ func (d *CMDSData) Query(ctx context.Context, pluginKey, collection string, opts
 		sorts = append(sorts, db.SortField{Field: s.Field, Descending: s.Descending})
 	}
 
-	res, err := d.cmds.Query(ctx, pluginKey, collection, db.QueryOptions{
+	res, err := d.cmds.Query(ctx, ex, pluginKey, collection, db.QueryOptions{
 		Predicates: preds,
 		Sort:       sorts,
 		Limit:      opts.Limit,
@@ -118,12 +132,17 @@ func (d *CMDSData) Query(ctx context.Context, pluginKey, collection string, opts
 }
 
 func (d *CMDSData) Aggregate(ctx context.Context, pluginKey, collection string, opts AggregateOptions, txID string) ([]AggregateBucket, error) {
+	ex, err := d.execFor(pluginKey, txID)
+	if err != nil {
+		return nil, err
+	}
+
 	preds := make([]db.Predicate, 0, len(opts.Filters))
 	for _, f := range opts.Filters {
 		preds = append(preds, db.Predicate{Field: f.Field, Op: f.Op, Values: f.Values})
 	}
 
-	buckets, err := d.cmds.Aggregate(ctx, pluginKey, collection, db.AggregateOptions{
+	buckets, err := d.cmds.Aggregate(ctx, ex, pluginKey, collection, db.AggregateOptions{
 		Predicates: preds,
 		Func:       opts.Func,
 		Field:      opts.Field,

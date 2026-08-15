@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"os"
@@ -81,7 +82,7 @@ func TestCMDSPutGetFindDelete(t *testing.T) {
 		t.Fatalf("expected Alice, got %v", back["name"])
 	}
 
-	docs, err := m.Find(ext, col, []Filter{{Field: "status", Operator: "=", Value: "active"}}, 10, 0)
+	docs, err := m.Find(context.Background(), nil, ext, col, []Filter{{Field: "status", Operator: "=", Value: "active"}}, 10, 0)
 	if err != nil || len(docs) != 1 {
 		t.Fatalf("find: len=%d err=%v", len(docs), err)
 	}

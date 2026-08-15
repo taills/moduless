@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -203,13 +204,20 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 
 	resp, err := h.callBackend(r.Context(), snap, key, sub, rc)
 	if err != nil {
-		rc.ResponseStatus = http.StatusBadGateway
+		// 502 only for a plugin that was there and failed. A plugin that is
+		// not enabled, or is between states, is a different thing to be told.
+		status := http.StatusBadGateway
+		var unavailable *pluginUnavailableError
+		if errors.As(err, &unavailable) {
+			status = unavailable.status()
+		}
+		rc.ResponseStatus = status
 		if out := h.Runner.Run(r.Context(), chain, snap, pb.Phase_PHASE_ON_ERROR, rc); out.Stopped() {
 			h.writeResponse(w, out.ShortCircuit)
 			h.logPhase(chain, snap, rc)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, err.Error(), status)
 		h.logPhase(chain, snap, rc)
 		return
 	}
@@ -244,7 +252,7 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 func (h *PluginHandler) callBackend(ctx context.Context, snap *pluginhost.Snapshot, key, sub string, rc *pipeline.RequestContext) (*pb.HttpResponse, error) {
 	inst, ok := snap.Pick(key)
 	if !ok {
-		return nil, &pluginUnavailableError{key: key}
+		return nil, &pluginUnavailableError{key: key, gone: true}
 	}
 	// Through the request's own admission rather than a fresh one: a filter on
 	// this plugin has usually already reserved capacity, and asking again would
@@ -341,9 +349,40 @@ func normalizeStatus(code int) int {
 	}
 }
 
-type pluginUnavailableError struct{ key string }
+// pluginUnavailableError is a backend that could not be called, and why.
+//
+// The why decides the status code, and getting it wrong is not cosmetic:
+// everything used to be 502, so a plugin an operator deliberately switched off
+// answered every caller with "the upstream is broken". Measured during a
+// disable under load: 5801 requests, all 502. A client cannot tell that from a
+// crash, so it retries; an operator watching for 502 gets paged by a change
+// they made on purpose.
+type pluginUnavailableError struct {
+	key string
+	// gone means the plugin is not in the snapshot at all — disabled, never
+	// installed, or quarantined. Its routes do not exist, the same way its
+	// menu no longer does.
+	gone bool
+}
 
-func (e *pluginUnavailableError) Error() string { return "plugin " + e.key + " is unavailable" }
+func (e *pluginUnavailableError) Error() string {
+	if e.gone {
+		return "plugin " + e.key + " is not enabled"
+	}
+	return "plugin " + e.key + " is not accepting requests"
+}
+
+// status maps the reason to what a caller is told.
+//
+//	404  the plugin is not enabled: this route does not exist. Do not retry.
+//	503  it is enabled but between states — starting, draining, at capacity.
+//	     Transient, so retrying is the right response.
+func (e *pluginUnavailableError) status() int {
+	if e.gone {
+		return http.StatusNotFound
+	}
+	return http.StatusServiceUnavailable
+}
 
 // splitPluginPath turns /api/plugins/<key>/<sub> into its parts. A request for
 // the bare prefix, or for a key with no sub-path, is not routable.

@@ -240,8 +240,11 @@ func TestRobustUnknownPluginFailsFast(t *testing.T) {
 	code := getStatus(t, client, url+"/api/plugins/does-not-exist/anything")
 	elapsed := time.Since(start)
 
-	if code != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", code)
+	// A plugin that was never installed has no route, so 404 — the same
+	// answer any other unrouted path gets. It was 502 until a disable under
+	// load showed what conflating "not here" with "broken" costs.
+	if code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for a plugin that does not exist", code)
 	}
 	if elapsed > time.Second {
 		t.Errorf("took %s to reject an unknown plugin; it should be immediate", elapsed)

@@ -23,6 +23,10 @@ type fakePluginClient struct {
 	httpResp   *pb.HttpResponse
 	httpErr    error
 	filterResp *pb.FilterResponse
+	// hold blocks HandleHTTP until closed, so a test can keep a request in
+	// flight and observe a plugin that is genuinely draining rather than one
+	// that has already finished draining and stopped.
+	hold chan struct{}
 
 	httpCalls   atomic.Int32
 	filterCalls atomic.Int32
@@ -32,6 +36,9 @@ type fakePluginClient struct {
 func (f *fakePluginClient) HandleHTTP(_ context.Context, req *pb.HttpRequest) (*pb.HttpResponse, error) {
 	f.httpCalls.Add(1)
 	f.lastHTTPReq.Store(req)
+	if f.hold != nil {
+		<-f.hold
+	}
 	if f.httpErr != nil {
 		return nil, f.httpErr
 	}
@@ -251,7 +258,7 @@ func TestTraceIDPropagation(t *testing.T) {
 	}
 }
 
-func TestOfflinePluginReturnsBadGateway(t *testing.T) {
+func TestOfflinePluginIsNotFound(t *testing.T) {
 	reg := pluginhost.NewRegistry()
 	h := &PluginHandler{Registry: reg, Runner: &pipeline.Runner{}}
 
@@ -259,32 +266,94 @@ func TestOfflinePluginReturnsBadGateway(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h.Middleware(passthrough()).ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for a plugin with no running replica", rec.Code)
 	}
 }
 
 // A draining instance must stop receiving new requests immediately, which is
 // what makes a hot upgrade safe.
-func TestDrainingPluginIsNotRouted(t *testing.T) {
+//
+// Two states that used to be one answer. A plugin that has finished draining
+// is gone — its route no longer exists, the same way its menu does not — and a
+// plugin that is still draining is between states and will be back or will
+// not, but either way retrying is the right response. Both were 502 until a
+// disable under load showed what that costs: 5801 callers told the upstream
+// was broken by an operator switching a plugin off on purpose.
+//
+// This test used to claim to cover draining and did not: with nothing in
+// flight the drain completed immediately, so what it actually exercised was a
+// stopped instance. Both mapped to 502, so nothing said so.
+func TestStoppedPluginIsNotFound(t *testing.T) {
 	client := &fakePluginClient{httpResp: okResponse("x")}
 	h, reg := newHarness(t, client, nil)
 
 	inst := reg.Current().Replicas("hello")[0]
-	go func() { _ = inst.Drain(context.Background(), time.Second) }()
-
-	deadline := time.Now().Add(time.Second)
-	for inst.State() != pluginhost.StateDraining && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+	if err := inst.Drain(context.Background(), time.Second); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if got := inst.State(); got != pluginhost.StateStopped {
+		t.Fatalf("state = %v; this test needs a stopped instance", got)
 	}
 
 	req := httptest.NewRequest("GET", "/api/plugins/hello/items", nil)
 	rec := httptest.NewRecorder()
 	h.Middleware(passthrough()).ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502 for a draining plugin", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 for a plugin that is no longer serving", rec.Code)
 	}
+}
+
+// A plugin that is still draining answers 503: transient, retry.
+func TestDrainingPluginIsUnavailableNotBroken(t *testing.T) {
+	hold := make(chan struct{})
+	client := &fakePluginClient{httpResp: okResponse("x"), hold: hold}
+	h, reg := newHarness(t, client, nil)
+
+	inst := reg.Current().Replicas("hello")[0]
+
+	// One request held inside the plugin, so the drain cannot finish.
+	inFlight := make(chan struct{})
+	go func() {
+		defer close(inFlight)
+		req := httptest.NewRequest("GET", "/api/plugins/hello/items", nil)
+		h.Middleware(passthrough()).ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	waitFor(t, func() bool { return inst.InFlight() > 0 }, "the first request to reach the plugin")
+
+	drained := make(chan struct{})
+	go func() { defer close(drained); _ = inst.Drain(context.Background(), 5*time.Second) }()
+	waitFor(t, func() bool { return inst.State() == pluginhost.StateDraining }, "the drain to start")
+
+	// A second request, arriving while the first is still in flight.
+	req := httptest.NewRequest("GET", "/api/plugins/hello/items", nil)
+	rec := httptest.NewRecorder()
+	h.Middleware(passthrough()).ServeHTTP(rec, req)
+
+	close(hold)
+	<-inFlight
+	<-drained
+
+	if rec.Code == http.StatusBadGateway {
+		t.Error("a draining plugin answered 502; nothing is broken, it is between states")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 for a plugin that is draining", rec.Code)
+	}
+}
+
+// waitFor polls a condition with a deadline.
+func waitFor(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
 }
 
 func TestRequestBodyLimit(t *testing.T) {

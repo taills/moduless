@@ -141,3 +141,10 @@ MEASURE=1 CEILINGS="4 8" TEST_DATABASE_URL=... go test ./tests/ -run TestTransac
 序列不是从副作用推断的，是从插件里读回来的：fixture 记录每个 trace 被调用过哪些阶段，测试再问它。断言的是发生了什么，而不是应该发生什么。
 
 覆盖：完整顺序、`on_error` 成功时不触发 / 后端死掉时触发、被短路的请求仍然跑 `log`、跨插件的 `order` 决定谁先跑（用「低 order 的拒绝，高 order 的不该被调到」来观测，因为两个 Continue 的先后从外部看不出来）。
+
+
+## 运维路径要用真实流量测
+
+`tests/integration_test.go` 里的升级/停用测试打的是 `Manager.Upgrade` 和 `Manager.Disable` —— 运维在控制台上点「重载」「停用」实际触发的那条路 —— 并且**流量对准正在被改动的那个插件**。
+
+在它之前测过的是：registry 层的蓝绿切换（`reg.Swap`）带负载，以及 manager 升级但流量打在**别的**插件上。两者都没有覆盖运维真正制造的那个场景。第一次跑就抓到了：停用一个正在服务的插件，5801 个请求收到 502。

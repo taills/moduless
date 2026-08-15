@@ -356,3 +356,184 @@ func TestOnePluginCrashingLeavesOthersServing(t *testing.T) {
 		}
 	}
 }
+
+// The operator's own path, with traffic aimed at the plugin being changed.
+//
+// Hot load, unload and upgrade are requirement one, and what has been tested
+// until now is the registry's blue-green swap under load, plus a manager
+// upgrade with traffic aimed at a *different* plugin. Neither covers the case
+// an operator actually creates: clicking 重载 or 停用 on a plugin that is
+// serving requests right now.
+
+// hammer drives requests at one path until stopped, and reports what came back.
+type hammer struct {
+	attempts atomic.Int64
+	statuses sync.Map // int -> *atomic.Int64
+	failures atomic.Int64
+	firstErr atomic.Pointer[string]
+}
+
+func (h *hammer) record(code int) {
+	v, _ := h.statuses.LoadOrStore(code, new(atomic.Int64))
+	v.(*atomic.Int64).Add(1)
+}
+
+func (h *hammer) counts() map[int]int64 {
+	out := map[int]int64{}
+	h.statuses.Range(func(k, v any) bool {
+		out[k.(int)] = v.(*atomic.Int64).Load()
+		return true
+	})
+	return out
+}
+
+// run starts n workers and returns a stop function.
+func (h *hammer) run(url string, n int) func() {
+	var (
+		stop atomic.Bool
+		wg   sync.WaitGroup
+	)
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			client := &http.Client{Timeout: 20 * time.Second}
+			for !stop.Load() {
+				h.attempts.Add(1)
+				resp, err := client.Get(url)
+				if err != nil {
+					h.failures.Add(1)
+					msg := err.Error()
+					h.firstErr.CompareAndSwap(nil, &msg)
+					continue
+				}
+				h.record(resp.StatusCode)
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+		}()
+	}
+	return func() { stop.Store(true); wg.Wait() }
+}
+
+// Upgrading a plugin that is serving must not drop a request of its own.
+func TestUpgradeUnderLoadOnTheUpgradedPlugin(t *testing.T) {
+	url, mgr, _ := stackOfThree(t, nil)
+
+	var h hammer
+	stop := h.run(url+"/api/plugins/ratelimit/stats", 3)
+
+	time.Sleep(150 * time.Millisecond)
+	if err := mgr.Upgrade(context.Background(), "ratelimit"); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	time.Sleep(250 * time.Millisecond)
+	stop()
+
+	t.Logf("%d requests during an upgrade of the plugin serving them: %v",
+		h.attempts.Load(), h.counts())
+
+	if h.failures.Load() > 0 {
+		msg := ""
+		if p := h.firstErr.Load(); p != nil {
+			msg = *p
+		}
+		t.Errorf("%d transport failures during the upgrade; first: %s", h.failures.Load(), msg)
+	}
+	for code, n := range h.counts() {
+		if code != http.StatusOK {
+			t.Errorf("%d request(s) returned %d during an upgrade; the swap is supposed to be "+
+				"invisible to a caller", n, code)
+		}
+	}
+}
+
+// Disabling a plugin under load: in-flight requests finish, and later ones get
+// a clean answer rather than a hang or a 502.
+//
+// What a caller sees when an operator switches a plugin off is a real part of
+// the contract and nothing had checked it. A 502 would say "the plugin broke";
+// a hang would say nothing at all until the client gave up. Neither is what
+// happened, and an operator deserves to know which it is.
+func TestDisableUnderLoad(t *testing.T) {
+	url, mgr, _ := stackOfThree(t, nil)
+
+	var h hammer
+	stop := h.run(url+"/api/plugins/ratelimit/stats", 3)
+
+	time.Sleep(150 * time.Millisecond)
+	if err := mgr.Disable(context.Background(), "ratelimit"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	time.Sleep(250 * time.Millisecond)
+	stop()
+
+	counts := h.counts()
+	t.Logf("%d requests across a disable: %v", h.attempts.Load(), counts)
+
+	if h.failures.Load() > 0 {
+		msg := ""
+		if p := h.firstErr.Load(); p != nil {
+			msg = *p
+		}
+		t.Errorf("%d transport failures; a disabled plugin should answer, not hang or reset. "+
+			"first: %s", h.failures.Load(), msg)
+	}
+	if counts[http.StatusOK] == 0 {
+		t.Error("nothing succeeded before the disable; this test measured nothing")
+	}
+
+	// Everything after the disable must say "this route is not here", not
+	// "the upstream is broken". A caller has to be able to tell a plugin an
+	// operator switched off from one that is crashing: the first is not worth
+	// retrying and not worth paging anyone about, and the second is both.
+	var after int64
+	for code, n := range counts {
+		if code == http.StatusOK {
+			continue
+		}
+		after += n
+		if code == http.StatusBadGateway {
+			t.Errorf("%d request(s) got 502 after a deliberate disable; that reads as a "+
+				"fault rather than as a plugin an operator switched off", n)
+		}
+		if code != http.StatusNotFound {
+			t.Errorf("%d request(s) got %d after a disable; want 404, the same answer as "+
+				"any other route that does not exist", n, code)
+		}
+	}
+	if after == 0 {
+		t.Error("every request succeeded after the plugin was disabled; it is still serving")
+	}
+}
+
+// Re-enabling brings it back, which is the other half of hot unload.
+func TestDisableThenEnableRestoresService(t *testing.T) {
+	url, mgr, _ := stackOfThree(t, nil)
+	ctx := context.Background()
+	client := warmClientPlain()
+
+	if code := getStatus(t, client, url+"/api/plugins/ratelimit/stats"); code != 200 {
+		t.Fatalf("status = %d before disabling", code)
+	}
+	if err := mgr.Disable(ctx, "ratelimit"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if code := getStatus(t, client, url+"/api/plugins/ratelimit/stats"); code == 200 {
+		t.Fatal("the plugin still served after being disabled")
+	}
+	if err := mgr.Enable(ctx, "ratelimit"); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+
+	// A fresh process needs a moment to finish Configure.
+	var last int
+	for range 100 {
+		last = getStatus(t, client, url+"/api/plugins/ratelimit/stats")
+		if last == 200 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("status = %d two seconds after re-enabling", last)
+}

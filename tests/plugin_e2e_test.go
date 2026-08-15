@@ -231,8 +231,12 @@ func TestE2EHotUnload(t *testing.T) {
 	}
 
 	displaced := reg.Remove("hello")
-	if status, _, _ := get(t, srv.URL+"/api/plugins/hello/items"); status != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502 immediately after unload", status)
+	// 404, not 502: the plugin's routes are gone, the same way its menu is.
+	// A 502 would tell a caller the upstream is broken, which is a different
+	// thing from an operator switching a plugin off — the first is worth
+	// retrying and paging about, the second is neither.
+	if status, _, _ := get(t, srv.URL+"/api/plugins/hello/items"); status != http.StatusNotFound {
+		t.Errorf("status = %d, want 404 immediately after unload", status)
 	}
 
 	for _, old := range displaced {

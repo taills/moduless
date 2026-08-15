@@ -341,6 +341,16 @@ resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 
 同理，对不存在的文件调 `DeleteFile` 或 `GenerateDownloadToken` 拿到的是 `NotFound` 而不是 `Internal`。`GetFileMetadata` 不同 —— 它问的是「存不存在」，所以返回 `Found: false` 而不是错误。另一个插件的文件与不存在的文件在这三个调用上完全一样，这是故意的：能确认某个 id 真实存在，正是探测想要的东西。
 
+### 插件不可用时调用者看到什么
+
+| 情况 | 状态码 | 含义 |
+|---|---|---|
+| 插件被停用 / 未安装 / 已隔离 | **404** | 这条路由不存在，和菜单消失是同一件事。别重试 |
+| 插件在启动、排空、或名额已满 | **503** | 中间状态，重试是对的 |
+| 插件在，但这次调用失败了（崩溃、超时） | **502** | 上游坏了 |
+
+这三种以前全都是 502。实测停用一个正在服务的插件：5801 个请求全部 502 —— 客户端会当成故障去重试，盯着 502 告警的人会被一次**主动的运维操作**叫醒。
+
 ### 用非 session 的方式鉴权
 
 `authenticate` 阶段的 filter 可以调用 `SetIdentity` 告诉 Core 调用者是谁 —— API key、JWT、mTLS、签名请求，任何 Core 自己不认识的凭据都走这条路。前提是插件声明了 `filter:authenticate`，否则 Core 会丢弃这个 mutation 并记一行日志。

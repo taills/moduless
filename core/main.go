@@ -17,9 +17,13 @@ import (
 	"github.com/taills/moduless/core/event"
 	"github.com/taills/moduless/core/extension"
 	"github.com/taills/moduless/core/gateway"
+	"github.com/taills/moduless/core/hostsvc"
 	"github.com/taills/moduless/core/middleware"
+	"github.com/taills/moduless/core/pipeline"
+	"github.com/taills/moduless/core/pluginhost"
 	"github.com/taills/moduless/core/storage"
 	"github.com/taills/moduless/core/tunnel"
+	pluginpb "github.com/taills/moduless/proto/plugin"
 	pb "github.com/taills/moduless/proto/tunnel"
 	"google.golang.org/grpc"
 )
@@ -52,6 +56,16 @@ func main() {
 	var cmds *db.CMDSManager
 	var extStore *extension.Store
 	var coordinator *extension.Coordinator
+	var authStore *auth.Store
+
+	// Capabilities Core exposes back to plugins. Cache and locks are
+	// in-process: Core is single-instance and every plugin replica is its
+	// child, so that is already correct for the only topology there is.
+	hostDeps := hostsvc.Deps{
+		Cache:  hostsvc.NewMemoryCache(0),
+		Locks:  hostsvc.NewMemoryLocks(),
+		Config: hostsvc.NewStaticConfig(),
+	}
 
 	// Database-backed services (CMDS, files, audit, approval) are optional so Core
 	// can run a pure tunnel demo without PostgreSQL/RustFS.
@@ -128,7 +142,7 @@ func main() {
 
 		// Real authentication: verify against system_users, seed a default admin,
 		// and let the gateway inject the authenticated identity.
-		authStore := auth.NewStore(queries)
+		authStore = auth.NewStore(queries)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if seeded, err := authStore.SeedDefaultAdmin(ctx, env("ADMIN_USERNAME", "admin"), env("ADMIN_PASSWORD", "admin123")); err != nil {
 			log.Printf("[core] seed admin failed: %v", err)
@@ -172,10 +186,68 @@ func main() {
 	// Serve the qiankun host app (and its SPA routes) at the web root.
 	gw.Host = gateway.NewHostHandler(env("HOST_FRONTEND_DIR", "./core/frontend/dist"))
 
+	// ---- Plugin subsystem (go-plugin subprocesses) -------------------------
+	//
+	// Runs alongside the legacy reverse tunnel during the migration. Plugins
+	// are launched by Core rather than dialling in, which is what makes hot
+	// load, unload and upgrade possible.
+	pluginhost.SetLogger(func(format string, args ...any) {
+		log.Printf("[plugin] "+format, args...)
+	})
+
+	registry := pluginhost.NewRegistry()
+	pluginDir := env("PLUGIN_DIR", "./plugins")
+	pluginManager := pluginhost.NewManager(pluginhost.ManagerConfig{
+		Dir:         pluginDir,
+		DataDirRoot: env("PLUGIN_DATA_DIR", ""),
+		LogLevel:    env("PLUGIN_LOG_LEVEL", "warn"),
+		// DevMode skips Pdeathsig so air's rebuild loop does not cold-start
+		// every plugin on each edit. It must stay off in production.
+		DevMode: os.Getenv("PLUGIN_DEV_MODE") == "1",
+	}, registry, func(pkg *pluginhost.Package) pluginpb.HostServicesServer {
+		return hostsvc.New(pkg.Key(), pkg.Manifest.Permissions, hostDeps)
+	})
+	defer pluginManager.Close()
+
+	pluginManager.Scan()
+	if err := pluginManager.EnableAll(context.Background()); err != nil {
+		log.Printf("[core] some plugins failed to start: %v", err)
+	}
+	for _, st := range pluginManager.List() {
+		if st.LoadError != "" {
+			log.Printf("[core] plugin %s not loaded: %s", st.Key, st.LoadError)
+			continue
+		}
+		log.Printf("[core] plugin %s v%s: %d/%d replica(s) ready, %d filter(s)",
+			st.Key, st.Version, st.Ready, st.Replicas, st.Filters)
+	}
+
+	// Static assets for plugin micro-frontends. Unlike the tunnel's in-memory
+	// cache these live on disk, so they survive a Core restart instead of
+	// waiting for an extension to reconnect and re-upload them.
+	gw.RegisterSystemRoute(
+		func(p string) bool { return hasPrefix(p, gateway.PluginAssetPrefix) },
+		gateway.PluginAssetHandler(pluginManager),
+	)
+
+	pluginGateway := &gateway.PluginHandler{
+		Registry: registry,
+		Runner: &pipeline.Runner{
+			OnFilterError: func(f *pipeline.Filter, err error) {
+				// A fail-open filter that is broken would otherwise disappear
+				// from operations precisely because it failed open.
+				log.Printf("[plugin] filter %s: %v", f.Label(), err)
+			},
+		},
+	}
+	if authStore != nil {
+		pluginGateway.Auth = authStore
+	}
+
 	// Wrap the gateway with the audit middleware when a recorder is available.
-	var httpHandler http.Handler = gw
+	var httpHandler http.Handler = pluginGateway.Middleware(gw)
 	if queries != nil {
-		httpHandler = middleware.AuditLogger(queries)(gw)
+		httpHandler = middleware.AuditLogger(queries)(httpHandler)
 	}
 
 	// Start gRPC listener.
@@ -208,6 +280,13 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)
+
+	// Stop plugins after the HTTP listener closes, so in-flight requests get
+	// a chance to finish rather than being cut off mid-response.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	registry.DrainAll(drainCtx, 20*time.Second)
+	drainCancel()
+
 	grpcSrv.GracefulStop()
 	log.Println("[core] stopped")
 }

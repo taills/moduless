@@ -362,3 +362,35 @@ func TestUserAccessorsAreNilSafe(t *testing.T) {
 		t.Error("HasRole matched a role the user does not hold")
 	}
 }
+
+// The transactional client mirrors the non-transactional one.
+//
+// TxClient.Get used to return only (found, error), dropping the version, so a
+// read-modify-write inside a transaction could not use PutIfVersion — and
+// PutIfVersion did not exist on TxClient at all. The asymmetry read as "you
+// do not need optimistic locking inside a transaction", which is not true:
+// two transactions can both read a row, and the second write proceeds against
+// a row the first has already changed.
+//
+// Checked by signature rather than by behaviour: what went wrong was the
+// shape, and a shape is what this can hold still.
+func TestTxClientMirrorsTheDBClient(t *testing.T) {
+	var (
+		db *DBClient
+		tx *TxClient
+	)
+
+	// Both Gets: (ctx, collection, id, dest) -> (found, version, error).
+	var dbGet func(context.Context, string, string, any) (bool, int64, error) = db.Get
+	var txGet func(context.Context, string, string, any) (bool, int64, error) = tx.Get
+	_, _ = dbGet, txGet
+
+	// Both Puts, plain and optimistic.
+	var dbPut func(context.Context, string, string, any) (int64, error) = db.Put
+	var txPut func(context.Context, string, string, any) (int64, error) = tx.Put
+	_, _ = dbPut, txPut
+
+	var dbCAS func(context.Context, string, string, any, int64) (int64, error) = db.PutIfVersion
+	var txCAS func(context.Context, string, string, any, int64) (int64, error) = tx.PutIfVersion
+	_, _ = dbCAS, txCAS
+}

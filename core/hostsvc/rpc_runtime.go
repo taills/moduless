@@ -19,36 +19,36 @@ import (
 
 // --- Cache ------------------------------------------------------------------
 
-func (s *Server) CacheGet(_ context.Context, req *pb.CacheGetRequest) (*pb.CacheGetResponse, error) {
+func (s *Server) CacheGet(ctx context.Context, req *pb.CacheGetRequest) (*pb.CacheGetResponse, error) {
 	if err := s.require(PermCache); err != nil {
 		return nil, err
 	}
 	if s.deps.Cache == nil {
 		return nil, s.unavailable("the cache")
 	}
-	value, found := s.deps.Cache.Get(s.key, req.GetKey())
+	value, found := s.deps.Cache.Get(ctx, s.key, req.GetKey())
 	return &pb.CacheGetResponse{Found: found, Value: value}, nil
 }
 
-func (s *Server) CacheSet(_ context.Context, req *pb.CacheSetRequest) (*emptypb.Empty, error) {
+func (s *Server) CacheSet(ctx context.Context, req *pb.CacheSetRequest) (*emptypb.Empty, error) {
 	if err := s.require(PermCache); err != nil {
 		return nil, err
 	}
 	if s.deps.Cache == nil {
 		return nil, s.unavailable("the cache")
 	}
-	s.deps.Cache.Set(s.key, req.GetKey(), req.GetValue(), time.Duration(req.GetTtlSeconds())*time.Second)
+	s.deps.Cache.Set(ctx, s.key, req.GetKey(), req.GetValue(), time.Duration(req.GetTtlSeconds())*time.Second)
 	return &emptypb.Empty{}, nil
 }
 
-func (s *Server) CacheDelete(_ context.Context, req *pb.CacheDeleteRequest) (*emptypb.Empty, error) {
+func (s *Server) CacheDelete(ctx context.Context, req *pb.CacheDeleteRequest) (*emptypb.Empty, error) {
 	if err := s.require(PermCache); err != nil {
 		return nil, err
 	}
 	if s.deps.Cache == nil {
 		return nil, s.unavailable("the cache")
 	}
-	s.deps.Cache.Delete(s.key, req.GetKey())
+	s.deps.Cache.Delete(ctx, s.key, req.GetKey())
 	return &emptypb.Empty{}, nil
 }
 
@@ -81,14 +81,14 @@ func (s *Server) AcquireLock(ctx context.Context, req *pb.AcquireLockRequest) (*
 	}, nil
 }
 
-func (s *Server) RenewLock(_ context.Context, req *pb.LeaseRequest) (*pb.AcquireLockResponse, error) {
+func (s *Server) RenewLock(ctx context.Context, req *pb.LeaseRequest) (*pb.AcquireLockResponse, error) {
 	if err := s.require(PermLock); err != nil {
 		return nil, err
 	}
 	if s.deps.Locks == nil {
 		return nil, s.unavailable("locking")
 	}
-	lease, ok := s.deps.Locks.Renew(s.key, req.GetName(), req.GetLeaseId(),
+	lease, ok := s.deps.Locks.Renew(ctx, s.key, req.GetName(), req.GetLeaseId(),
 		time.Duration(req.GetTtlSeconds())*time.Second)
 	if !ok {
 		// The caller no longer owns the lock. Reporting this rather than
@@ -103,14 +103,14 @@ func (s *Server) RenewLock(_ context.Context, req *pb.LeaseRequest) (*pb.Acquire
 	}, nil
 }
 
-func (s *Server) ReleaseLock(_ context.Context, req *pb.LeaseRequest) (*emptypb.Empty, error) {
+func (s *Server) ReleaseLock(ctx context.Context, req *pb.LeaseRequest) (*emptypb.Empty, error) {
 	if err := s.require(PermLock); err != nil {
 		return nil, err
 	}
 	if s.deps.Locks == nil {
 		return nil, s.unavailable("locking")
 	}
-	s.deps.Locks.Release(s.key, req.GetName(), req.GetLeaseId())
+	s.deps.Locks.Release(ctx, s.key, req.GetName(), req.GetLeaseId())
 	return &emptypb.Empty{}, nil
 }
 

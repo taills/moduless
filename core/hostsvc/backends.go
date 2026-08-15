@@ -111,9 +111,9 @@ type QueueBackend interface {
 // --- Cache and locks --------------------------------------------------------
 
 type CacheBackend interface {
-	Get(pluginKey, key string) ([]byte, bool)
-	Set(pluginKey, key string, value []byte, ttl time.Duration)
-	Delete(pluginKey, key string)
+	Get(ctx context.Context, pluginKey, key string) ([]byte, bool)
+	Set(ctx context.Context, pluginKey, key string, value []byte, ttl time.Duration)
+	Delete(ctx context.Context, pluginKey, key string)
 }
 
 // Lease identifies one holder of a lock. Presenting it on renew and release is
@@ -126,8 +126,8 @@ type Lease struct {
 
 type LockBackend interface {
 	Acquire(ctx context.Context, pluginKey, name string, ttl, wait time.Duration) (Lease, bool, error)
-	Renew(pluginKey, name, leaseID string, ttl time.Duration) (Lease, bool)
-	Release(pluginKey, name, leaseID string)
+	Renew(ctx context.Context, pluginKey, name, leaseID string, ttl time.Duration) (Lease, bool)
+	Release(ctx context.Context, pluginKey, name, leaseID string)
 }
 
 // --- Config -----------------------------------------------------------------

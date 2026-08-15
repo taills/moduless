@@ -282,12 +282,23 @@ type TxClient struct {
 }
 
 func (t *TxClient) Put(ctx context.Context, collection, id string, value any) (int64, error) {
+	return t.put(ctx, collection, id, value, 0)
+}
+
+// PutIfVersion is Put with optimistic locking, inside the transaction. It
+// fails rather than overwriting when the stored version has moved on.
+func (t *TxClient) PutIfVersion(ctx context.Context, collection, id string, value any, expected int64) (int64, error) {
+	return t.put(ctx, collection, id, value, expected)
+}
+
+func (t *TxClient) put(ctx context.Context, collection, id string, value any, expected int64) (int64, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return 0, fmt.Errorf("encode document: %w", err)
 	}
 	resp, err := t.c.Put(outgoing(ctx), &pb.PutRequest{
 		Collection: collection, DocId: id, Data: data, TxId: t.id,
+		ExpectedVersion: expected,
 	})
 	if err != nil {
 		return 0, err
@@ -295,18 +306,28 @@ func (t *TxClient) Put(ctx context.Context, collection, id string, value any) (i
 	return resp.GetVersion(), nil
 }
 
-func (t *TxClient) Get(ctx context.Context, collection, id string, dest any) (bool, error) {
+// Get decodes a document into dest, reading inside the transaction.
+//
+// It returns the version for the same reason the non-transactional Get does:
+// a read-modify-write needs it to call PutIfVersion. A transaction does not
+// remove that need — two transactions can both read a row, and the second
+// write proceeds against a row the first has already changed — so a Get that
+// dropped the version quietly made optimistic locking unavailable to exactly
+// the code most likely to want it.
+func (t *TxClient) Get(ctx context.Context, collection, id string, dest any) (found bool, version int64, err error) {
 	resp, err := t.c.Get(outgoing(ctx), &pb.GetRequest{Collection: collection, DocId: id, TxId: t.id})
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if !resp.GetFound() {
-		return false, nil
+		return false, 0, nil
 	}
 	if dest != nil {
-		return true, json.Unmarshal(resp.GetData(), dest)
+		if err := json.Unmarshal(resp.GetData(), dest); err != nil {
+			return true, resp.GetVersion(), fmt.Errorf("decode document: %w", err)
+		}
 	}
-	return true, nil
+	return true, resp.GetVersion(), nil
 }
 
 func (t *TxClient) Delete(ctx context.Context, collection, id string) error {

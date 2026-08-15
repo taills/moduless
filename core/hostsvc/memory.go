@@ -16,6 +16,11 @@ import (
 // in distributed terms — leases with ids and expiry rather than a plain mutex
 // — so swapping in a PostgreSQL or Redis implementation later is a change of
 // backend, not a change of contract.
+//
+// Which is why every method takes a context it does not currently use: a
+// network-backed implementation has to be cancellable, and adding the
+// parameter later would break the promise above at the one moment it was
+// supposed to pay off.
 
 // --- Cache ------------------------------------------------------------------
 
@@ -57,7 +62,22 @@ func (c *MemoryCache) SetClock(now func() time.Time) { c.now = now }
 // another's keys.
 func cacheKey(pluginKey, key string) string { return pluginKey + "\x00" + key }
 
-func (c *MemoryCache) Get(pluginKey, key string) ([]byte, bool) {
+// expired answers "is this deadline past" for both the cache and the locks.
+//
+// One function because there were three copies and two of them disagreed at
+// the boundary: the cache and the lock sweeper treated now == expiresAt as
+// still live, lock acquisition treated it as free. Nothing observable came of
+// it — acquisition's boundary was the right one and the sweeper only reclaims
+// memory — but copies that have already drifted a tick apart unnoticed are the
+// condition under which the next copy breaks something.
+//
+// The rule: a deadline is live while now is strictly before it. A zero time
+// means no deadline.
+func expired(now, deadline time.Time) bool {
+	return !deadline.IsZero() && !now.Before(deadline)
+}
+
+func (c *MemoryCache) Get(_ context.Context, pluginKey, key string) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -65,14 +85,14 @@ func (c *MemoryCache) Get(pluginKey, key string) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	if !e.expiresAt.IsZero() && c.now().After(e.expiresAt) {
+	if expired(c.now(), e.expiresAt) {
 		delete(c.entries, cacheKey(pluginKey, key))
 		return nil, false
 	}
 	return e.value, true
 }
 
-func (c *MemoryCache) Set(pluginKey, key string, value []byte, ttl time.Duration) {
+func (c *MemoryCache) Set(_ context.Context, pluginKey, key string, value []byte, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -87,7 +107,7 @@ func (c *MemoryCache) Set(pluginKey, key string, value []byte, ttl time.Duration
 	c.entries[cacheKey(pluginKey, key)] = cacheEntry{value: value, expiresAt: expires}
 }
 
-func (c *MemoryCache) Delete(pluginKey, key string) {
+func (c *MemoryCache) Delete(_ context.Context, pluginKey, key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.entries, cacheKey(pluginKey, key))
@@ -101,7 +121,7 @@ func (c *MemoryCache) evictLocked() {
 	now := c.now()
 	freed := 0
 	for k, e := range c.entries {
-		if !e.expiresAt.IsZero() && now.After(e.expiresAt) {
+		if expired(now, e.expiresAt) {
 			delete(c.entries, k)
 			freed++
 		}
@@ -190,7 +210,7 @@ func (l *MemoryLocks) sweepExpiredLocked(now time.Time) {
 	}
 	l.lastSweep = now
 	for k, st := range l.held {
-		if now.After(st.expiresAt) {
+		if expired(now, st.expiresAt) {
 			delete(l.held, k)
 		}
 	}
@@ -235,7 +255,7 @@ func (l *MemoryLocks) tryAcquire(pluginKey, name string, ttl time.Duration) (Lea
 	now := l.now()
 	l.sweepExpiredLocked(now)
 
-	if cur, ok := l.held[k]; ok && now.Before(cur.expiresAt) {
+	if cur, ok := l.held[k]; ok && !expired(now, cur.expiresAt) {
 		return Lease{}, false
 	}
 
@@ -253,7 +273,7 @@ func (l *MemoryLocks) tryAcquire(pluginKey, name string, ttl time.Duration) (Lea
 
 // Renew extends a lease. It fails when the caller no longer owns the lock,
 // which is the signal that its work may have been taken over by someone else.
-func (l *MemoryLocks) Renew(pluginKey, name, leaseID string, ttl time.Duration) (Lease, bool) {
+func (l *MemoryLocks) Renew(_ context.Context, pluginKey, name, leaseID string, ttl time.Duration) (Lease, bool) {
 	if ttl <= 0 {
 		ttl = DefaultLockTTL
 	}
@@ -262,7 +282,7 @@ func (l *MemoryLocks) Renew(pluginKey, name, leaseID string, ttl time.Duration) 
 
 	k := lockKey(pluginKey, name)
 	cur, ok := l.held[k]
-	if !ok || cur.leaseID != leaseID || l.now().After(cur.expiresAt) {
+	if !ok || cur.leaseID != leaseID || expired(l.now(), cur.expiresAt) {
 		return Lease{}, false
 	}
 	cur.expiresAt = l.now().Add(ttl)
@@ -273,7 +293,7 @@ func (l *MemoryLocks) Renew(pluginKey, name, leaseID string, ttl time.Duration) 
 // Release drops a lock only if the caller still owns it. Checking the lease id
 // is what stops a process whose lease already expired from releasing the lock
 // its successor now holds.
-func (l *MemoryLocks) Release(pluginKey, name, leaseID string) {
+func (l *MemoryLocks) Release(_ context.Context, pluginKey, name, leaseID string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

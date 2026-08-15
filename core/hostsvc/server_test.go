@@ -411,7 +411,7 @@ func TestLockCountIsBounded(t *testing.T) {
 
 	// A name already tracked can still be re-taken once released, so being at
 	// the ceiling does not block the work already in progress.
-	locks.Release("p", "n0", "")
+	locks.Release(context.Background(), "p", "n0", "")
 	if got := locks.Held(); got != 10 {
 		t.Logf("held after a mismatched release: %d", got)
 	}

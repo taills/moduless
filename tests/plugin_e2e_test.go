@@ -105,9 +105,16 @@ func compileFilters(t testing.TB, key string, decls ...manifest.FilterDecl) []ma
 
 // newGateway builds the full serving stack around a registry.
 func newGateway(reg *pluginhost.Registry) *httptest.Server {
+	return newGatewayWithTimeout(reg, 0)
+}
+
+// newGatewayWithTimeout is newGateway with a backend call timeout, so tests
+// can observe Core giving up rather than the client doing so first.
+func newGatewayWithTimeout(reg *pluginhost.Registry, backendTimeout time.Duration) *httptest.Server {
 	h := &gateway.PluginHandler{
-		Registry: reg,
-		Runner:   &pipeline.Runner{},
+		Registry:       reg,
+		Runner:         &pipeline.Runner{},
+		BackendTimeout: backendTimeout,
 		// Auth is nil, so identity resolution is skipped and the pipeline runs
 		// without a session store. Authentication itself is covered by the
 		// gateway package's own tests.

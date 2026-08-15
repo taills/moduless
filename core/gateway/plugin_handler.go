@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -259,11 +260,7 @@ func (h *PluginHandler) writeResponse(w http.ResponseWriter, resp *pb.HttpRespon
 			w.Header().Add(k, v)
 		}
 	}
-	status := int(resp.GetStatusCode())
-	if status == 0 {
-		status = http.StatusOK
-	}
-	w.WriteHeader(status)
+	w.WriteHeader(normalizeStatus(int(resp.GetStatusCode())))
 	_, _ = w.Write(resp.GetBody())
 }
 
@@ -273,12 +270,30 @@ func writeFinal(w http.ResponseWriter, rc *pipeline.RequestContext) {
 			w.Header().Add(k, v)
 		}
 	}
-	status := rc.ResponseStatus
-	if status == 0 {
-		status = http.StatusOK
-	}
-	w.WriteHeader(status)
+	w.WriteHeader(normalizeStatus(rc.ResponseStatus))
 	_, _ = w.Write(rc.ResponseBody)
+}
+
+// normalizeStatus keeps a plugin's status code inside what net/http accepts.
+//
+// WriteHeader panics on a code outside 100–999, so passing one straight
+// through turns a plugin's bug into a panic in Core's request goroutine and a
+// broken connection for the caller. Plugins are trusted code, but trusted code
+// still has bugs, and this one is a one-line typo away.
+//
+// Zero means the plugin never set a status, which is the ordinary "just write
+// the body" case and becomes 200. Anything else out of range is reported as a
+// bad gateway, because the plugin genuinely did answer — it just answered with
+// something that is not an HTTP status.
+func normalizeStatus(code int) int {
+	switch {
+	case code == 0:
+		return http.StatusOK
+	case code < 100 || code > 599:
+		return http.StatusBadGateway
+	default:
+		return code
+	}
 }
 
 type pluginUnavailableError struct{ key string }
@@ -287,16 +302,33 @@ func (e *pluginUnavailableError) Error() string { return "plugin " + e.key + " i
 
 // splitPluginPath turns /api/plugins/<key>/<sub> into its parts. A request for
 // the bare prefix, or for a key with no sub-path, is not routable.
-func splitPluginPath(path string) (key, sub string, ok bool) {
-	rest := strings.TrimPrefix(path, PluginAPIPrefix)
-	if rest == path || rest == "" {
+//
+// The sub-path is cleaned before it is handed over, so a plugin can never
+// receive one containing "..". Plugins are trusted code, but a plugin that
+// joins this onto a directory — to serve a template, a report, an asset —
+// would be walking out of it, and the encoded form (%2e%2e%2f) arrives here
+// already decoded by net/http. Cleaning once, centrally, means no plugin
+// author has to remember to.
+func splitPluginPath(p string) (key, sub string, ok bool) {
+	rest := strings.TrimPrefix(p, PluginAPIPrefix)
+	if rest == p || rest == "" {
 		return "", "", false
 	}
 	i := strings.IndexByte(rest, '/')
 	if i < 0 {
 		return rest, "/", true
 	}
-	return rest[:i], rest[i:], true
+	return rest[:i], cleanSubPath(rest[i:]), true
+}
+
+// cleanSubPath resolves "." and ".." and collapses repeated slashes, keeping a
+// trailing slash because routers commonly distinguish /items from /items/.
+func cleanSubPath(sub string) string {
+	cleaned := path.Clean(sub)
+	if strings.HasSuffix(sub, "/") && !strings.HasSuffix(cleaned, "/") {
+		cleaned += "/"
+	}
+	return cleaned
 }
 
 // traceIDFor establishes the id that follows this request through every

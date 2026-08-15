@@ -65,7 +65,7 @@ func (e *echoImpl) Configure(ctx context.Context, req *pb.ConfigureRequest) (*pb
 	return &pb.ConfigureResponse{Ready: true}, nil
 }
 
-func (e *echoImpl) HandleHTTP(_ context.Context, req *pb.HttpRequest) (*pb.HttpResponse, error) {
+func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.HttpResponse, error) {
 	e.mu.RLock()
 	greeting := e.hostEcho
 	e.mu.RUnlock()
@@ -98,6 +98,37 @@ func (e *echoImpl) HandleHTTP(_ context.Context, req *pb.HttpRequest) (*pb.HttpR
 			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
 		}
 		body = out
+
+	// --- deliberately badly-behaved responses, for robustness tests ---
+
+	case "/hang":
+		// Never returns until the caller gives up. A plugin that wedges must
+		// not wedge Core along with it.
+		<-ctx.Done()
+		return nil, ctx.Err()
+
+	case "/huge":
+		// A response far larger than anything sensible, to check the size
+		// ceiling is enforced rather than swallowing the whole thing.
+		body = make([]byte, 32<<20)
+
+	case "/badstatus":
+		// A status code outside the valid range. Core must not pass it
+		// through to net/http, which panics on an invalid code.
+		return &pb.HttpResponse{StatusCode: 9999, Body: []byte("bad status")}, nil
+
+	case "/zerostatus":
+		// A plugin that forgot to set a status at all.
+		return &pb.HttpResponse{Body: []byte("no status set")}, nil
+
+	case "/panic":
+		// A handler panic inside the plugin. The plugin process should
+		// survive it or die cleanly, but either way Core must stay up.
+		panic("deliberate panic inside the plugin handler")
+
+	case "/slow":
+		// Slow but not hung: finishes well within any sane timeout.
+		time.Sleep(150 * time.Millisecond)
 	}
 
 	return &pb.HttpResponse{

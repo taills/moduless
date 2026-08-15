@@ -7,7 +7,10 @@
 package manifest
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 
@@ -178,7 +181,18 @@ func Load(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("read manifest %s: %w", path, err)
 	}
 	var m Manifest
-	if err := yaml.Unmarshal(data, &m); err != nil {
+	// Unknown fields are an error, not something to ignore.
+	//
+	// A manifest is what a reviewer reads to decide whether to install a
+	// plugin, and what Core enforces. Silently dropping a field it does not
+	// recognise makes those two things differ: `filter:` instead of `filters:`
+	// installs cleanly, shows as running, and the plugin's fail-closed
+	// authenticate filter never runs — so every request goes unauthenticated
+	// while the manifest on screen says otherwise. Most typos happen to fail
+	// closed, but that one does not, and it is the one that matters.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&m); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse manifest %s: %w", path, err)
 	}
 	if err := validateMenus(m.Menus); err != nil {

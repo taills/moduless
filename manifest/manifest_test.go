@@ -208,3 +208,93 @@ func TestLoadRejectsAnEnormousManifest(t *testing.T) {
 		t.Logf("refused: %v", err)
 	}
 }
+
+// A field Core does not recognise is refused rather than dropped.
+//
+// The manifest is what a reviewer reads to decide whether to install a plugin
+// and what Core enforces; a silently ignored field makes those two disagree.
+// Most typos happen to fail closed — a misspelled `permissions:` leaves the
+// plugin with none, and it fails loudly on its first call. `filters:` is the
+// exception, and it is the dangerous one: a plugin whose entire purpose is a
+// fail-closed authenticate filter installs cleanly, reports as running, and
+// every request goes unauthenticated while the console shows the manifest that
+// says otherwise.
+func TestUnknownFieldIsRefused(t *testing.T) {
+	for _, tc := range []struct{ name, extra string }{
+		{"misspelled filters", "filter:\n  - name: guard\n    phase: authenticate\n"},
+		{"misspelled permissions", "permission:\n  - db\n"},
+		{"field from a design that was never built", "resources:\n  memory_mb: 256\n"},
+		{"nested unknown field", "filters:\n  - name: guard\n    phase: pre_route\n    needs_body: true\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeManifest(t, "key: hello\nversion: 1.0.0\n"+
+				"runtime:\n  entrypoint: bin/plugin\n"+tc.extra)
+
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("accepted; the declaration a reviewer reads and what Core enforces now differ")
+			}
+			t.Logf("refused: %v", err)
+		})
+	}
+}
+
+// The other direction: everything the schema does declare still parses. A
+// stricter decoder that refused valid manifests would pass the test above.
+func TestEveryDeclaredFieldStillParses(t *testing.T) {
+	path := writeManifest(t, `key: hello
+display_name: Hello
+version: 1.0.0
+weight: 2
+runtime:
+  entrypoint: bin/plugin
+  replicas: 2
+permissions: [db, queue]
+egress_allow: ["api.example.com"]
+menus:
+  - path: /hello
+    title: Hello
+    icon: star
+    order: 1
+    entry: /plugins/hello/
+    roles: [admin]
+    children:
+      - path: /hello/sub
+        title: Sub
+database:
+  collections:
+    - name: notes
+      indexes:
+        - fields: [created]
+          unique: false
+filters:
+  - name: guard
+    phase: pre_route
+    order: 10
+    fail_closed: true
+    timeout_ms: 50
+    needs_request_body: false
+    match:
+      paths: ["/**"]
+      methods: ["GET"]
+jobs:
+  - name: nightly
+    cron: "17 3 * * *"
+config:
+  - key: greeting
+    label: Greeting
+    description: what to say
+    type: string
+    default: hi
+    required: true
+    secret: false
+`)
+
+	m, err := Load(path)
+	if err != nil {
+		t.Fatalf("a manifest using every declared field was refused: %v", err)
+	}
+	if len(m.Filters) != 1 || len(m.Jobs) != 1 || len(m.Config) != 1 || len(m.Menus) != 1 {
+		t.Errorf("parsed manifest is missing sections: %+v", m)
+	}
+}

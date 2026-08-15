@@ -1,7 +1,13 @@
 package tests
 
 import (
+	"github.com/taills/moduless/core/hostsvc"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os/exec"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -94,6 +100,56 @@ func TestCoreDoesNotDependOnTheSDK(t *testing.T) {
 	for _, dep := range deps {
 		if strings.HasPrefix(dep, "sdk/") {
 			t.Errorf("core depends on %s; the host must not be coupled to the plugin client library", dep)
+		}
+	}
+}
+
+// Every capability Core can expose is actually wired up in main.go.
+//
+// This checks the shape of bug that has now appeared three times in this
+// codebase: a capability with a complete contract on both ends and nothing
+// joining them in the middle. Configuration push had it, the cron scheduler
+// had it, and configuration storage had it — a manifest could declare
+// settings, Core merged the defaults, SetConfig could deliver a change, and no
+// value could ever be set because main.go supplied an empty in-memory store.
+//
+// What each had in common is that both halves were tested and the join was
+// not. A nil field in Deps is not an error anywhere: the capability simply
+// reports Unavailable forever, which is indistinguishable from a Core
+// deliberately started without a database.
+func TestEveryHostCapabilityIsWiredInMain(t *testing.T) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join("..", "core", "main.go"), nil, 0)
+	if err != nil {
+		t.Fatalf("parsing core/main.go: %v", err)
+	}
+
+	// Names main.go assigns, from both `Field: value` in a composite literal
+	// and `x.Field = value`. Parsed rather than grepped so a field named only
+	// in a comment does not count as wired.
+	assigned := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		switch v := n.(type) {
+		case *ast.KeyValueExpr:
+			if id, ok := v.Key.(*ast.Ident); ok {
+				assigned[id.Name] = true
+			}
+		case *ast.AssignStmt:
+			for _, lhs := range v.Lhs {
+				if sel, ok := lhs.(*ast.SelectorExpr); ok {
+					assigned[sel.Sel.Name] = true
+				}
+			}
+		}
+		return true
+	})
+
+	deps := reflect.TypeOf(hostsvc.Deps{})
+	for i := range deps.NumField() {
+		name := deps.Field(i).Name
+		if !assigned[name] {
+			t.Errorf("hostsvc.Deps.%s is never assigned in core/main.go; the capability would "+
+				"report Unavailable forever, which looks exactly like a Core started without a database", name)
 		}
 	}
 }

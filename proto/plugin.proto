@@ -1,0 +1,199 @@
+syntax = "proto3";
+
+// moduless.plugin.v1 is the Host -> Plugin contract. Core drives every RPC in
+// this file; the plugin subprocess only answers. The reverse direction (plugin
+// calling back into Core for data, queue, files, ...) lives in host.proto and
+// travels over a go-plugin GRPCBroker connection.
+//
+// Versioned package name: Core and plugins register their descriptors into the
+// same global protobuf registry as the legacy tunnel.proto during the
+// migration, so the fully-qualified names must not collide.
+package moduless.plugin.v1;
+
+option go_package = "github.com/taills/moduless/proto/plugin";
+
+import "google/protobuf/empty.proto";
+
+service PluginService {
+  // Configure is always the first call. It hands the plugin the broker id it
+  // must dial back on to reach HostServices, plus admin-supplied config and
+  // the permission set Core actually granted.
+  rpc Configure(ConfigureRequest) returns (ConfigureResponse);
+
+  // HandleHTTP serves a request routed to /api/plugins/<key>/*.
+  rpc HandleHTTP(HttpRequest) returns (HttpResponse);
+
+  // Filter runs one lifecycle phase of the request pipeline. Only phases the
+  // plugin subscribed to in its manifest are ever dispatched to it.
+  rpc Filter(FilterRequest) returns (FilterResponse);
+
+  // RunJob executes one scheduled job. Core owns the cron schedule and
+  // guarantees at most one replica runs a given job occurrence.
+  rpc RunJob(JobRequest) returns (JobResponse);
+
+  // OnConfigChanged pushes an admin config edit without restarting the plugin.
+  rpc OnConfigChanged(ConfigChangeEvent) returns (google.protobuf.Empty);
+
+  // Shutdown asks the plugin to stop accepting work and finish in-flight
+  // requests. Core kills the process once the drain deadline passes.
+  rpc Shutdown(ShutdownRequest) returns (google.protobuf.Empty);
+}
+
+// ---------------------------------------------------------------------------
+// Shared value types
+// ---------------------------------------------------------------------------
+
+// HeaderValues carries every value of a repeated HTTP header. The legacy tunnel
+// protocol used map<string,string> and silently dropped all but the first
+// value, which corrupted Set-Cookie and friends.
+message HeaderValues {
+  repeated string values = 1;
+}
+
+message Identity {
+  string user_id = 1;
+  string username = 2;
+  repeated string roles = 3;
+}
+
+message HttpRequest {
+  // trace_id is propagated through every hop (filters, backend, HostServices
+  // calls, queue messages) so one request can be reconstructed across
+  // processes. Core generates or inherits it at the gateway edge.
+  string trace_id = 1;
+  string method = 2;
+  string path = 3;
+  string query = 4;
+  map<string, HeaderValues> headers = 5;
+  bytes body = 6;
+  Identity identity = 7;
+  string client_ip = 8;
+}
+
+message HttpResponse {
+  int32 status_code = 1;
+  map<string, HeaderValues> headers = 2;
+  bytes body = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+message ConfigureRequest {
+  string plugin_key = 1;
+  string instance_id = 2;
+  // host_broker_id is the go-plugin GRPCBroker stream id the plugin must dial
+  // to obtain its HostServices connection.
+  uint32 host_broker_id = 3;
+  map<string, string> config = 4;
+  repeated string granted_permissions = 5;
+  // data_dir is a plugin-private writable directory. Everything else in the
+  // filesystem should be treated as read-only.
+  string data_dir = 6;
+  string log_level = 7;
+  int32 max_message_bytes = 8;
+}
+
+message ConfigureResponse {
+  bool ready = 1;
+  string error = 2;
+}
+
+message ShutdownRequest {
+  string reason = 1;
+  int32 drain_timeout_seconds = 2;
+}
+
+message ConfigChangeEvent {
+  map<string, string> config = 1;
+  string trace_id = 2;
+}
+
+message JobRequest {
+  string job_name = 1;
+  string trace_id = 2;
+  // scheduled_unix is the occurrence the job was scheduled for, which may lag
+  // wall-clock time if Core was busy. Jobs that care about correctness should
+  // key off this rather than time.Now().
+  int64 scheduled_unix = 3;
+}
+
+message JobResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Filter pipeline (IIS-style request lifecycle interception)
+// ---------------------------------------------------------------------------
+
+enum Phase {
+  PHASE_UNSPECIFIED = 0;
+  // PRE_ROUTE runs before any routing decision, on every request. Rate
+  // limiting, WAF and canary plugins live here. Can short-circuit.
+  PHASE_PRE_ROUTE = 1;
+  // AUTHENTICATE may establish or enrich the caller identity.
+  PHASE_AUTHENTICATE = 2;
+  // AUTHORIZE decides whether the established identity may proceed.
+  PHASE_AUTHORIZE = 3;
+  // PRE_HANDLER is the last chance to rewrite the request before the backend
+  // plugin sees it.
+  PHASE_PRE_HANDLER = 4;
+  // POST_HANDLER may rewrite the backend response.
+  PHASE_POST_HANDLER = 5;
+  // ON_ERROR fires only when the backend failed or returned 5xx.
+  PHASE_ON_ERROR = 6;
+  // LOG fires after the response has been flushed to the client. Dispatched
+  // asynchronously; its result cannot affect the response.
+  PHASE_LOG = 7;
+}
+
+message FilterRequest {
+  string trace_id = 1;
+  Phase phase = 2;
+  string method = 3;
+  string path = 4;
+  string query = 5;
+  map<string, HeaderValues> headers = 6;
+  string client_ip = 7;
+  Identity identity = 8;
+  // body is populated only for filters that declared needs_body. Core enforces
+  // a single body limit across the whole chain, so a filter never sees a
+  // truncated body while the backend sees the full one.
+  bytes body = 9;
+  // Populated from PHASE_POST_HANDLER and PHASE_ON_ERROR onwards.
+  int32 upstream_status = 10;
+  map<string, HeaderValues> upstream_headers = 11;
+  bytes upstream_body = 12;
+  // context carries values injected by earlier filters in the same request.
+  map<string, string> context = 13;
+  int64 elapsed_micros = 14;
+}
+
+message FilterResponse {
+  enum Action {
+    // CONTINUE hands the request to the next filter unchanged.
+    ACTION_CONTINUE = 0;
+    // SHORT_CIRCUIT stops the pipeline and writes short_circuit_response.
+    ACTION_SHORT_CIRCUIT = 1;
+    // MUTATE applies mutation and continues.
+    ACTION_MUTATE = 2;
+  }
+  Action action = 1;
+  HttpResponse short_circuit_response = 2;
+  RequestMutation mutation = 3;
+}
+
+message RequestMutation {
+  map<string, HeaderValues> set_request_headers = 1;
+  repeated string remove_request_headers = 2;
+  map<string, HeaderValues> set_response_headers = 3;
+  repeated string remove_response_headers = 4;
+  string rewrite_path = 5;
+  // set_identity is honoured only for plugins holding the
+  // "filter:authenticate" permission, and only during AUTHENTICATE/AUTHORIZE.
+  // Without that gate any plugin could escalate privileges.
+  Identity set_identity = 6;
+  map<string, string> set_context = 7;
+}

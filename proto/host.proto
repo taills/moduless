@@ -1,0 +1,439 @@
+syntax = "proto3";
+
+// moduless.plugin.v1 host services: the Plugin -> Host contract.
+//
+// A plugin reaches these over a go-plugin GRPCBroker connection that Core
+// hands it during Configure. Note there is no extension_key/tenant field
+// anywhere below: Core serves a *separate* HostServices instance per plugin
+// instance, with the key and granted permissions already closed over. Identity
+// here is structural, not self-asserted, so a plugin cannot address another
+// plugin's data by lying about who it is.
+package moduless.plugin.v1;
+
+option go_package = "github.com/taills/moduless/proto/plugin";
+
+import "google/protobuf/empty.proto";
+// HeaderValues is shared with the Host -> Plugin contract. Same proto package,
+// but protobuf still requires an explicit import across files.
+import "proto/plugin.proto";
+
+service HostServices {
+  // --- Data (Core-Managed Document Store) ---------------------------------
+  rpc Put(PutRequest) returns (PutResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc Find(FindRequest) returns (FindResponse);
+  rpc Query(QueryRequest) returns (QueryResponse);
+  rpc Aggregate(AggregateRequest) returns (AggregateResponse);
+  rpc BatchWrite(BatchWriteRequest) returns (BatchWriteResponse);
+  rpc BeginTx(BeginTxRequest) returns (BeginTxResponse);
+  rpc CommitTx(TxRequest) returns (google.protobuf.Empty);
+  rpc RollbackTx(TxRequest) returns (google.protobuf.Empty);
+
+  // --- Durable queue (PostgreSQL backed) ----------------------------------
+  rpc Enqueue(EnqueueRequest) returns (EnqueueResponse);
+  rpc Consume(ConsumeRequest) returns (stream QueueMessage);
+  rpc Ack(AckRequest) returns (google.protobuf.Empty);
+  rpc Nack(NackRequest) returns (google.protobuf.Empty);
+
+  // --- Cache and leases ----------------------------------------------------
+  rpc CacheGet(CacheGetRequest) returns (CacheGetResponse);
+  rpc CacheSet(CacheSetRequest) returns (google.protobuf.Empty);
+  rpc CacheDelete(CacheDeleteRequest) returns (google.protobuf.Empty);
+  rpc AcquireLock(AcquireLockRequest) returns (AcquireLockResponse);
+  rpc RenewLock(LeaseRequest) returns (AcquireLockResponse);
+  rpc ReleaseLock(LeaseRequest) returns (google.protobuf.Empty);
+
+  // --- Config --------------------------------------------------------------
+  rpc GetConfig(google.protobuf.Empty) returns (GetConfigResponse);
+
+  // --- Files ---------------------------------------------------------------
+  rpc PutFile(stream PutFileChunk) returns (PutFileResponse);
+  rpc DeleteFile(FileRequest) returns (google.protobuf.Empty);
+  rpc GenerateDownloadToken(DownloadTokenRequest) returns (DownloadTokenResponse);
+  rpc GetFileMetadata(FileRequest) returns (FileMetadata);
+
+  // --- Outbound HTTP (allow-listed, rate limited, audited by Core) ---------
+  rpc Fetch(FetchRequest) returns (FetchResponse);
+
+  // --- Realtime event broadcast (best effort, in-memory) -------------------
+  // For delivery that must not be lost, use the durable queue above instead.
+  rpc Publish(PublishRequest) returns (google.protobuf.Empty);
+  rpc Subscribe(SubscribeRequest) returns (stream Event);
+
+  // --- Observability -------------------------------------------------------
+  rpc Log(stream LogRecord) returns (google.protobuf.Empty);
+  rpc RecordMetric(MetricRequest) returns (google.protobuf.Empty);
+}
+
+// ---------------------------------------------------------------------------
+// Data
+// ---------------------------------------------------------------------------
+
+// Every data call may carry a trace_id and an optional tx_id. An empty tx_id
+// means autocommit.
+message PutRequest {
+  string collection = 1;
+  string doc_id = 2;
+  bytes data = 3;
+  string tx_id = 4;
+  string trace_id = 5;
+  // expected_version enables optimistic locking: when non-zero the write only
+  // applies if the stored version still matches, otherwise FAILED_PRECONDITION.
+  int64 expected_version = 6;
+}
+message PutResponse {
+  bool success = 1;
+  int64 version = 2;
+}
+
+message GetRequest {
+  string collection = 1;
+  string doc_id = 2;
+  string tx_id = 3;
+  string trace_id = 4;
+}
+message GetResponse {
+  bool found = 1;
+  bytes data = 2;
+  int64 version = 3;
+}
+
+message DeleteRequest {
+  string collection = 1;
+  string doc_id = 2;
+  string tx_id = 3;
+  string trace_id = 4;
+}
+message DeleteResponse {
+  bool success = 1;
+}
+
+enum Operator {
+  OP_UNSPECIFIED = 0;
+  OP_EQ = 1;
+  OP_NE = 2;
+  OP_GT = 3;
+  OP_GTE = 4;
+  OP_LT = 5;
+  OP_LTE = 6;
+  OP_LIKE = 7;
+  OP_IN = 8;
+  OP_BETWEEN = 9;
+  OP_IS_NULL = 10;
+  OP_IS_NOT_NULL = 11;
+}
+
+message Filter {
+  // field is a JSONB path: "status" or "profile.address.city". Core validates
+  // every segment against an identifier allow-list before building SQL.
+  string field = 1;
+  Operator op = 2;
+  // values holds one entry for scalar operators, two for BETWEEN, N for IN,
+  // and none for IS NULL / IS NOT NULL.
+  repeated string values = 3;
+}
+
+message Sort {
+  string field = 1;
+  bool descending = 2;
+}
+
+// FindRequest is the legacy simple query kept for source compatibility.
+message FindRequest {
+  string collection = 1;
+  repeated Filter filters = 2;
+  int32 limit = 3;
+  int32 offset = 4;
+  string tx_id = 5;
+  string trace_id = 6;
+}
+message FindResponse {
+  repeated bytes documents = 1;
+}
+
+// QueryRequest adds sorting and keyset pagination. Prefer it over Find for
+// anything user-facing: offset pagination degrades badly on large collections.
+message QueryRequest {
+  string collection = 1;
+  repeated Filter filters = 2;
+  repeated Sort sort = 3;
+  int32 limit = 4;
+  // cursor is an opaque keyset token returned by the previous QueryResponse.
+  string cursor = 5;
+  string tx_id = 6;
+  string trace_id = 7;
+}
+message QueryResponse {
+  repeated bytes documents = 1;
+  string next_cursor = 2;
+  bool has_more = 3;
+}
+
+enum AggregateFunc {
+  AGG_UNSPECIFIED = 0;
+  AGG_COUNT = 1;
+  AGG_SUM = 2;
+  AGG_AVG = 3;
+  AGG_MIN = 4;
+  AGG_MAX = 5;
+}
+
+message AggregateRequest {
+  string collection = 1;
+  repeated Filter filters = 2;
+  AggregateFunc func = 3;
+  // field is ignored for COUNT.
+  string field = 4;
+  repeated string group_by = 5;
+  string tx_id = 6;
+  string trace_id = 7;
+}
+message AggregateResponse {
+  message Bucket {
+    map<string, string> keys = 1;
+    double value = 2;
+  }
+  repeated Bucket buckets = 1;
+}
+
+message BatchWriteRequest {
+  message Op {
+    oneof kind {
+      PutRequest put = 1;
+      DeleteRequest delete = 2;
+    }
+  }
+  repeated Op ops = 1;
+  string tx_id = 2;
+  string trace_id = 3;
+}
+message BatchWriteResponse {
+  int32 applied = 1;
+}
+
+message BeginTxRequest {
+  string trace_id = 1;
+  // timeout_seconds bounds how long Core holds the database transaction open.
+  // Core rolls back and invalidates tx_id when it expires, so a plugin that
+  // crashes mid-transaction cannot pin a connection forever.
+  int32 timeout_seconds = 2;
+}
+message BeginTxResponse {
+  string tx_id = 1;
+}
+message TxRequest {
+  string tx_id = 1;
+  string trace_id = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Durable queue
+// ---------------------------------------------------------------------------
+
+message EnqueueRequest {
+  string topic = 1;
+  bytes payload = 2;
+  int32 delay_seconds = 3;
+  // dedup_key suppresses duplicate enqueues while an identical message is
+  // still pending or processing.
+  string dedup_key = 4;
+  int32 priority = 5;
+  int32 max_attempts = 6;
+  string trace_id = 7;
+}
+message EnqueueResponse {
+  int64 message_id = 1;
+  bool deduplicated = 2;
+}
+
+message ConsumeRequest {
+  string topic = 1;
+  // prefetch bounds how many messages Core leases to this consumer at once.
+  int32 prefetch = 2;
+  int32 visibility_timeout_seconds = 3;
+}
+
+message QueueMessage {
+  int64 message_id = 1;
+  string topic = 2;
+  bytes payload = 3;
+  int32 attempt = 4;
+  int32 max_attempts = 5;
+  // parent_trace_id is the trace of the request that enqueued this message, so
+  // async work stays attributable to whatever triggered it.
+  string parent_trace_id = 6;
+  // trace_id identifies this delivery attempt.
+  string trace_id = 7;
+}
+
+message AckRequest {
+  int64 message_id = 1;
+  string trace_id = 2;
+}
+message NackRequest {
+  int64 message_id = 1;
+  string error = 2;
+  // retry_after_seconds overrides Core's default backoff when positive.
+  int32 retry_after_seconds = 3;
+  string trace_id = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Cache and leases
+// ---------------------------------------------------------------------------
+
+message CacheGetRequest {
+  string key = 1;
+}
+message CacheGetResponse {
+  bool found = 1;
+  bytes value = 2;
+}
+message CacheSetRequest {
+  string key = 1;
+  bytes value = 2;
+  int32 ttl_seconds = 3;
+}
+message CacheDeleteRequest {
+  string key = 1;
+}
+
+message AcquireLockRequest {
+  string name = 1;
+  int32 ttl_seconds = 2;
+  // wait_seconds > 0 blocks until the lock frees or the wait expires.
+  int32 wait_seconds = 3;
+}
+message AcquireLockResponse {
+  bool acquired = 1;
+  // lease_id must be presented to renew or release; it prevents a process that
+  // lost its lease on timeout from releasing the new holder's lock.
+  string lease_id = 2;
+  int64 expires_at_unix = 3;
+}
+message LeaseRequest {
+  string name = 1;
+  string lease_id = 2;
+  int32 ttl_seconds = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+message GetConfigResponse {
+  map<string, string> config = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+message PutFileChunk {
+  // Only the first chunk carries metadata; subsequent chunks carry data only.
+  string filename = 1;
+  string mime_type = 2;
+  bytes data = 3;
+  string trace_id = 4;
+}
+message PutFileResponse {
+  string file_id = 1;
+  int64 size = 2;
+}
+
+message FileRequest {
+  string file_id = 1;
+  string trace_id = 2;
+}
+
+message DownloadTokenRequest {
+  string file_id = 1;
+  string user_id = 2;
+  int32 expiry_seconds = 3;
+  string trace_id = 4;
+}
+message DownloadTokenResponse {
+  // url is a clean path-parameter URL: /api/system/files/download/<id>/<token>
+  string url = 1;
+  int64 expires_at_unix = 2;
+}
+
+message FileMetadata {
+  bool found = 1;
+  string file_id = 2;
+  string filename = 3;
+  int64 size = 4;
+  string mime_type = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Outbound HTTP
+// ---------------------------------------------------------------------------
+
+message FetchRequest {
+  string method = 1;
+  string url = 2;
+  map<string, HeaderValues> headers = 3;
+  bytes body = 4;
+  int32 timeout_ms = 5;
+  string trace_id = 6;
+}
+message FetchResponse {
+  int32 status_code = 1;
+  map<string, HeaderValues> headers = 2;
+  bytes body = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+message PublishRequest {
+  string event_name = 1;
+  bytes data = 2;
+  string trace_id = 3;
+}
+message SubscribeRequest {
+  string event_name = 1;
+}
+message Event {
+  string event_name = 1;
+  bytes data = 2;
+  string source_plugin_key = 3;
+  string trace_id = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Observability
+// ---------------------------------------------------------------------------
+
+enum LogLevel {
+  LOG_UNSPECIFIED = 0;
+  LOG_DEBUG = 1;
+  LOG_INFO = 2;
+  LOG_WARN = 3;
+  LOG_ERROR = 4;
+}
+
+message LogRecord {
+  LogLevel level = 1;
+  string message = 2;
+  map<string, string> fields = 3;
+  string trace_id = 4;
+  int64 timestamp_unix_nanos = 5;
+}
+
+enum MetricKind {
+  METRIC_UNSPECIFIED = 0;
+  METRIC_COUNTER = 1;
+  METRIC_GAUGE = 2;
+  METRIC_HISTOGRAM = 3;
+}
+
+message MetricRequest {
+  string name = 1;
+  MetricKind kind = 2;
+  double value = 3;
+  map<string, string> labels = 4;
+}

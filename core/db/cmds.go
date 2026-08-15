@@ -84,11 +84,22 @@ func (m *CMDSManager) ReconcileSchema(extKey string, collections []CollectionSch
 			CREATE TABLE IF NOT EXISTS %s (
 				id VARCHAR(100) PRIMARY KEY,
 				data JSONB NOT NULL,
+				version BIGINT NOT NULL DEFAULT 1,
 				created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
 				updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 			);`, table)
 		if _, err := m.db.Exec(createSQL); err != nil {
 			return fmt.Errorf("create table %s: %w", table, err)
+		}
+
+		// Tables provisioned before optimistic locking existed have no version
+		// column. Adding it here rather than in a numbered migration is
+		// deliberate: these tables are created on demand per plugin, so a
+		// static migration could not know their names.
+		alterSQL := fmt.Sprintf(
+			`ALTER TABLE %s ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1;`, table)
+		if _, err := m.db.Exec(alterSQL); err != nil {
+			return fmt.Errorf("add version column to %s: %w", table, err)
 		}
 
 		desired := make(map[string]struct{})

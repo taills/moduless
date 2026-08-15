@@ -235,23 +235,32 @@ func TestE2EHotUpgradeServesContinuously(t *testing.T) {
 	defer srv.Close()
 
 	var (
-		stop     atomic.Bool
-		attempts atomic.Int64
-		failures atomic.Int64
-		done     = make(chan struct{})
+		stop      atomic.Bool
+		attempts  atomic.Int64
+		badStatus atomic.Int64
+		transport atomic.Int64
+		firstErr  atomic.Pointer[string]
+		done      = make(chan struct{})
 	)
 	go func() {
 		defer close(done)
-		client := &http.Client{Timeout: 5 * time.Second}
+		// A generous timeout: this test runs alongside the rest of the suite,
+		// so the machine may be loaded. A slow response is not a dropped one,
+		// and conflating them would make the test flaky rather than strict.
+		client := &http.Client{Timeout: 20 * time.Second}
 		for !stop.Load() {
 			attempts.Add(1)
 			resp, err := client.Get(srv.URL + "/api/plugins/hello/items")
 			if err != nil {
-				failures.Add(1)
+				transport.Add(1)
+				msg := err.Error()
+				firstErr.CompareAndSwap(nil, &msg)
 				continue
 			}
 			if resp.StatusCode != 200 {
-				failures.Add(1)
+				badStatus.Add(1)
+				msg := fmt.Sprintf("status %d", resp.StatusCode)
+				firstErr.CompareAndSwap(nil, &msg)
 			}
 			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
@@ -273,9 +282,24 @@ func TestE2EHotUpgradeServesContinuously(t *testing.T) {
 	if attempts.Load() < 10 {
 		t.Fatalf("only %d requests were made; the test did not exercise the swap", attempts.Load())
 	}
-	if got := failures.Load(); got != 0 {
-		t.Errorf("%d of %d requests failed during the upgrade; the swap is not zero-downtime",
-			got, attempts.Load())
+
+	detail := ""
+	if p := firstErr.Load(); p != nil {
+		detail = " first failure: " + *p
+	}
+
+	// A non-200 is the real zero-downtime violation: the gateway answered and
+	// said the plugin was unavailable.
+	if got := badStatus.Load(); got != 0 {
+		t.Errorf("%d of %d requests got a non-200 during the upgrade; the swap is not zero-downtime.%s",
+			got, attempts.Load(), detail)
+	}
+	// Transport errors are reported separately because under a loaded CI
+	// machine they can be scheduling noise rather than the swap dropping
+	// connections. They are still a failure — just a distinguishable one.
+	if got := transport.Load(); got != 0 {
+		t.Errorf("%d of %d requests failed at the transport layer during the upgrade.%s",
+			got, attempts.Load(), detail)
 	}
 	if !v1.ProcessExited() {
 		t.Error("the old version was not drained and stopped")

@@ -15,14 +15,22 @@ import (
 type jobRecorder struct {
 	fakeClient
 
-	mu   sync.Mutex
-	runs []string
-	fail bool
+	mu        sync.Mutex
+	runs      []string
+	scheduled []int64
+	fail      bool
+	// block holds each job inside RunJob until it is closed, so a test can
+	// arrange for a job to still be running when the clock has moved on.
+	block chan struct{}
 }
 
 func (j *jobRecorder) RunJob(_ context.Context, req *pb.JobRequest) (*pb.JobResponse, error) {
+	if j.block != nil {
+		<-j.block
+	}
 	j.mu.Lock()
 	j.runs = append(j.runs, req.GetJobName())
+	j.scheduled = append(j.scheduled, req.GetScheduledUnix())
 	j.mu.Unlock()
 	if j.fail {
 		return &pb.JobResponse{Success: false, Error: "job failed"}, nil
@@ -268,4 +276,40 @@ func (b *blockingJobClient) RunJob(context.Context, *pb.JobRequest) (*pb.JobResp
 	close(b.started)
 	<-b.release
 	return &pb.JobResponse{Success: true}, nil
+}
+
+// A job that starts late still reports the minute it was scheduled for.
+//
+// This is not cosmetic. Plugins deduplicate on job.Scheduled — the notes
+// example keys its nightly summary on it — so a delayed run that reported the
+// minute it actually started in would produce a second summary for the same
+// night. The scheduler read the clock inside the job's own goroutine until the
+// race detector pointed at it.
+func TestJobReportsTheMinuteItWasScheduledFor(t *testing.T) {
+	s, client, _ := schedulerFixture(t, "* * * * *")
+	client.block = make(chan struct{})
+
+	at := time.Date(2026, 8, 12, 3, 17, 0, 0, time.UTC)
+	var clock atomic.Int64
+	clock.Store(at.Unix())
+	s.SetClock(func() time.Time { return time.Unix(clock.Load(), 0).UTC() })
+
+	s.Tick(context.Background())
+
+	// The job is now in flight. Time moves on before it gets to run, which is
+	// what happens on a Core that is busy or a plugin that is slow to answer.
+	clock.Store(at.Add(7 * time.Minute).Unix())
+	close(client.block)
+	waitForRuns(t, client, 1)
+	s.Stop()
+
+	client.mu.Lock()
+	got := client.scheduled[0]
+	client.mu.Unlock()
+
+	if got != at.Unix() {
+		t.Errorf("the job was told it was scheduled for %s, but it was claimed for %s; "+
+			"a plugin deduplicating on this would treat a delayed run as a new one",
+			time.Unix(got, 0).UTC(), at)
+	}
 }

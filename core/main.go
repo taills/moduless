@@ -53,9 +53,11 @@ func main() {
 	// in-process: Core is single-instance and every plugin replica is its
 	// child, so that is already correct for the only topology there is.
 	hostDeps := hostsvc.Deps{
-		Cache:  hostsvc.NewMemoryCache(0),
-		Locks:  hostsvc.NewMemoryLocks(),
-		Config: hostsvc.NewStaticConfig(),
+		Cache: hostsvc.NewMemoryCache(0),
+		Locks: hostsvc.NewMemoryLocks(),
+		// Config is deliberately absent here: it is per-plugin, and is filled
+		// in below from the manager so there is exactly one answer to what a
+		// plugin's configuration is.
 		Events: hostsvc.NewBusEvents(bus),
 		Obs:    hostsvc.NewLogObservability(env("PLUGIN_LOG_LEVEL", "info")),
 	}
@@ -70,6 +72,7 @@ func main() {
 
 	// Database-backed capabilities are optional so Core can run without
 	// PostgreSQL; they then report Unavailable rather than failing obscurely.
+	var pluginConfig *hostsvc.DBConfig
 	if databaseURL != "" {
 		var err error
 		conn, err = db.InitDB(databaseURL)
@@ -78,6 +81,11 @@ func main() {
 		}
 		defer conn.Close()
 		queries = sqlc.New(conn)
+
+		// Settings an operator sets have to outlive the process. Without a
+		// database there is nowhere to write them, and only the defaults a
+		// manifest declares ever take effect.
+		pluginConfig = hostsvc.NewDBConfig(conn)
 
 		txRegistry := db.NewTxRegistry()
 		txRegistry.StartReaper(time.Second)
@@ -133,13 +141,34 @@ func main() {
 	})
 
 	registry := pluginhost.NewRegistry()
-	pluginManager := pluginhost.NewManager(pluginhost.ManagerConfig{
+	// Declared before it is built because the HostServices factory below has to
+	// ask the manager what a plugin's configuration is.
+	var pluginManager *pluginhost.Manager
+	pluginManager = pluginhost.NewManager(pluginhost.ManagerConfig{
 		Dir:         env("PLUGIN_DIR", "./plugins"),
 		DataDirRoot: env("PLUGIN_DATA_DIR", ""),
 		LogLevel:    env("PLUGIN_LOG_LEVEL", "warn"),
 		// DevMode skips Pdeathsig so air's rebuild loop does not cold-start
 		// every plugin on each edit. Leave it off in production.
 		DevMode: os.Getenv("PLUGIN_DEV_MODE") == "1",
+		// What a plugin is launched with. Read at every launch rather than
+		// cached, so a restarted or upgraded plugin picks up whatever the
+		// operator set in the meantime.
+		ConfigSource: func(pluginKey string) map[string]string {
+			if pluginConfig == nil {
+				return nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			values, err := pluginConfig.Get(ctx, pluginKey)
+			if err != nil {
+				// Launching with the manifest defaults beats not launching:
+				// a plugin that is down cannot be reconfigured back up.
+				log.Printf("[core] plugin %s: reading stored config: %v", pluginKey, err)
+				return nil
+			}
+			return values
+		},
 	}, registry, func(pkg *pluginhost.Package) pluginpb.HostServicesServer {
 		// Create the collections the plugin declared before it starts, so its
 		// first write does not fail on a missing table. ReconcileSchema is
@@ -149,7 +178,16 @@ func main() {
 				log.Printf("[core] plugin %s: %v", pkg.Key(), err)
 			}
 		}
-		return hostsvc.New(pkg.Key(), pkg.Manifest.Permissions, hostDeps)
+		// A plugin reads its configuration two ways — handed to it at
+		// Configure, and asked for over the reverse channel whenever it likes
+		// — and those must agree. Both are answered from the manager, so a
+		// plugin that re-reads its own settings cannot get a different answer
+		// from the one it was started with.
+		deps := hostDeps
+		deps.Config = hostsvc.ConfigFunc(func(_ context.Context, key string) (map[string]string, error) {
+			return pluginManager.ConfigFor(key), nil
+		})
+		return hostsvc.New(pkg.Key(), pkg.Manifest.Permissions, deps)
 	})
 	defer pluginManager.Close()
 
@@ -213,6 +251,9 @@ func main() {
 	}
 
 	pluginsHandler := gateway.NewPluginsHandler(adminAuth, pluginManager)
+	if pluginConfig != nil {
+		pluginsHandler.Config = pluginConfig
+	}
 	gw.RegisterSystemRoute(func(p string) bool {
 		return p == gateway.PluginsAPIPrefix || hasPrefix(p, gateway.PluginsAPIPrefix+"/")
 	}, pluginsHandler.Serve)

@@ -372,14 +372,20 @@ func (m *Manager) SetConfig(ctx context.Context, key string, cfg map[string]stri
 	return firstErr
 }
 
-// configFor is what a plugin receives: whatever an operator set, with the
+// ConfigFor is what a plugin receives: whatever an operator set, with the
 // manifest's declared defaults filled in for anything they did not.
 //
 // Supplying defaults here rather than leaving it to each plugin means a
 // setting has one stated default — the one a reviewer reads in the manifest
 // and an operator sees in the console — instead of that value and a second
 // copy buried in the plugin's own fallback logic, free to disagree with it.
-func (m *Manager) configFor(key string) map[string]string {
+//
+// Exported because a plugin reads its configuration two ways: it is handed the
+// values at Configure, and it can ask for them over the reverse channel at any
+// time. Those must be the same answer. Core originally computed the first here
+// and served the second from a separate store, so a plugin that re-read its
+// own configuration got something different from what it was started with.
+func (m *Manager) ConfigFor(key string) map[string]string {
 	var set map[string]string
 	if m.cfg.ConfigSource != nil {
 		set = m.cfg.ConfigSource(key)
@@ -432,7 +438,7 @@ func (m *Manager) launchOne(ctx context.Context, pkg *Package, index int) (*Inst
 		Checksum:           pkg.Checksum,
 		HostImpl:           m.hostFor(pkg),
 		GrantedPermissions: pkg.Manifest.Permissions,
-		Config:             m.configFor(pkg.Key()),
+		Config:             m.ConfigFor(pkg.Key()),
 		DataDir:            dataDir,
 		LogLevel:           m.cfg.LogLevel,
 		MaxMessageBytes:    m.cfg.MaxMessageBytes,

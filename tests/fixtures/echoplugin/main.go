@@ -33,6 +33,10 @@ type echoImpl struct {
 	key      string
 	instance string // which replica this process is, echoed back on responses
 	hostEcho string // value round-tripped through the reverse connection
+	// What Configure was handed, as opposed to what asking for it returned.
+	// A plugin reads its configuration both ways and they must agree; keeping
+	// them apart here is what lets a test notice when they do not.
+	launchEcho string
 
 	// Events this process received over its subscription, so a test can prove
 	// one plugin heard another across two process boundaries and Core.
@@ -65,6 +69,7 @@ func (e *echoImpl) Configure(ctx context.Context, req *pb.ConfigureRequest) (*pb
 
 	e.mu.Lock()
 	e.hostEcho = resp.GetConfig()["greeting"]
+	e.launchEcho = req.GetConfig()["greeting"]
 	e.mu.Unlock()
 
 	// A plugin granted the events capability starts listening. Subscribe
@@ -112,7 +117,7 @@ func (e *echoImpl) hostClient() pb.HostServicesClient {
 
 func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.HttpResponse, error) {
 	e.mu.RLock()
-	greeting, instance := e.hostEcho, e.instance
+	greeting, launched, instance := e.hostEcho, e.launchEcho, e.instance
 	e.mu.RUnlock()
 
 	body := req.GetBody()
@@ -314,8 +319,9 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 			"X-Echo-Path":  {Values: []string{req.GetPath()}},
 			// Which replica answered, so load-balancing can be observed from
 			// outside rather than inferred.
-			"X-Instance":    {Values: []string{instance}},
-			"X-Host-Config": {Values: []string{greeting}},
+			"X-Instance":      {Values: []string{instance}},
+			"X-Host-Config":   {Values: []string{greeting}},
+			"X-Launch-Config": {Values: []string{launched}},
 			// Two values on one header, to prove repeated headers survive the
 			// round trip. The legacy tunnel dropped all but the first.
 			"X-Multi": {Values: []string{"a", "b"}},
@@ -545,6 +551,7 @@ func (e *echoImpl) roundTripQueue(ctx context.Context) ([]byte, error) {
 func (e *echoImpl) OnConfigChanged(_ context.Context, req *pb.ConfigChangeEvent) error {
 	e.mu.Lock()
 	e.hostEcho = req.GetConfig()["greeting"]
+	e.launchEcho = req.GetConfig()["greeting"]
 	e.mu.Unlock()
 	return nil
 }

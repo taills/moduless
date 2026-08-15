@@ -2,8 +2,12 @@
 import { onMounted, ref } from "vue";
 import { api } from "../api";
 import { refresh as refreshRegistry } from "../pluginRegistry";
+import PluginConfig from "../components/PluginConfig.vue";
 
 const plugins = ref([]);
+// Which plugin's settings are open. One at a time: two forms side by side
+// invite editing one and saving the other.
+const configuring = ref("");
 const error = ref("");
 const busy = ref("");
 
@@ -47,6 +51,10 @@ async function rescan() {
   } finally {
     busy.value = "";
   }
+}
+
+function toggleConfig(key) {
+  configuring.value = configuring.value === key ? "" : key;
 }
 
 function statusText(p) {
@@ -108,7 +116,13 @@ onMounted(load);
             <button v-if="!p.enabled" :disabled="!!busy || !!p.load_error" @click="act(p.key, 'enable')">启用</button>
             <button v-else :disabled="!!busy" @click="act(p.key, 'disable')">停用</button>
             <button :disabled="!!busy || !!p.load_error" @click="act(p.key, 'upgrade')">重载</button>
+            <button v-if="(p.config || []).length" @click="toggleConfig(p.key)">
+              {{ configuring === p.key ? "收起配置" : "配置" }}
+            </button>
           </td>
+        </tr>
+        <tr v-if="configuring === p.key" :key="p.key + ':config'" class="config-row">
+          <td colspan="8"><PluginConfig :plugin-key="p.key" /></td>
         </tr>
       </tbody>
     </table>
@@ -185,6 +199,9 @@ code {
 }
 .actions button {
   margin-right: 6px;
+}
+.config-row td {
+  background: #f9fafb;
 }
 .muted {
   color: #6b7280;

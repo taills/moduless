@@ -2,10 +2,13 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/taills/moduless/core/pluginhost"
+	"github.com/taills/moduless/manifest"
 )
 
 // PluginsAPIPrefix is the admin plugin-management API root.
@@ -18,7 +21,26 @@ type PluginManager interface {
 	Enable(ctx context.Context, key string) error
 	Disable(ctx context.Context, key string) error
 	Upgrade(ctx context.Context, key string) error
+	SetConfig(ctx context.Context, key string, cfg map[string]string) error
 }
+
+// ConfigStore is where an operator's settings are written down.
+//
+// Separate from the manager because the two have different lifetimes: the
+// manager pushes a value to processes that are running now, the store is what
+// survives a restart. Core needs both, and either without the other is the
+// bug this interface exists to prevent.
+type ConfigStore interface {
+	Get(ctx context.Context, pluginKey string) (map[string]string, error)
+	Set(ctx context.Context, pluginKey string, values map[string]string) error
+}
+
+// SecretPlaceholder is what the console sees in place of a secret's value.
+//
+// Submitting it back is understood as "leave this one alone". Without that,
+// an operator editing any other field would save the mask over the real
+// secret — and would not find out until the plugin next tried to use it.
+const SecretPlaceholder = "••••••••"
 
 // PluginsHandler serves the admin plugin-management API.
 //
@@ -28,6 +50,11 @@ type PluginManager interface {
 type PluginsHandler struct {
 	Auth    UserResolver
 	Manager PluginManager
+
+	// Config is optional: Core runs without a database, and then settings
+	// cannot be stored. The endpoint says so rather than accepting a value
+	// and losing it at the next restart.
+	Config ConfigStore
 }
 
 func NewPluginsHandler(resolver UserResolver, mgr PluginManager) *PluginsHandler {
@@ -65,6 +92,14 @@ func (h *PluginsHandler) Serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	key := segments[0]
+
+	// Configuration is the one resource here that is read as well as written,
+	// so it is dispatched before the action-only routes below.
+	if len(segments) == 2 && segments[1] == "config" {
+		h.serveConfig(w, r, key)
+		return
+	}
+
 	if len(segments) != 2 || r.Method != http.MethodPost {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
@@ -94,4 +129,132 @@ func (h *PluginsHandler) Serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"plugins": h.Manager.List()})
+}
+
+// serveConfig reads and writes a plugin's admin-managed settings.
+//
+// Reading returns the manifest's declarations alongside the stored values, so
+// the console renders the form the plugin author described rather than a
+// free-text key/value editor where a typo is silently accepted by both sides.
+func (h *PluginsHandler) serveConfig(w http.ResponseWriter, r *http.Request, key string) {
+	decls, ok := h.declarations(key)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such plugin: " + key})
+		return
+	}
+	if h.Config == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "plugin configuration needs a database; Core was started without DATABASE_URL"})
+		return
+	}
+
+	stored, err := h.Config.Get(r.Context(), key)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"key":      key,
+			"declared": decls,
+			"values":   maskSecrets(decls, stored),
+		})
+
+	case http.MethodPost, http.MethodPut:
+		var body struct {
+			Values map[string]string `json:"values"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON: " + err.Error()})
+			return
+		}
+
+		values, err := resolveConfig(decls, stored, body.Values)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+
+		// Stored first. A push that fails leaves a plugin running the old
+		// value, which its next launch corrects; a push that succeeded
+		// without being stored would silently revert at the next restart,
+		// and nobody would connect the two events.
+		if err := h.Config.Set(r.Context(), key, values); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		pushErr := h.Manager.SetConfig(r.Context(), key, values)
+
+		resp := map[string]any{"key": key, "values": maskSecrets(decls, values)}
+		if pushErr != nil {
+			// Saved but not delivered: reported as a warning rather than an
+			// error, because the two have different remedies and retrying the
+			// save is not one of them.
+			resp["warning"] = "saved, but not delivered to the running plugin: " + pushErr.Error()
+		}
+		writeJSON(w, http.StatusOK, resp)
+
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// declarations finds what a plugin says it can be configured with.
+func (h *PluginsHandler) declarations(key string) ([]manifest.ConfigDecl, bool) {
+	for _, s := range h.Manager.List() {
+		if s.Key == key {
+			return s.Config, true
+		}
+	}
+	return nil, false
+}
+
+// resolveConfig turns what the console submitted into what will be stored.
+//
+// Undeclared keys are refused. A manifest declaring its settings is the whole
+// reason the console can render a form, and accepting anything else would let
+// a typo sit in the database looking like a configured value while the plugin
+// goes on using the default.
+func resolveConfig(decls []manifest.ConfigDecl, stored, submitted map[string]string) (map[string]string, error) {
+	byKey := make(map[string]manifest.ConfigDecl, len(decls))
+	for _, d := range decls {
+		byKey[d.Key] = d
+	}
+
+	out := make(map[string]string, len(submitted))
+	for k, v := range submitted {
+		d, ok := byKey[k]
+		if !ok {
+			return nil, fmt.Errorf("%q is not a setting this plugin declares", k)
+		}
+		if d.Secret && v == SecretPlaceholder {
+			// The console never received the real value, so it cannot be
+			// submitting one. Keep what is stored.
+			if old, ok := stored[k]; ok {
+				out[k] = old
+			}
+			continue
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// maskSecrets replaces the values of settings declared secret.
+//
+// Only ones that actually have a value: masking an unset secret would show an
+// operator a filled field over an empty setting.
+func maskSecrets(decls []manifest.ConfigDecl, values map[string]string) map[string]string {
+	out := make(map[string]string, len(values))
+	for k, v := range values {
+		out[k] = v
+	}
+	for _, d := range decls {
+		if d.Secret && out[d.Key] != "" {
+			out[d.Key] = SecretPlaceholder
+		}
+	}
+	return out
 }

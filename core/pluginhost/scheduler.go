@@ -121,7 +121,7 @@ func (s *Scheduler) Tick(ctx context.Context) {
 			if !schedule.Matches(now) || !s.claim(key, job.Name, now) {
 				continue
 			}
-			s.run(ctx, snap, key, job.Name)
+			s.run(ctx, snap, key, job.Name, now.Truncate(time.Minute))
 		}
 	}
 }
@@ -154,7 +154,15 @@ func (s *Scheduler) claim(pluginKey, jobName string, now time.Time) bool {
 // Picking a single instance is what keeps a job from running once per replica:
 // the work is the plugin's, not each process's. Which replica gets it does not
 // matter, so this reuses the ordinary load-balancing choice.
-func (s *Scheduler) run(ctx context.Context, snap *Snapshot, pluginKey, jobName string) {
+//
+// scheduled is the minute this run was claimed for, passed in rather than read
+// again inside the goroutine. A job that starts late — queued behind others,
+// or on a Core that was busy — must still report the moment it was supposed to
+// run, because that is what plugins deduplicate on: the notes example keys its
+// nightly summary on job.Scheduled precisely so a delayed run does not produce
+// a second one. Reading the clock in the goroutine would hand it whatever
+// minute it happened to start in, and quietly break that guarantee.
+func (s *Scheduler) run(ctx context.Context, snap *Snapshot, pluginKey, jobName string, scheduled time.Time) {
 	inst, ok := snap.Pick(pluginKey)
 	if !ok {
 		return
@@ -170,7 +178,7 @@ func (s *Scheduler) run(ctx context.Context, snap *Snapshot, pluginKey, jobName 
 		resp, err := inst.Client.RunJob(ctx, &pb.JobRequest{
 			JobName:       jobName,
 			TraceId:       newJobTraceID(),
-			ScheduledUnix: s.now().Truncate(time.Minute).Unix(),
+			ScheduledUnix: scheduled.Unix(),
 		})
 		if err == nil && !resp.GetSuccess() && resp.GetError() != "" {
 			err = jobError(resp.GetError())

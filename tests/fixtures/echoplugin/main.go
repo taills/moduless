@@ -167,6 +167,22 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 		log.Print("echoplugin: dying with a transaction open")
 		os.Exit(4)
 
+	case "/fetch":
+		// Outbound HTTP through Core's egress proxy. The query string is the
+		// target URL, so a test can aim it wherever it likes and see what Core
+		// makes of it.
+		out, err := e.hostClient().Fetch(context.Background(), &pb.FetchRequest{
+			Method: "GET",
+			Url:    req.GetQuery(),
+		})
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 403, Body: []byte(err.Error())}, nil
+		}
+		return &pb.HttpResponse{
+			StatusCode: 200,
+			Body:       fmt.Appendf(nil, "upstream=%d body=%s", out.GetStatusCode(), out.GetBody()),
+		}, nil
+
 	case "/publish":
 		// Broadcast an event other plugins can hear.
 		if _, err := e.hostClient().Publish(context.Background(), &pb.PublishRequest{

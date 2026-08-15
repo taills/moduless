@@ -199,3 +199,53 @@ func parseIP(t *testing.T, s string) net.IP {
 	}
 	return ip
 }
+
+// A redirect is a second request the plugin never asked for, aimed at a host
+// nobody checked against the allow-list. The client must not follow it.
+//
+// This has to bypass guardedDial to be testable at all: every server a test
+// can start is on loopback, which the dial guard refuses — correctly, and
+// before the redirect logic would ever run. Swapping the transport isolates
+// the redirect policy, which is the thing under test here; the dial guard has
+// its own tests above.
+func TestEgressDoesNotFollowRedirects(t *testing.T) {
+	var internalReached bool
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		internalReached = true
+		_, _ = w.Write([]byte("internal service"))
+	}))
+	defer internal.Close()
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, internal.URL+"/", http.StatusFound)
+	}))
+	defer redirector.Close()
+
+	host, _, _ := strings.Cut(strings.TrimPrefix(redirector.URL, "http://"), ":")
+	e := &HTTPEgress{AllowFor: func(string) []string { return []string{host} }}
+	e.init()
+	// Ordinary dialling, so the request reaches the test server; the redirect
+	// policy set up by init is left exactly as production has it.
+	e.client.Transport = &http.Transport{}
+
+	resp, err := e.Fetch(context.Background(), "plug", EgressRequest{
+		Method: http.MethodGet,
+		URL:    redirector.URL + "/",
+	})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+
+	if internalReached {
+		t.Error("the redirect was followed to a host that was never checked against the allow-list")
+	}
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("status = %d, want the 302 handed back unfollowed", resp.StatusCode)
+	}
+	if strings.Contains(string(resp.Body), "internal service") {
+		t.Error("the redirect target's body reached the caller")
+	}
+	// The plugin can see where it was being sent, which is useful and safe —
+	// what matters is that Core did not go there.
+	t.Logf("unfollowed redirect: %d -> %s", resp.StatusCode, resp.Headers["Location"])
+}

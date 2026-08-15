@@ -202,7 +202,7 @@ sdk.DataDir()  // 本插件私有的可写目录；文件系统其余部分都�
 // 写入
 version, err := sdk.DB.Put(ctx, "notes", id, note)
 
-// 乐观锁：版本不匹配返回 FailedPrecondition，重读后重试
+// 乐观锁：版本不匹配返回匹配 sdk.ErrVersionConflict 的错误，重读后重试
 version, err := sdk.DB.PutIfVersion(ctx, "notes", id, note, expectedVersion)
 
 // 读取
@@ -340,6 +340,26 @@ resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 出站失败会带上可区分的 gRPC 状态码，因为这四种情况的处理方式完全不同：域名不在 `egress_allow` 里是 `PermissionDenied`（永久的，要改 manifest 并重新审核）、超出速率是 `ResourceExhausted`（等一下就好）、URL 拼错是 `InvalidArgument`（你的 bug）、对端连不上是 `Unavailable`（可以重试）。在此之前它们全都是 `Unknown`，一个字符串，无从分支。
 
 同理，对不存在的文件调 `DeleteFile` 或 `GenerateDownloadToken` 拿到的是 `NotFound` 而不是 `Internal`。`GetFileMetadata` 不同 —— 它问的是「存不存在」，所以返回 `Found: false` 而不是错误。另一个插件的文件与不存在的文件在这三个调用上完全一样，这是故意的：能确认某个 id 真实存在，正是探测想要的东西。
+
+### 并发下要重试的两种失败
+
+Core 用 gRPC 状态码回答，但插件不该为了判断一个错误去 import `google.golang.org/grpc`。SDK 因此提供哨兵，用 `errors.Is` 判断：
+
+| 哨兵 | 含义 | 该怎么做 |
+|---|---|---|
+| `sdk.ErrVersionConflict` | 别人先写了，你手上的版本是旧的 | 重读、重算、重试 |
+| `sdk.ErrTxExpired` | 事务已经没了（提交过、回滚过、或超时） | 重试这次写没有意义，整个事务要重来 |
+| `sdk.ErrRateLimited` | 撞上了上限（出站速率、事务名额、队列深度） | 退避后重试 |
+| `sdk.ErrNotAllowed` | 权限或 `egress_allow` 不允许 | 重试没用，要改 manifest 并重新审核 |
+| `sdk.ErrNotFound` | 文档、文件或消息不存在 | — |
+
+前两个以前都是 `FailedPrecondition`，一个重试循环分不清「这次写再试一次」和「这个事务已经不在了」，会一直转。
+
+**事务保证的是原子性，不是不争抢。**两个事务能读到同一行，第二个写会被拒绝而不是覆盖掉第一个 —— 所以 `ErrVersionConflict` 在竞争下是正常结果。要重试的是**整个事务**（余量已经变了，判断得重做），不是那一次写。
+
+另外，一个事务占着一条数据库连接，所以 Core 限制单插件同时持有的事务数（默认 4）。撞上返回 `ErrRateLimited`。把事务放在热路径上就会遇到它，这不是故障。
+
+[`inventory` 示例](../extension-example/inventory)把这两条都做了，README 里有 10 件库存被 30 个并发请求争抢时，加与不加重试的实测数字。
 
 ### 升级时的数据形状
 

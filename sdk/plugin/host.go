@@ -31,7 +31,7 @@ func (d *DBClient) Put(ctx context.Context, collection, id string, value any) (i
 	}
 	resp, err := d.c.Put(outgoing(ctx), &pb.PutRequest{Collection: collection, DocId: id, Data: data})
 	if err != nil {
-		return 0, err
+		return 0, hostErr(err)
 	}
 	return resp.GetVersion(), nil
 }
@@ -49,7 +49,7 @@ func (d *DBClient) PutIfVersion(ctx context.Context, collection, id string, valu
 		Collection: collection, DocId: id, Data: data, ExpectedVersion: expected,
 	})
 	if err != nil {
-		return 0, err
+		return 0, hostErr(err)
 	}
 	return resp.GetVersion(), nil
 }
@@ -59,7 +59,7 @@ func (d *DBClient) PutIfVersion(ctx context.Context, collection, id string, valu
 func (d *DBClient) Get(ctx context.Context, collection, id string, dest any) (found bool, version int64, err error) {
 	resp, err := d.c.Get(outgoing(ctx), &pb.GetRequest{Collection: collection, DocId: id})
 	if err != nil {
-		return false, 0, err
+		return false, 0, hostErr(err)
 	}
 	if !resp.GetFound() {
 		return false, 0, nil
@@ -76,7 +76,7 @@ func (d *DBClient) Get(ctx context.Context, collection, id string, dest any) (fo
 func (d *DBClient) Delete(ctx context.Context, collection, id string) (bool, error) {
 	resp, err := d.c.Delete(outgoing(ctx), &pb.DeleteRequest{Collection: collection, DocId: id})
 	if err != nil {
-		return false, err
+		return false, hostErr(err)
 	}
 	return resp.GetSuccess(), nil
 }
@@ -160,7 +160,7 @@ func (q *Query) All(ctx context.Context, dest any) (nextCursor string, err error
 		Cursor:     q.cursor,
 	})
 	if err != nil {
-		return "", err
+		return "", hostErr(err)
 	}
 	if dest != nil {
 		if err := decodeDocuments(resp.GetDocuments(), dest); err != nil {
@@ -178,7 +178,7 @@ func (q *Query) Count(ctx context.Context) (int64, error) {
 		Func:       pb.AggregateFunc_AGG_COUNT,
 	})
 	if err != nil {
-		return 0, err
+		return 0, hostErr(err)
 	}
 	if len(resp.GetBuckets()) == 0 {
 		return 0, nil
@@ -212,7 +212,7 @@ func (q *Query) aggregate(ctx context.Context, fn pb.AggregateFunc, field string
 		GroupBy:    groupBy,
 	})
 	if err != nil {
-		return nil, err
+		return nil, hostErr(err)
 	}
 	out := make(map[string]float64, len(resp.GetBuckets()))
 	for _, b := range resp.GetBuckets() {
@@ -254,7 +254,7 @@ func (d *DBClient) Tx(ctx context.Context, timeout time.Duration, fn func(tx *Tx
 		TimeoutSeconds: int32(timeout / time.Second),
 	})
 	if err != nil {
-		return err
+		return hostErr(err)
 	}
 	tx := &TxClient{c: d.c, id: resp.GetTxId()}
 
@@ -301,7 +301,7 @@ func (t *TxClient) put(ctx context.Context, collection, id string, value any, ex
 		ExpectedVersion: expected,
 	})
 	if err != nil {
-		return 0, err
+		return 0, hostErr(err)
 	}
 	return resp.GetVersion(), nil
 }
@@ -317,7 +317,7 @@ func (t *TxClient) put(ctx context.Context, collection, id string, value any, ex
 func (t *TxClient) Get(ctx context.Context, collection, id string, dest any) (found bool, version int64, err error) {
 	resp, err := t.c.Get(outgoing(ctx), &pb.GetRequest{Collection: collection, DocId: id, TxId: t.id})
 	if err != nil {
-		return false, 0, err
+		return false, 0, hostErr(err)
 	}
 	if !resp.GetFound() {
 		return false, 0, nil
@@ -379,7 +379,7 @@ func (q *QueueClient) Publish(ctx context.Context, topic string, payload any, op
 	}
 	resp, err := q.c.Enqueue(outgoing(ctx), req)
 	if err != nil {
-		return 0, false, err
+		return 0, false, hostErr(err)
 	}
 	return resp.GetMessageId(), resp.GetDeduplicated(), nil
 }
@@ -508,7 +508,7 @@ func (le *Lease) Renew(ctx context.Context, ttl time.Duration) (bool, error) {
 		Name: le.name, LeaseId: le.id, TtlSeconds: int32(ttl / time.Second),
 	})
 	if err != nil {
-		return false, err
+		return false, hostErr(err)
 	}
 	le.Expires = time.Unix(resp.GetExpiresAtUnix(), 0)
 	return resp.GetAcquired(), nil
@@ -574,7 +574,7 @@ func (f *FilesClient) DownloadURL(ctx context.Context, fileID, userID string, ex
 		FileId: fileID, UserId: userID, ExpirySeconds: int32(expiry / time.Second),
 	})
 	if err != nil {
-		return "", time.Time{}, err
+		return "", time.Time{}, hostErr(err)
 	}
 	return resp.GetUrl(), time.Unix(resp.GetExpiresAtUnix(), 0), nil
 }
@@ -662,7 +662,7 @@ func (h *HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response,
 		Body:    body,
 	})
 	if err != nil {
-		return nil, err
+		return nil, hostErr(err)
 	}
 
 	out := &http.Response{

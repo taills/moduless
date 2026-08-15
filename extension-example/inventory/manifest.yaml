@@ -1,0 +1,43 @@
+key: inventory
+display_name: 库存
+version: 1.0.0
+
+runtime:
+  entrypoint: bin/plugin
+  replicas: 1
+
+# db:tx is separate from db on purpose: an open transaction holds a database
+# connection for as long as it lives, so it is a heavier thing to grant than a
+# single statement. A plugin that only reads and writes documents should not
+# ask for it.
+permissions:
+  - db
+  - db:tx
+
+database:
+  collections:
+    - name: items
+      indexes:
+        - fields: [sku]
+          unique: true
+    - name: reservations
+      indexes:
+        - fields: [sku]
+        - fields: [created]
+
+config:
+  - key: low_stock_at
+    label: 低库存阈值
+    description: 预留之后可用量不高于这个数就记一条低库存日志
+    type: int
+    default: "5"
+  - key: alert_token
+    label: 告警通道令牌
+    description: 发送低库存告警用的凭据
+    type: string
+    secret: true
+
+menus:
+  - path: /inventory
+    title: 库存
+    icon: box

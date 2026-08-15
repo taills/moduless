@@ -18,6 +18,13 @@ var ErrVersionConflict = errors.New("version conflict")
 // or belongs to another plugin.
 var ErrUnknownTx = errors.New("unknown or expired transaction")
 
+// ErrTooManyTx means a plugin is at its concurrent-transaction ceiling.
+//
+// A limit rather than a fault: the caller should back off and try again, and
+// reporting it as an internal error left a plugin author unable to tell a
+// busy moment from a broken Core.
+var ErrTooManyTx = errors.New("too many open transactions")
+
 // execer is the part of *sql.DB and *sql.Tx these operations need, so the same
 // code path serves both autocommit and in-transaction writes.
 type execer interface {
@@ -60,7 +67,18 @@ type openTx struct {
 type TxRegistry struct {
 	mu  sync.Mutex
 	txs map[string]*openTx
-	now func() time.Time
+	// open counts admitted transactions per plugin, including one that has
+	// been admitted but whose BeginTx has not returned yet.
+	//
+	// The count used to be derived by walking txs, which put the check and the
+	// insert in two separate critical sections: thirty concurrent requests all
+	// counted zero, all passed a limit of four, and all opened one. Measured
+	// against the inventory example, seventeen were open at once against a
+	// pool of twenty-five — so the ceiling that exists to keep one plugin from
+	// taking the whole pool was doing nothing at exactly the moment it was
+	// needed.
+	open map[string]int
+	now  func() time.Time
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -69,6 +87,7 @@ type TxRegistry struct {
 func NewTxRegistry() *TxRegistry {
 	return &TxRegistry{
 		txs:  map[string]*openTx{},
+		open: map[string]int{},
 		now:  time.Now,
 		stop: make(chan struct{}),
 	}
@@ -104,7 +123,7 @@ func (r *TxRegistry) Close() {
 	defer r.mu.Unlock()
 	for id, t := range r.txs {
 		_ = t.tx.Rollback()
-		delete(r.txs, id)
+		r.dropLocked(id, t)
 	}
 }
 
@@ -117,20 +136,31 @@ func (r *TxRegistry) Begin(ctx context.Context, db *sql.DB, pluginKey string, ti
 		timeout = MaxTxTimeout
 	}
 
-	// Counted before the connection is taken, so a plugin over its quota is
-	// refused rather than made to wait for the pool.
+	// Checked and reserved in one critical section, before the connection is
+	// taken: a plugin over its quota is refused rather than made to wait for
+	// the pool, and — because the reservation happens under the same lock as
+	// the check — concurrent callers cannot all pass a limit none of them has
+	// reached yet.
 	r.mu.Lock()
-	open := 0
-	for _, t := range r.txs {
-		if t.pluginKey == pluginKey {
-			open++
-		}
-	}
-	r.mu.Unlock()
-	if open >= MaxOpenTxPerPlugin {
-		return "", fmt.Errorf("plugin %s already has %d transactions open, the limit is %d; "+
+	if r.open[pluginKey] >= MaxOpenTxPerPlugin {
+		open := r.open[pluginKey]
+		r.mu.Unlock()
+		return "", fmt.Errorf("%w: plugin %s already has %d transactions open, the limit is %d; "+
 			"a transaction holds a database connection, so they must be short and few",
-			pluginKey, open, MaxOpenTxPerPlugin)
+			ErrTooManyTx, pluginKey, open, MaxOpenTxPerPlugin)
+	}
+	r.open[pluginKey]++
+	r.mu.Unlock()
+
+	release := func() {
+		r.mu.Lock()
+		if r.open[pluginKey] > 0 {
+			r.open[pluginKey]--
+			if r.open[pluginKey] == 0 {
+				delete(r.open, pluginKey)
+			}
+		}
+		r.mu.Unlock()
 	}
 
 	// The transaction deliberately outlives the call that opened it: a plugin
@@ -146,6 +176,7 @@ func (r *TxRegistry) Begin(ctx context.Context, db *sql.DB, pluginKey string, ti
 	// works whether the plugin commits, crashes or simply forgets.
 	tx, err := db.BeginTx(context.WithoutCancel(ctx), nil)
 	if err != nil {
+		release()
 		return "", fmt.Errorf("begin transaction: %w", err)
 	}
 
@@ -171,7 +202,7 @@ func (r *TxRegistry) Lookup(pluginKey, txID string) (*sql.Tx, error) {
 	}
 	if r.now().After(t.expiresAt) {
 		_ = t.tx.Rollback()
-		delete(r.txs, txID)
+		r.dropLocked(txID, t)
 		return nil, ErrUnknownTx
 	}
 	return t.tx, nil
@@ -209,8 +240,19 @@ func (r *TxRegistry) take(pluginKey, txID string) (*openTx, error) {
 	if !ok || t.pluginKey != pluginKey {
 		return nil, ErrUnknownTx
 	}
-	delete(r.txs, txID)
+	r.dropLocked(txID, t)
 	return t, nil
+}
+
+// dropLocked removes a transaction and releases its slot. The caller holds mu.
+func (r *TxRegistry) dropLocked(txID string, t *openTx) {
+	delete(r.txs, txID)
+	if r.open[t.pluginKey] > 0 {
+		r.open[t.pluginKey]--
+		if r.open[t.pluginKey] == 0 {
+			delete(r.open, t.pluginKey)
+		}
+	}
 }
 
 // ReapExpired rolls back every transaction past its deadline.
@@ -223,7 +265,7 @@ func (r *TxRegistry) ReapExpired() int {
 	for id, t := range r.txs {
 		if now.After(t.expiresAt) {
 			_ = t.tx.Rollback()
-			delete(r.txs, id)
+			r.dropLocked(id, t)
 			reaped++
 		}
 	}

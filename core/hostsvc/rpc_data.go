@@ -24,8 +24,21 @@ func dataErr(err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, db.ErrVersionConflict):
-		return status.Error(codes.FailedPrecondition,
+		// Aborted, not FailedPrecondition. Both used to be FailedPrecondition,
+		// and they need opposite responses: a version conflict means someone
+		// else wrote first and the caller should re-read and try again, while
+		// an expired transaction means the work is gone and retrying the write
+		// will never succeed. gRPC draws exactly this line — Aborted is the
+		// concurrency conflict a client retries at a higher level,
+		// FailedPrecondition is "do not retry until the state is fixed" — and
+		// with both on one code a plugin could not tell them apart at all.
+		return status.Error(codes.Aborted,
 			"version conflict: the document changed since you read it")
+	case errors.Is(err, db.ErrTooManyTx):
+		// A ceiling, not a fault: the caller should back off. Reported as
+		// Internal until the inventory example met it under load and could not
+		// tell a busy moment from a broken Core.
+		return status.Errorf(codes.ResourceExhausted, "%v", err)
 	case errors.Is(err, db.ErrUnknownTx):
 		return status.Error(codes.FailedPrecondition,
 			"unknown or expired transaction; transactions are rolled back once their timeout passes")

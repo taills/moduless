@@ -193,8 +193,11 @@ func TestVersionConflictIsReportedDistinctly(t *testing.T) {
 	_, err = s.Put(ctx, &pb.PutRequest{
 		Collection: "notes", DocId: "v", Data: []byte(`{"n":3}`), ExpectedVersion: stale,
 	})
-	if got := status.Code(err); got != codes.FailedPrecondition {
-		t.Errorf("code = %v, want FailedPrecondition (err: %v)", got, err)
+	// Aborted rather than FailedPrecondition: a version conflict is retryable
+	// after a re-read, and an expired transaction — which is the other thing
+	// FailedPrecondition means here — is not.
+	if got := status.Code(err); got != codes.Aborted {
+		t.Errorf("code = %v, want Aborted (err: %v)", got, err)
 	}
 }
 

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/taills/moduless/core/db"
 	"github.com/taills/moduless/core/hostsvc"
 	pb "github.com/taills/moduless/proto/plugin"
+	"google.golang.org/grpc/codes"
 )
 
 // Reading inside a transaction.
@@ -199,5 +201,117 @@ func TestEveryTransactionalReadChecksThePermission(t *testing.T) {
 				t.Errorf("refused with %q, which does not name the missing permission", got)
 			}
 		})
+	}
+}
+
+// The per-plugin transaction ceiling actually holds under concurrency.
+//
+// It did not. The count was derived by walking the open-transaction map in one
+// critical section and the insert happened in another, so concurrent callers
+// all counted zero, all passed a limit of four, and all opened one. Found by
+// running the inventory example: thirty concurrent reservations against a
+// limit of four produced log lines reading "already has 17 transactions open,
+// the limit is 4" — seventeen of the pool's twenty-five connections held by
+// one plugin, which is precisely what the ceiling exists to prevent.
+func TestTransactionCeilingHoldsUnderConcurrency(t *testing.T) {
+	data := txData(t, "txcap")
+	ctx := context.Background()
+
+	const attempts = 40
+	var (
+		mu      sync.Mutex
+		granted []string
+		refused int
+		wg      sync.WaitGroup
+	)
+	for range attempts {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id, err := data.BeginTx(ctx, "txcap", 0)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				refused++
+				return
+			}
+			granted = append(granted, id)
+		}()
+	}
+	wg.Wait()
+
+	t.Cleanup(func() {
+		for _, id := range granted {
+			_ = data.RollbackTx(ctx, "txcap", id)
+		}
+	})
+
+	if len(granted) > db.MaxOpenTxPerPlugin {
+		t.Errorf("%d transactions opened at once against a limit of %d; one plugin can take "+
+			"the connection pool and everything else waits behind it",
+			len(granted), db.MaxOpenTxPerPlugin)
+	}
+	if len(granted) == 0 {
+		t.Error("nothing was granted; the limit is refusing everyone rather than capping")
+	}
+	if refused != attempts-len(granted) {
+		t.Errorf("%d granted + %d refused != %d attempts", len(granted), refused, attempts)
+	}
+	t.Logf("%d granted, %d refused, limit %d", len(granted), refused, db.MaxOpenTxPerPlugin)
+}
+
+// Slots come back when a transaction ends, or the ceiling would be a
+// one-time budget rather than a concurrency limit.
+func TestTransactionSlotsAreReleased(t *testing.T) {
+	data := txData(t, "txslots")
+	ctx := context.Background()
+
+	for round := range 3 {
+		var ids []string
+		for range db.MaxOpenTxPerPlugin {
+			id, err := data.BeginTx(ctx, "txslots", 0)
+			if err != nil {
+				t.Fatalf("round %d: %v", round, err)
+			}
+			ids = append(ids, id)
+		}
+		if _, err := data.BeginTx(ctx, "txslots", 0); err == nil {
+			t.Fatalf("round %d: the limit did not refuse the extra transaction", round)
+		}
+		for _, id := range ids {
+			if err := data.RollbackTx(ctx, "txslots", id); err != nil {
+				t.Fatalf("rollback: %v", err)
+			}
+		}
+	}
+}
+
+// Hitting the ceiling is retryable, and says so. It arrived as Internal, which
+// a plugin cannot tell from a broken Core — so the only safe response was to
+// give up.
+func TestTransactionCeilingIsReportedAsRetryable(t *testing.T) {
+	handle := requireDB(t)
+	cmds := db.NewCMDSManager(handle)
+	txs := db.NewTxRegistry()
+	t.Cleanup(txs.Close)
+
+	s := hostsvc.New("txcode", []string{"db", "db:tx"}, hostsvc.Deps{
+		Data: hostsvc.NewCMDSData(handle, cmds, txs),
+	})
+	ctx := context.Background()
+
+	for range db.MaxOpenTxPerPlugin {
+		if _, err := s.BeginTx(ctx, &pb.BeginTxRequest{}); err != nil {
+			t.Fatalf("BeginTx: %v", err)
+		}
+	}
+
+	_, err := s.BeginTx(ctx, &pb.BeginTxRequest{})
+	if err == nil {
+		t.Fatal("the ceiling did not refuse")
+	}
+	if got := codeOf(t, err); got != codes.ResourceExhausted {
+		t.Errorf("code = %s, want ResourceExhausted; as %s a plugin cannot tell a busy "+
+			"moment from a broken Core, and giving up is its only safe response", got, got)
 	}
 }

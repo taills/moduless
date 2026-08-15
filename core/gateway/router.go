@@ -12,6 +12,7 @@ import (
 
 	"github.com/taills/moduless/core/auth"
 	sqlc "github.com/taills/moduless/core/db/sqlc"
+	"github.com/taills/moduless/core/pluginhost"
 	"github.com/taills/moduless/core/tunnel"
 	pb "github.com/taills/moduless/proto/tunnel"
 )
@@ -40,6 +41,17 @@ type GatewayHandler struct {
 	// Host, when set, serves the qiankun host app (and its SPA routes) for any
 	// non-API path that does not match an extension or system route.
 	Host http.Handler
+
+	// Plugins, when set, contributes enabled plugins to the app and menu
+	// listing alongside tunnel extensions.
+	Plugins PluginSource
+}
+
+// PluginSource is the slice of pluginhost.Manager the gateway reads for menus
+// and micro-frontend assets.
+type PluginSource interface {
+	List() []pluginhost.Status
+	Package(key string) (*pluginhost.Package, bool)
 }
 
 // ExtensionStore is the slice of extension.Store that AppsHandler relies on.

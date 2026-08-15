@@ -399,3 +399,55 @@ func TestBackendErrorSurfacesAsBadGateway(t *testing.T) {
 		t.Errorf("status = %d, want 502", rec.Code)
 	}
 }
+
+// Installing the pipeline must not break streaming responses.
+//
+// Wrapping a ResponseWriter hides the optional interfaces it implements, and
+// losing http.Flusher turns a streaming handler into one that buffers until it
+// returns. For server-sent events that means the stream never arrives — which
+// is exactly how the console finds out a plugin was disabled, so the failure
+// would be silent and self-concealing.
+func TestStreamingSurvivesTheFilterChain(t *testing.T) {
+	// A post_handler filter is what forces the response to be wrapped.
+	filters := []manifest.FilterDecl{{
+		Name:  "observer",
+		Phase: manifest.PhasePostHandler,
+		Match: manifest.FilterMatch{Paths: []string{"/**"}},
+	}}
+
+	for _, tc := range []struct {
+		name    string
+		filters []manifest.FilterDecl
+	}{
+		{name: "without filters", filters: nil},
+		{name: "with a post_handler filter", filters: filters},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakePluginClient{httpResp: okResponse("x")}
+			h, _ := newHarness(t, client, tc.filters)
+
+			flushed := false
+			streamer := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				f, ok := w.(http.Flusher)
+				if !ok {
+					t.Error("the response writer no longer implements http.Flusher")
+					return
+				}
+				_, _ = w.Write([]byte("event: ping\n\n"))
+				f.Flush()
+				flushed = true
+			})
+
+			req := httptest.NewRequest("GET", "/api/system/ui/events", nil)
+			rec := httptest.NewRecorder()
+			h.Middleware(streamer).ServeHTTP(rec, req)
+
+			if !flushed {
+				t.Error("the streaming handler could not flush")
+			}
+			if !strings.Contains(rec.Body.String(), "event: ping") {
+				t.Errorf("body = %q", rec.Body.String())
+			}
+		})
+	}
+}

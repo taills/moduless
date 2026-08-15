@@ -42,18 +42,18 @@ type ManagerConfig struct {
 
 // Status is one plugin's state, for the admin console.
 type Status struct {
-	Key         string
-	DisplayName string
-	Version     string
-	Enabled     bool
-	Replicas    int
-	Ready       int
-	InFlight    int64
-	Permissions []string
-	Filters     int
-	Jobs        int
-	HasFrontend bool
-	LoadError   string
+	Key         string   `json:"key"`
+	DisplayName string   `json:"display_name"`
+	Version     string   `json:"version"`
+	Enabled     bool     `json:"enabled"`
+	Replicas    int      `json:"replicas"`
+	Ready       int      `json:"ready"`
+	InFlight    int64    `json:"in_flight"`
+	Permissions []string `json:"permissions"`
+	Filters     int      `json:"filters"`
+	Jobs        int      `json:"jobs"`
+	HasFrontend bool     `json:"has_frontend"`
+	LoadError   string   `json:"load_error,omitempty"`
 }
 
 // Manager owns installed packages and drives their lifecycle: enable, disable

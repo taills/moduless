@@ -49,16 +49,21 @@ func TestAppsHandlerListsRegisteredExtensions(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var apps []AppInfo
-	if err := json.Unmarshal(w.Body.Bytes(), &apps); err != nil {
+	var resp AppsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(apps) != 1 {
-		t.Fatalf("expected 1 app, got %d", len(apps))
+	if len(resp.Apps) != 1 {
+		t.Fatalf("expected 1 app, got %d", len(resp.Apps))
 	}
-	got := apps[0]
+	got := resp.Apps[0]
 	if got.Key != "go_example" || got.DisplayName != "Go 示例" || got.Entry != "/extensions/go_example/" {
 		t.Fatalf("unexpected app info: %+v", got)
+	}
+	// Core now merges the menu tree itself rather than leaving it to the
+	// console, so the response carries the assembled result.
+	if len(resp.Menu) != 1 || resp.Menu[0].Path != "/go" {
+		t.Fatalf("unexpected merged menu: %+v", resp.Menu)
 	}
 }
 

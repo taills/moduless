@@ -225,10 +225,32 @@ func main() {
 	// Static assets for plugin micro-frontends. Unlike the tunnel's in-memory
 	// cache these live on disk, so they survive a Core restart instead of
 	// waiting for an extension to reconnect and re-upload them.
+	gw.Plugins = pluginManager
 	gw.RegisterSystemRoute(
 		func(p string) bool { return hasPrefix(p, gateway.PluginAssetPrefix) },
 		gateway.PluginAssetHandler(pluginManager),
 	)
+
+	// Admin plugin management, and the event stream that lets the console
+	// reflect an enable or disable without the user reloading the page.
+	//
+	// authStore is assigned through a typed variable rather than passed
+	// directly: a nil *auth.Store stored in an interface is not a nil
+	// interface, so `if h.Auth != nil` would pass and the call would panic on
+	// a Core running without a database.
+	var adminAuth gateway.UserResolver
+	if authStore != nil {
+		adminAuth = authStore
+	}
+	pluginsHandler := gateway.NewPluginsHandler(adminAuth, pluginManager)
+	gw.RegisterSystemRoute(func(p string) bool {
+		return p == gateway.PluginsAPIPrefix || hasPrefix(p, gateway.PluginsAPIPrefix+"/")
+	}, pluginsHandler.Serve)
+
+	uiEvents := gateway.NewUIEvents()
+	gw.RegisterSystemRoute(func(p string) bool { return p == gateway.UIEventsPath }, uiEvents.Handler)
+	registry.OnChange(func(*pluginhost.Snapshot) { uiEvents.Publish("registry.changed") })
+	log.Println("[core] plugin endpoints enabled (/api/system/plugins/*, /api/system/ui/events)")
 
 	pluginGateway := &gateway.PluginHandler{
 		Registry: registry,

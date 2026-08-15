@@ -6,6 +6,7 @@ import Home from "./views/Home.vue";
 import AppView from "./views/AppView.vue";
 import Users from "./views/Users.vue";
 import Extensions from "./views/Extensions.vue";
+import Plugins from "./views/Plugins.vue";
 
 const router = createRouter({
   history: createWebHistory("/"),
@@ -16,14 +17,15 @@ const router = createRouter({
       component: Layout,
       children: [
         { path: "", name: "home", component: Home },
-        // qiankun activeRule "/apps<menu.path>" mounts the sub-app into the
-        // layout's persistent container. AppView reads route.params.pathMatch
-        // to know which menu node is active (used for crumbs / breadcrumbs).
+        // AppView owns the micro-app lifecycle for whatever menu node this
+        // path maps to, mounting and unmounting it by hand so a disabled
+        // plugin's UI can be torn down immediately.
         {
           path: "apps/:pathMatch(.*)*",
           name: "app",
           component: AppView,
         },
+        { path: "system/plugins", name: "plugins", component: Plugins },
         { path: "system/users", name: "users", component: Users },
         { path: "system/extensions", name: "extensions", component: Extensions },
       ],

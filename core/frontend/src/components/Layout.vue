@@ -1,27 +1,36 @@
 <script setup>
-import { ref, computed, onMounted } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { api, auth } from "../api";
-import { setupMicroApps } from "../microApps";
+import { registry, refresh, subscribe } from "../pluginRegistry";
 import MenuTree from "./MenuTree.vue";
 
 const router = useRouter();
 const route = useRoute();
-const menu = ref([]); // merged menu tree (may have nested children)
 const error = ref("");
 const user = ref(JSON.parse(localStorage.getItem("moduless_user") || "null"));
 const isAdmin = computed(() => user.value && user.value.role === "admin");
 
+// The menu comes straight from the shared registry, already merged and
+// role-filtered by Core, so it re-renders on its own when a plugin is enabled
+// or disabled.
+const menu = computed(() => registry.menu);
+
+let unsubscribe = null;
+
 onMounted(async () => {
   try {
-    // Registers qiankun micro-apps and returns the merged menu tree.
-    const result = await setupMicroApps();
-    menu.value = result.menu || [];
+    await refresh();
+    // Without this stream a disabled plugin's menu entry would linger until
+    // the user reloaded the page.
+    unsubscribe = subscribe();
   } catch (e) {
     error.value = e.message;
     if (e.message === "unauthenticated") router.push("/login");
   }
 });
+
+onUnmounted(() => unsubscribe?.());
 
 async function logout() {
   try {
@@ -49,6 +58,7 @@ async function logout() {
 
         <template v-if="isAdmin">
           <div class="nav-label">系统管理</div>
+          <router-link class="nav-item" to="/system/plugins" :class="{ active: route.path === '/system/plugins' }">插件管理</router-link>
           <router-link class="nav-item" to="/system/extensions" :class="{ active: route.path === '/system/extensions' }">扩展管理</router-link>
           <router-link class="nav-item" to="/system/users" :class="{ active: route.path === '/system/users' }">用户管理</router-link>
         </template>
@@ -65,9 +75,9 @@ async function logout() {
       </header>
       <main class="content">
         <div v-if="error" class="err">{{ error }}</div>
+        <!-- Sub-apps mount inside AppView, which owns their lifecycle so a
+             disabled plugin can be unmounted immediately. -->
         <router-view />
-        <!-- Persistent qiankun mount point; sub-apps render here under /apps/<path>. -->
-        <div id="subapp-container"></div>
       </main>
     </div>
   </div>

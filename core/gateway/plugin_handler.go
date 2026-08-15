@@ -99,6 +99,17 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 	if !isPluginRoute {
 		// Not a plugin API call. Filters still ran, and still get their log
 		// phase, but routing belongs to the rest of the gateway.
+		//
+		// The response is only wrapped when a post_handler filter actually
+		// exists. Wrapping unconditionally would be worse than wasteful: any
+		// wrapper hides interfaces the underlying writer implements, and
+		// losing http.Flusher breaks every streaming response — server-sent
+		// events included, which is how this console learns a plugin was
+		// disabled.
+		if !chain.HasPhase(pb.Phase_PHASE_POST_HANDLER) && !chain.HasPhase(pb.Phase_PHASE_LOG) {
+			next.ServeHTTP(w, requestWithContext(r, rc))
+			return
+		}
 		rec := newRecorder(w, chain.HasPhase(pb.Phase_PHASE_POST_HANDLER))
 		next.ServeHTTP(rec, requestWithContext(r, rc))
 		rc.ResponseStatus = rec.status
@@ -368,3 +379,20 @@ func (r *recorder) body() []byte {
 	}
 	return r.buf.Bytes()
 }
+
+// Flush forwards to the underlying writer.
+//
+// Wrapping a ResponseWriter hides whatever optional interfaces it implements,
+// and losing http.Flusher silently converts a streaming response into one that
+// buffers until the handler returns — which for an event stream means it never
+// arrives at all. Forwarding it keeps SSE and any other streaming handler
+// working when a filter chain is installed.
+func (r *recorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer for
+// deadlines and any other capability this wrapper does not forward itself.
+func (r *recorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }

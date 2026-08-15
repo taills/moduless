@@ -6,18 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/taills/moduless/core/pluginhost"
 )
 
 // PluginAssetPrefix is where a plugin's micro-frontend is served from.
 const PluginAssetPrefix = "/plugins/"
-
-// PackageSource resolves a plugin key to its installed package.
-// *pluginhost.Manager satisfies it.
-type PackageSource interface {
-	Package(key string) (*pluginhost.Package, bool)
-}
 
 // PluginAssetHandler serves a plugin's built micro-frontend straight from its
 // package directory.
@@ -27,7 +19,7 @@ type PackageSource interface {
 // plugin's UI until each extension reconnected and re-uploaded it. Reading
 // from the package directory removes that whole failure mode: the assets are
 // simply there.
-func PluginAssetHandler(src PackageSource) http.HandlerFunc {
+func PluginAssetHandler(src PluginSource) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rest := strings.TrimPrefix(r.URL.Path, PluginAssetPrefix)
 		key, sub, _ := strings.Cut(rest, "/")

@@ -1,7 +1,7 @@
 # Manifest for the test fixture, so it can be installed as a real plugin
 # package and driven through Manager rather than launched directly. Tests that
-# exercise scanning, enabling, crash recovery and quarantine need a package on
-# disk, not a bare binary.
+# exercise scanning, enabling, crash recovery, quarantine and the console's
+# menu tree need a package on disk, not a bare binary.
 key: echo
 display_name: Echo fixture
 version: 1.0.0
@@ -11,3 +11,22 @@ runtime:
   replicas: 1
 
 permissions: []
+
+# A menu tree with the shapes the console has to handle: a leaf, a parent with
+# children, and a node only one role may see.
+menus:
+  - path: /echo
+    title: Echo
+    icon: box
+    order: 20
+  - path: /echo/tools
+    title: Tools
+    order: 30
+    children:
+      - path: /echo/tools/inspect
+        title: Inspect
+        order: 10
+      - path: /echo/tools/admin
+        title: Admin only
+        order: 20
+        roles: [admin]

@@ -47,10 +47,31 @@ const MaxTxTimeout = 5 * time.Minute
 // and Core's own queries — waits behind it. A cap turns "everything stops"
 // into "that plugin is told no", which is both recoverable and attributable.
 //
-// Four is generous for work that is supposed to be short. A plugin needing
-// more concurrent transactions than that is describing a batch job, and a
-// batch job wants one transaction rather than four.
-const MaxOpenTxPerPlugin = 4
+// Eight, measured rather than argued. It was four, on the reasoning that
+// "four is generous for work that is supposed to be short" — which was never
+// checked against a running system, and was wrong by about a third.
+//
+// Thirty-two concurrent transactional reservations, completed per second
+// (tests/tx_throughput_test.go, MEASURE=1):
+//
+//	ceiling      1     2     4     8    16    25
+//	spread     713   920  1257  1683  1567   716
+//	contended  410   346   273   187   132   128
+//
+// Spread — each transaction on its own document — is what a plugin normally
+// does, and it peaks at eight. Past that the pool of twenty-five starts to
+// run out: at sixteen the give-ups quadruple, and at twenty-five throughput
+// halves because callers wait on connections that are all held.
+//
+// Contended — every transaction fighting for one row — gets worse as the
+// ceiling rises, because the extra concurrency turns into row-lock waiting and
+// version conflicts. That is a real cost of this change and it is accepted:
+// a hot row is throttled by Postgres either way, and eight of twenty-five
+// connections still leaves seventeen for every other plugin and for Core.
+//
+// A plugin needing more than eight concurrent transactions is describing a
+// batch job, and a batch job wants one transaction rather than eight.
+const MaxOpenTxPerPlugin = 8
 
 type openTx struct {
 	tx        *sql.Tx
@@ -67,6 +88,9 @@ type openTx struct {
 type TxRegistry struct {
 	mu  sync.Mutex
 	txs map[string]*openTx
+	// maxOpen is the per-plugin ceiling. Zero means MaxOpenTxPerPlugin.
+	maxOpen int
+
 	// open counts admitted transactions per plugin, including one that has
 	// been admitted but whose BeginTx has not returned yet.
 	//
@@ -95,6 +119,26 @@ func NewTxRegistry() *TxRegistry {
 
 // SetClock overrides the time source. Test-only.
 func (r *TxRegistry) SetClock(now func() time.Time) { r.now = now }
+
+// SetMaxOpen overrides the per-plugin ceiling.
+//
+// Core does not call this. It exists so the ceiling can be measured against
+// throughput rather than argued about — see the benchmark in tests/ — and so a
+// deployment that has changed the pool size has somewhere to put the matching
+// change. Zero restores the default.
+func (r *TxRegistry) SetMaxOpen(n int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maxOpen = n
+}
+
+// limit reports the effective ceiling. The caller holds mu.
+func (r *TxRegistry) limit() int {
+	if r.maxOpen > 0 {
+		return r.maxOpen
+	}
+	return MaxOpenTxPerPlugin
+}
 
 // StartReaper rolls back expired transactions on an interval.
 func (r *TxRegistry) StartReaper(interval time.Duration) {
@@ -142,12 +186,13 @@ func (r *TxRegistry) Begin(ctx context.Context, db *sql.DB, pluginKey string, ti
 	// the check — concurrent callers cannot all pass a limit none of them has
 	// reached yet.
 	r.mu.Lock()
-	if r.open[pluginKey] >= MaxOpenTxPerPlugin {
+	limit := r.limit()
+	if r.open[pluginKey] >= limit {
 		open := r.open[pluginKey]
 		r.mu.Unlock()
 		return "", fmt.Errorf("%w: plugin %s already has %d transactions open, the limit is %d; "+
 			"a transaction holds a database connection, so they must be short and few",
-			ErrTooManyTx, pluginKey, open, MaxOpenTxPerPlugin)
+			ErrTooManyTx, pluginKey, open, limit)
 	}
 	r.open[pluginKey]++
 	r.mu.Unlock()

@@ -104,3 +104,18 @@ goroutine    44–48
 只有 1 个测试守着的那几项值得留意，不过它们的测试都不依赖外部基础设施，不会被 skip。
 
 改动任何安全相关的代码后，值得对它做一次这个动作。
+
+
+## 测量（非默认执行）
+
+```bash
+# 事务上限对吞吐的影响，约一分钟
+MEASURE=1 TEST_DATABASE_URL=... go test ./tests/ -run TestTransactionCeilingThroughput -v
+
+# 只重测某几个上限
+MEASURE=1 CEILINGS="4 8" TEST_DATABASE_URL=... go test ./tests/ -run TestTransactionCeilingThroughput -v
+```
+
+**基准会污染自己。**这个测量最初复用同一个集合，于是每轮往同一行打十几万次更新，留下同样多的死元组；在 autovacuum 追上之前，下一轮量到的是膨胀而不是上限。相隔一小时的两次扫描，绝对吞吐差了 3 倍，而形状完全一致。现在每轮用自己的集合并在结束时删掉。
+
+结论只看形状，不看绝对值 —— 后者取决于这台机器此刻在干什么。

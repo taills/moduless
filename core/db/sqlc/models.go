@@ -19,43 +19,29 @@ type AuditLog struct {
 	CreatedAt    sql.NullTime `json:"created_at"`
 }
 
-type Extension struct {
-	Key         string       `json:"key"`
-	DisplayName string       `json:"display_name"`
-	Version     string       `json:"version"`
-	MenuIcon    string       `json:"menu_icon"`
-	MenuPath    string       `json:"menu_path"`
-	Status      string       `json:"status"`
-	CreatedAt   sql.NullTime `json:"created_at"`
-	ApprovedAt  sql.NullTime `json:"approved_at"`
-	UpdatedAt   sql.NullTime `json:"updated_at"`
-	// Menus is the raw JSONB array of MenuItem objects stored on the extensions
-	// row. Callers should json.Unmarshal it into []extension.MenuNode (or the
-	// manifest.MenuItem shape) rather than poking at bytes directly.
-	Menus []byte `json:"menus"`
-}
-
-type ExtensionSecret struct {
-	ID           int64        `json:"id"`
-	ExtensionKey string       `json:"extension_key"`
-	SecretHash   string       `json:"secret_hash"`
-	Label        string       `json:"label"`
-	CreatedAt    sql.NullTime `json:"created_at"`
-	LastUsedAt   sql.NullTime `json:"last_used_at"`
-	RevokedAt    sql.NullTime `json:"revoked_at"`
-}
-
-type ExtensionVersion struct {
-	ExtensionKey string       `json:"extension_key"`
-	Version      string       `json:"version"`
-	UpdatedAt    sql.NullTime `json:"updated_at"`
-}
-
 type FileDownloadToken struct {
 	Token     string    `json:"token"`
 	FileID    string    `json:"file_id"`
 	UserID    string    `json:"user_id"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type PluginQueue struct {
+	ID            int64          `json:"id"`
+	OwnerKey      string         `json:"owner_key"`
+	Topic         string         `json:"topic"`
+	Payload       []byte         `json:"payload"`
+	Status        string         `json:"status"`
+	Priority      int32          `json:"priority"`
+	Attempts      int32          `json:"attempts"`
+	MaxAttempts   int32          `json:"max_attempts"`
+	AvailableAt   time.Time      `json:"available_at"`
+	LockedUntil   sql.NullTime   `json:"locked_until"`
+	DedupKey      sql.NullString `json:"dedup_key"`
+	LastError     sql.NullString `json:"last_error"`
+	ParentTraceID sql.NullString `json:"parent_trace_id"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
 }
 
 type SystemFile struct {

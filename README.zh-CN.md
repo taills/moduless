@@ -4,105 +4,120 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-一套**低上手门槛、高代码隔离、部署容器化、调试简易**的模块化开发框架。
-Go 编写的**核心网关（Core Gateway）**统一承载所有 HTTP 流量并在内存中托管微前端；
-各语言的**扩展模块**（Go / Python / Java）**不开放任何监听端口**——它们通过反向 gRPC 隧道
-主动连接 Core，并用各自原生的 Web 框架（Gin / FastAPI / Spring Boot）处理请求。
+一个功能由插件构成的 Go Web 网关。插件是独立进程，由 Core 启动、监管、热加载和热更新 —— 升级期间不丢一个请求。
 
-> 设计规范：[`docs/superpowers/specs/2026-06-30-modular-framework-design.md`](docs/superpowers/specs/2026-06-30-modular-framework-design.md)
-> 实现计划：[`docs/superpowers/plans/`](docs/superpowers/plans/)
-
-## 架构速览
+插件提供自己的 HTTP API、自带微前端，并且可以像 IIS Filter 那样介入网关中**任何**请求的生命周期。启用插件时它的菜单出现在控制台，禁用时立刻消失，无需刷新页面。
 
 ```
-浏览器 ──HTTP──▶ Core 网关 (:80) ──反向 gRPC 隧道 (:9000)──▶ 扩展 (Go/Python/Java)
-                    │  内存微前端缓存（zip → 内存）
-                    │  CMDS（PostgreSQL 18 JSONB 文档存储）
-                    │  文件服务（RustFS / S3，纯路径参数下载）
-                    │  事件总线 · UI 插槽 · 审计 · 诊断
+浏览器 ──HTTP──▶ Core (:80)
+                    ├─ Filter 管道    pre_route → authenticate → authorize →
+                    │                 pre_handler → [后端] → post_handler → log
+                    ├─ /api/plugins/*  插件自己的 HTTP API
+                    ├─ /plugins/*      插件的微前端
+                    └─ PluginHost ──exec──▶ 插件子进程 ×N
+                         │  HashiCorp go-plugin，走 unix socket
+                         ▼
+                       HostServices：文档存储 · 持久化队列 · 缓存 · 锁
+                       配置 · 文件 · 出站 HTTP · 事件 · 日志与指标
 ```
 
-实现所强制遵守的核心准则：
+Core 只监听一个端口，插件一个都不开。
 
-- **零端口扩展**——扩展只对外拨号连接 Core 的 gRPC 端口。
-- **CMDS**——扩展从不直连 PostgreSQL；在 `manifest.yaml` 中声明集合/索引，Core 在注册时
-  自动创建 `ext_<key>_<collection>` 数据表。
-- **Core 托管文件**——上传直达 Core/RustFS 并返回 `file_id`；下载使用纯路径参数
-  `/api/system/files/download/<file_id>/<token>`（不含 `?` 查询串）。
-- **内存前端缓存**——前端 zip 流式推送到 Core，从内存直接提供服务。
+## 为什么用子进程
 
-## 仓库结构
+Core 用 `exec` 启动每个插件，这是其余能力成立的前提：
 
-| 路径 | 说明 |
-|------|------|
-| `proto/` | 各语言共享的 gRPC 契约（`tunnel.proto`） |
-| `core/` | Go 核心网关：`tunnel`、`gateway`、`db`（CMDS）、`storage`、`event`、`middleware`、`main.go` |
-| `sdk/go`、`sdk/python`、`sdk/java` | 各语言扩展 SDK |
-| `extension-example/{go,python,java}` | 可运行的示例扩展（后端 + 前端 + manifest） |
-| `db/` | sqlc 配置与查询；迁移文件位于 `core/db/migrations`（已内嵌） |
-| `scripts/` | Protobuf 代码生成脚本 |
+- **热加载、热卸载、热更新。** 进程归 Core 所有，所以它能先启动新版本、健康检查通过后原子切换流量、再排空旧版本。实测：切换期间持续打流量，**零失败请求**。
+- **崩溃隔离且可自愈。** 插件 panic 不会波及 Core。监管器按指数退避重启它，反复崩溃的则进入隔离。
+- **没有网络暴露面。** 没有端口可以访问插件，也不需要注册协议来鉴权 —— Core 就是它的父进程。
 
-## 获取源码
+## Filter
+
+插件在 manifest 里声明关心哪些阶段和路径，Core 把它编译成匹配表。没人订阅的请求几乎不花钱：
+
+| 场景 | 成本 |
+|---|---|
+| 该阶段无人订阅 | **1.9 ns**，零分配 |
+| 有订阅但路径不匹配 | **8.2 ns**，零分配 |
+| 真正跨进程调用一次 filter | ~37,000 ns |
+
+Filter 默认 fail-open —— 多数 filter 是观察者，一个坏掉的观察者不该让站点不可用。任何做安全决策的 filter 必须显式声明 `fail_closed`。
+
+## 一个插件长这样
+
+```go
+func main() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /notes", listNotes)
+
+	sdk.Serve(sdk.Config{
+		Handler: mux,
+		Filters: map[sdk.Phase]sdk.FilterFunc{
+			sdk.PhasePreRoute: rateLimit,
+		},
+		Jobs: map[string]sdk.JobFunc{
+			"nightly-summary": summarise,
+		},
+	})
+}
+```
+
+`sdk.Serve` 接收标准 `http.Handler`，所以任何路由库和中间件都能直接用。插件能触达的一切 —— 文档存储、队列、缓存、锁、文件、出站 HTTP —— 都经过 Core，且每次调用都自动带上请求的 trace id，因此一次慢查询能归因到引发它的那个请求。
+
+完整指南：[docs/plugin-development.md](docs/plugin-development.md)。
+可运行示例：[`extension-example/plugin`](extension-example/plugin)。
+
+## 运行
 
 ```bash
 git clone git@github.com:taills/moduless.git
 cd moduless
+
+# 构建控制台（一次即可）
+cd core/frontend && npm install && npm run build && cd ../..
+
+# 把示例插件构建到插件目录
+mkdir -p plugins/notes/bin
+CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/plugin
+cp extension-example/plugin/manifest.yaml plugins/notes/
+
+# 启动。不配 DATABASE_URL 时数据、队列、文件能力会报 Unavailable，其余照常工作
+PLUGIN_DIR=./plugins go run ./core
 ```
 
-Go 模块路径为 `github.com/taills/moduless`。
-
-## 代码生成
+或者用 Docker：
 
 ```bash
-./scripts/gen-proto.sh            # Go 桩代码  -> proto/tunnel/
-./scripts/gen-proto-python.sh     # Python     -> sdk/python/sdk/proto/
-cd sdk/java && mvn protobuf:compile protobuf:compile-custom   # Java
-sqlc generate -f db/sqlc.yaml     # CMDS / 系统查询代码
+docker compose up --build   # 控制台 http://localhost:8080，admin / admin123
 ```
 
-## 运行
+## 数据
 
-Core（默认 HTTP `:80`、gRPC `:9000`；可用 `HTTP_ADDR` / `GRPC_ADDR` 覆盖）：
+插件从不直连 PostgreSQL。它在 `manifest.yaml` 里声明 collection，Core 负责建表，访问通过文档存储进行 —— 支持排序、游标分页、聚合、批量写入、事务和乐观锁。
 
-```bash
-# 仅隧道 + 事件总线：
-go run ./core
-# 全功能（CMDS + 文件 + 审计）——设置 DATABASE_URL（文件服务再加 RUSTFS_*）：
-DATABASE_URL='postgres://user:pass@localhost:5432/app?sslmode=disable' go run ./core
-```
+用游标分页而不是 OFFSET 是有意的：OFFSET 会让数据库逐行跳过并丢弃，翻得越深越慢，而且期间有行增删会导致重复或遗漏。
 
-示例扩展（设置 `CORE_URL`，可选 `MANIFEST_PATH` 以自动 provision 表结构/插槽）：
+持久化队列基于 PostgreSQL —— 至少一次投递，带重试、退避、死信、延迟消息和去重，不需要在部署里再加一个中间件。
 
-```bash
-MANIFEST_PATH=extension-example/go/manifest.yaml     go run ./extension-example/go/backend
-python3 extension-example/python/backend/main.py
-mvn spring-boot:run -pl extension-example/java/backend   # 需要 JDK 17
-```
+## 信任模型
 
-随后通过网关调用扩展 API：
+插件由使用者审核后安装，以 Core 自身的权限运行 —— 就像 ISAPI Filter 跑在 IIS 工作进程里那样。安全性来自「只装你信任的插件」。
 
-```bash
-curl http://localhost/api/extensions/go_example/info
-```
+Core 确实会在自己这一侧强制这些：插件声明的权限集、文档/缓存/队列/文件的按插件命名空间隔离、事务归属、出站 HTTP 白名单（含拒绝解析到内网或链路本地地址的目标）、以及二进制的 SHA-256 校验。
+
+但它不限制文件系统、CPU 或系统调用。真正不受信任的代码应当放在容器边界之后。
 
 ## 测试
 
 ```bash
-go test ./core/... ./sdk/go/... ./tests/... ./manifest/...   # 可加 -race
-pytest sdk/python/
-mvn test -pl sdk/java       # 需要 JDK 17
+go test ./... -race
+
+# 数据库相关测试在未设置时自动跳过
+TEST_DATABASE_URL='postgres://postgres:pass@localhost:5432/test?sslmode=disable' go test ./...
 ```
 
-依赖数据库的 Go 测试（CMDS、文件服务、端到端）会在未设置 `TEST_DATABASE_URL` 时自动跳过：
+端到端测试会 fork 真实的插件进程并通过真实 HTTP 驱动它们，其中包括持续加压下的热更新，以及一次故意制造的崩溃。
 
-```bash
-TEST_DATABASE_URL='postgres://postgres:pass@localhost:5432/app?sslmode=disable' go test ./...
-```
+## 许可
 
-## 许可证
-
-采用 **Apache License 2.0** 发布——详见 [`LICENSE`](LICENSE)。
-
-编译进分发产物的全部上游依赖均使用与 Apache-2.0 兼容的宽松许可证
-（Apache-2.0 / MIT / BSD-3-Clause / ISC）。完整的依赖许可证核查见
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+Apache 2.0 —— 见 [`LICENSE`](LICENSE)。依赖许可审查见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。

@@ -9,9 +9,9 @@ tmp_dir = "tmp"
   full_bin = "./tmp/main.exe"
   include_ext = ["go", "tpl", "tmpl", "html", "yaml", "yml", "proto"]
   exclude_dir = [
-    "assets", "tmp", "vendor", "tests", "docs", 
-    "sdk/python", "sdk/java", "extension-example", 
-    ".git", ".pytest_cache"
+    "assets", "tmp", "vendor", "tests", "docs",
+    "extension-example", "plugins",
+    ".git"
   ]
   include_dir = ["core", "proto"]
   exclude_file = []

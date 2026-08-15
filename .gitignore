@@ -32,3 +32,6 @@ dist/
 # Air hot-reload artifacts
 /tmp/
 /air.log
+
+# Plugin packages built into the runtime directory
+/plugins/

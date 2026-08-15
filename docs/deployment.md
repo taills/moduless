@@ -1,83 +1,85 @@
-# Deployment
+# 部署指南
 
-Core is deployed as a **single instance**. For a mid-size team this is the
-right trade-off: Core is a near-stateless gateway/tunnel forwarder, so
-availability comes from a process supervisor restarting it plus the SDK's
-forever-reconnect loop — not from multi-instance HA. Put your HA budget into
-PostgreSQL and RustFS (the stateful parts), e.g. a managed/replicated database.
+Core 是**单实例**设计。韧性来自进程守护重启 Core、以及 Core 自己重启插件，而不是来自跑多份 Core —— 进程内的缓存、锁和会话存储都建立在这个前提上。
 
-What Core already provides for resilience:
+## 组成
 
-- `GET /healthz` — liveness/readiness probe (200 once the gateway serves).
-- Graceful shutdown — on `SIGTERM`, Core stops accepting new work, drains
-  in-flight HTTP requests, and calls `grpcSrv.GracefulStop()`.
-- Extensions reconnect automatically: a Core restart drops the tunnels and the
-  SDKs re-register within seconds.
+| 组件 | 必需 | 说明 |
+|---|---|---|
+| Core | 是 | 唯一监听端口的进程（默认 `:80`） |
+| PostgreSQL | 否 | 提供文档存储、队列、认证、审计。不配则这些能力报 Unavailable，插件仍能运行 |
+| 对象存储（S3 兼容） | 否 | 文件上传下载。不配则文件能力不可用 |
+| 插件 | — | 不是独立服务，是 Core 启动的子进程 |
 
-## Docker Compose (local / single host)
+插件**不需要**在编排层声明。Core 扫描 `PLUGIN_DIR` 并自己管理它们的生命周期。
 
-```bash
-docker compose up --build
-# Core gateway: http://localhost:8080  (health: /healthz)
+## 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `HTTP_ADDR` | `:80` | 监听地址 |
+| `DATABASE_URL` | — | 启用数据、队列、认证、审计 |
+| `PLUGIN_DIR` | `./plugins` | 插件包目录 |
+| `PLUGIN_DATA_DIR` | — | 每插件私有可写目录的根 |
+| `PLUGIN_LOG_LEVEL` | `warn` | 插件日志级别 |
+| `PLUGIN_DEV_MODE` | 关 | 跳过 `Pdeathsig`，**仅开发用** |
+| `HOST_FRONTEND_DIR` | `./core/frontend/dist` | 控制台构建产物 |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `admin123` | 首次启动播种 |
+| `RUSTFS_ENDPOINT` / `RUSTFS_BUCKET` / `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | — | 对象存储，四者齐全才启用 |
+
+默认管理员**只在用户表为空时**播种。一个已有用户的数据库不会再生成管理员 —— 如果忘了密码，改数据库里的 `password_hash`，或者用另一个管理员账号重置。
+
+## 插件包的交付
+
+一个插件包是一个目录：
+
+```
+$PLUGIN_DIR/
+└── notes/
+    ├── manifest.yaml
+    ├── bin/plugin        # CGO_ENABLED=0 静态二进制
+    └── frontend/         # 可选，微前端 dist
 ```
 
-`restart: unless-stopped` plus the `/healthz` healthcheck cover crash recovery.
+目录名必须与 `manifest.yaml` 里的 `key` 一致，否则 Core 拒绝加载并在控制台报错。
 
-## Console & login
+交付方式有两种，各有取舍：
 
-Core serves the **qiankun host app (console)** at the web root `/`. It is a Vue 3
-master app: a login page, a sidebar menu built from `GET /api/system/ui/apps`,
-and a qiankun container that loads each extension as a micro-frontend.
+**挂载卷**（compose 默认）。更新插件不需要重建 Core 镜像，适合插件迭代比 Core 快的情况。
 
-Authentication is real: `POST /api/system/auth/login` verifies credentials
-against `system_users` (bcrypt) and issues an in-memory session token. The
-gateway resolves the token (Authorization header or `moduless_token` cookie) and
-injects the authenticated identity into extension requests; unauthenticated
-`/api/extensions/*` calls are rejected with 401.
+**烘进镜像**。基于 Core 镜像做一层，把插件 `COPY` 进去。部署单元自洽、可回滚到确定的组合，适合插件与 Core 版本强绑定的情况。
 
-On first start with an empty `system_users` table, Core seeds a default admin:
+### 更新一个插件必须用 mv，不能用 cp
 
-- username `admin`, password `admin123` — override with `ADMIN_USERNAME` /
-  `ADMIN_PASSWORD`. **Change the default before exposing Core.**
+热更新时旧版本仍在处理请求，直到切换提交。**覆盖一个正在执行的二进制会破坏那个进程的内存映像。**
 
-The console is bundled into the Core image (built from `core/frontend`) and
-served from `HOST_FRONTEND_DIR` (default `/app/host` in the image). When the
-build is absent, Core serves a placeholder page.
+```bash
+# 正确：写到临时文件再 rename（新 inode，旧进程继续用旧 inode）
+CGO_ENABLED=0 GOOS=linux go build -o /tmp/plugin.new ./myplugin
+mv /tmp/plugin.new $PLUGIN_DIR/notes/bin/plugin
 
-## Extension approval & secrets
+# 错误：直接覆盖
+cp /tmp/plugin.new $PLUGIN_DIR/notes/bin/plugin
+```
 
-Registration is gated by an admin approval workflow (enforced whenever Core has a
-database; without `DATABASE_URL` registration stays open for demos).
+然后在控制台点「重载」，或调用：
 
-1. An extension dials Core with **no secret**. Core records it as **`待注册`
-   (pending)** and holds the connection open without routing it.
-2. An admin opens **扩展管理** in the console and clicks **批准**. Core mints a
-   per-instance secret, pushes it down the tunnel (the SDK persists it into the
-   extension's `manifest.yaml` as `secret:`), provisions the extension's CMDS
-   schema/UI slots, and routes it. The extension is now **`已注册` (approved)**.
-3. On every reconnect the SDK replays the persisted secret, so Core re-routes it
-   immediately without re-approval.
-4. **拒绝** marks an extension `已拒绝`, revokes its secrets and disconnects it.
-   **删除** removes the record entirely, so the extension's next dial starts a
-   fresh pending request.
+```bash
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  http://core/api/system/plugins/notes/upgrade
+```
 
-**Multi-replica / one key, many secrets.** A key may own several secrets, one per
-instance. To scale an already-approved extension without re-approving each
-replica, generate an extra secret in the console (扩展管理 → 密钥 → 生成新密钥,
-shown once) and pass it to the new replica via the **`EXTENSION_SECRET`** env. A
-no-secret connection to an approved key is rejected (it must be approved or carry
-a valid secret), which is what prevents another process from hijacking the key.
+Core 会先启动新版本并完成握手，成功才切换流量，然后排空旧版本。新版本起不来时，什么都不会发生 —— 旧版本继续服务，不需要回滚操作。
 
-**Secret persistence.** The SDK writes the issued secret back to `manifest.yaml`.
-In containers the manifest is baked into the image, so a rebuild/restart loses it
-and the extension returns to `待注册`. For restart-safe deployments either pin the
-secret with `EXTENSION_SECRET`, or mount the manifest directory on a persistent
-volume.
+## Docker Compose
 
-**Data-plane gate.** When a registry is present, Core also rejects DB/File/Event
-calls whose extension key is not approved.
+见仓库根目录的 `docker-compose.yml`。
 
-## Kubernetes (single replica)
+一个需要注意的点：PostgreSQL 18 的官方镜像要求卷挂在 `/var/lib/postgresql`，而不是过去惯用的 `/var/lib/postgresql/data`。挂错路径镜像会拒绝启动。
+
+## Kubernetes
+
+Core 是单实例，所以是 `Deployment` 且 `replicas: 1`、`strategy: Recreate`（不要 RollingUpdate —— 两个 Core 同时跑会各自 fork 一套插件）。
 
 ```yaml
 apiVersion: apps/v1
@@ -86,77 +88,96 @@ metadata:
   name: moduless-core
 spec:
   replicas: 1
-  selector:
-    matchLabels: { app: moduless-core }
+  strategy:
+    type: Recreate
   template:
-    metadata:
-      labels: { app: moduless-core }
     spec:
-      terminationGracePeriodSeconds: 30   # allow in-flight drain
       containers:
         - name: core
           image: moduless-core:latest
           ports:
-            - { containerPort: 80 }
-            - { containerPort: 9000 }
+            - containerPort: 80
           env:
-            - { name: DATABASE_URL, value: "postgres://…?sslmode=disable" }
-          readinessProbe:
-            httpGet: { path: /healthz, port: 80 }
-            periodSeconds: 5
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: moduless, key: database-url }
+            - name: PLUGIN_DIR
+              value: /app/plugins
+          volumeMounts:
+            - name: plugins
+              mountPath: /app/plugins
+            - name: plugin-data
+              mountPath: /app/plugin-data
           livenessProbe:
             httpGet: { path: /healthz, port: 80 }
-            periodSeconds: 10
+            initialDelaySeconds: 10
+          readinessProbe:
+            httpGet: { path: /healthz, port: 80 }
+      volumes:
+        - name: plugins
+          persistentVolumeClaim: { claimName: moduless-plugins }
+        - name: plugin-data
+          persistentVolumeClaim: { claimName: moduless-plugin-data }
 ```
 
-## systemd (bare VM)
+插件进程与 Core 在同一个容器里，所以给这个 Pod 的 CPU 和内存要覆盖 Core 加上所有插件。每个 Go 插件进程大约 10–20 MB 起步。
+
+## systemd
 
 ```ini
+[Unit]
+Description=Moduless Core
+After=network.target postgresql.service
+
 [Service]
 ExecStart=/usr/local/bin/core
-Environment=DATABASE_URL=postgres://…?sslmode=disable
+Environment=HTTP_ADDR=:8080
+Environment=PLUGIN_DIR=/var/lib/moduless/plugins
+Environment=PLUGIN_DATA_DIR=/var/lib/moduless/plugin-data
+EnvironmentFile=/etc/moduless/env
 Restart=always
-RestartSec=2
-KillSignal=SIGTERM
-TimeoutStopSec=30
+RestartSec=3
+
+# 插件继承这个用户的权限（IIS Filter 模型），所以不要用 root 跑
+User=moduless
+Group=moduless
+
+# Core 退出时连同它 fork 的插件一起清理
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-## Extension images
+`KillMode=control-group` 很重要：Core 用 `Setpgid` 把插件放进自己的进程组，systemd 据此能一并终止它们。加上 Linux 上的 `Pdeathsig`，Core 无论正常退出还是崩溃，都不会留下孤儿插件进程。
 
-Each example bundles its built micro-frontend into the backend image; on startup
-the SDK streams it to Core (set via `FRONTEND_DIR`), which serves it at
-`/extensions/<key>/`. Extensions open no ports — they only dial `CORE_URL`
-(default `core:9000`). Build individually with:
+## 备份
+
+需要备份的：
+
+- **PostgreSQL** —— 用户、审计、队列，以及所有插件的数据（`ext_*` 表）
+- **`$PLUGIN_DIR`** —— 插件包本身。也可以从构建产物重新生成，取决于你的交付方式
+- **`$PLUGIN_DATA_DIR`** —— 插件写的私有文件
+- **对象存储** —— 上传的文件
+
+不需要备份的：Core 自身无状态。
+
+## 升级 Core
 
 ```bash
-docker build -f extension-example/go/Dockerfile     -t go-example .
-docker build -f extension-example/python/Dockerfile -t python-example .
-docker build -f extension-example/java/Dockerfile   -t java-example .
+docker compose pull core && docker compose up -d core
 ```
 
-## Scaling an extension (load balancing)
+Core 重启会冷启动所有插件（几百毫秒到一秒级，取决于插件数量和它们的初始化工作）。这是单实例设计的代价。数据库迁移在启动时自动执行。
 
-Run multiple replicas of one extension and Core load-balances API traffic across
-them. Each replica dials Core and registers under the same extension key; Core
-keeps the full replica set (not just the latest) and routes with **smooth
-weighted round-robin**.
+## 排查
 
-```bash
-docker compose up -d --scale go-example=3
-# 30 requests to /api/extensions/go_example/* spread ~10/10/10 across replicas
-```
-
-Set a per-replica `weight` in `manifest.yaml` (default 1) to send proportionally
-more traffic to heavier replicas:
-
-```yaml
-key: go_example
-weight: 2   # this build's replicas each get weight 2
-```
-
-`GET /api/system/diagnostics` lists every connected replica (instance id +
-weight); `GET /api/system/ui/apps` reports each extension's `replicas` count.
-
-Note: this is single-Core, in-process load balancing across an extension's
-replicas — it is not Core HA (Core stays single-instance; see above). When the
-routed replica dies, Core drops it and routes to the others.
+| 现象 | 多半是 |
+|---|---|
+| 插件不出现在列表 | 目录名与 manifest 的 `key` 不一致，或 manifest 校验失败 —— 控制台会显示原因 |
+| 插件启动失败且日志无信息 | 插件向 stdout 写了东西，破坏了启动握手 |
+| `exec format error` | 插件不是静态链接（漏了 `CGO_ENABLED=0`）或架构不符 |
+| 插件调用某能力报 PermissionDenied | manifest 的 `permissions` 里没声明它 |
+| 插件调用某能力报 Unavailable | Core 没配那项能力（比如没有 `DATABASE_URL`） |
+| 升级后插件行为异常 | 用 `cp` 覆盖了正在执行的二进制，见上文 |
+| 控制台菜单不更新 | SSE 流被中间代理缓冲了；确认反向代理没有缓冲 `text/event-stream` |

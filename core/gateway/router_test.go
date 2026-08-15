@@ -1,54 +1,82 @@
 package gateway
 
 import (
-	"archive/zip"
-	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/taills/moduless/core/tunnel"
 )
 
-func TestGatewayStaticFileCache(t *testing.T) {
-	mgr := tunnel.NewTunnelManager()
+func TestSystemRoutesMatchInOrder(t *testing.T) {
+	gw := NewGatewayHandler()
 
-	// Pre-populate dummy zip for test-ext via a registered replica.
-	var zipBuf bytes.Buffer
-	zw := zip.NewWriter(&zipBuf)
-	f, _ := zw.Create("app.js")
-	f.Write([]byte("console.log('test')"))
-	zw.Close()
+	var hit string
+	gw.RegisterSystemRoute(func(p string) bool { return p == "/healthz" },
+		func(w http.ResponseWriter, _ *http.Request) { hit = "healthz"; w.WriteHeader(200) })
+	gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/thing" },
+		func(w http.ResponseWriter, _ *http.Request) { hit = "thing"; w.WriteHeader(200) })
 
-	rep := mgr.Register("test-ext", nil, nil)
-	mgr.SaveZipChunk(rep, zipBuf.Bytes())
-	if err := mgr.ExtractZipCache(rep); err != nil {
-		t.Fatalf("ExtractZipCache failed: %v", err)
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "/healthz", want: "healthz"},
+		{path: "/api/system/thing", want: "thing"},
 	}
-
-	handler := NewGatewayHandler(mgr)
-
-	req := httptest.NewRequest("GET", "/extensions/test-ext/app.js", nil)
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rr.Code)
-	}
-	if rr.Body.String() != "console.log('test')" {
-		t.Errorf("expected console output, got %s", rr.Body.String())
+	for _, tc := range tests {
+		t.Run(tc.path, func(t *testing.T) {
+			hit = ""
+			rec := httptest.NewRecorder()
+			gw.ServeHTTP(rec, httptest.NewRequest("GET", tc.path, nil))
+			if hit != tc.want {
+				t.Errorf("routed to %q, want %q", hit, tc.want)
+			}
+		})
 	}
 }
 
-func TestGatewayOfflineExtension(t *testing.T) {
-	mgr := tunnel.NewTunnelManager()
-	handler := NewGatewayHandler(mgr)
+// An unmatched API path must 404 rather than fall through to the SPA. Falling
+// through would answer with index.html, turning a typo in an API path into a
+// confusing "why is my API returning HTML".
+func TestUnmatchedAPIPathDoesNotReachTheSPA(t *testing.T) {
+	gw := NewGatewayHandler()
+	gw.Host = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("<html>console</html>"))
+	})
 
-	req := httptest.NewRequest("GET", "/api/extensions/ghost/hello", nil)
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest("GET", "/api/system/nonexistent", nil))
 
-	if rr.Code != http.StatusBadGateway {
-		t.Errorf("expected 502 for offline extension, got %d", rr.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+	if rec.Body.Len() > 0 && rec.Body.String()[0] == '<' {
+		t.Error("an unmatched API path was answered with the SPA")
+	}
+}
+
+func TestNonAPIPathReachesTheSPA(t *testing.T) {
+	gw := NewGatewayHandler()
+	gw.Host = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("console"))
+	})
+
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest("GET", "/system/plugins", nil))
+
+	if rec.Code != 200 || rec.Body.String() != "console" {
+		t.Errorf("status = %d body = %q; the console SPA should have served this", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWithoutAHostEverythingElseIs404(t *testing.T) {
+	gw := NewGatewayHandler()
+
+	rec := httptest.NewRecorder()
+	gw.ServeHTTP(rec, httptest.NewRequest("GET", "/anything", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
 	}
 }

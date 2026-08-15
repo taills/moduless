@@ -1,20 +1,21 @@
-# Single-instance deployment of Core + PostgreSQL + the three example extensions.
-# Core is intentionally single-instance (see DEPLOYMENT.md): resilience comes
-# from the supervisor restarting it and the SDK reconnecting forever, not from
-# multi-instance HA. Extensions open no ports; they dial core:9000.
+# Core + PostgreSQL.
+#
+# There are no separate services for plugins: Core starts them as subprocesses
+# from PLUGIN_DIR, so scaling and restarting them is Core's job rather than the
+# orchestrator's.
+#
+#   # build the example plugin into the mounted directory
+#   mkdir -p plugins/notes/bin
+#   CGO_ENABLED=0 GOOS=linux go build -o plugins/notes/bin/plugin ./extension-example/plugin
+#   cp extension-example/plugin/manifest.yaml plugins/notes/
 #
 #   docker compose up --build
-#   # log in at http://localhost:8080  (admin / admin123)
-#   # extensions appear under 扩展管理 as 待注册 — click 批准 to approve each.
-#   # On approval Core issues a secret the SDK persists into its manifest.yaml.
+#   # log in at http://localhost:8080 (admin / admin123)
+#   # the plugin is picked up at startup; use 插件管理 to enable, disable or reload it
 #
-# Secret persistence note: the manifest lives inside each example image, so a
-# container rebuild/restart loses the persisted secret. The extension then
-# reconnects and reappears under 扩展管理 as a pending instance (待审实例 +1) on
-# the still-approved row — click 批准 to re-issue its secret and route it again.
-# For restart-safe production deployments pin the approved secret via the
-# EXTENSION_SECRET env (see docs/deployment.md), or mount the manifest directory
-# on a named volume.
+# Core is deliberately single-instance: resilience comes from the supervisor
+# restarting it and from plugins being restarted by Core, not from running
+# several copies. The in-process cache, locks and session store all assume this.
 
 services:
   postgres:
@@ -23,6 +24,11 @@ services:
       POSTGRES_USER: moduless
       POSTGRES_PASSWORD: moduless
       POSTGRES_DB: moduless
+    volumes:
+      # PostgreSQL 18 wants the volume at /var/lib/postgresql, not at its data
+      # subdirectory — mounting the old path makes the image refuse to start,
+      # because it cannot then run pg_upgrade --link across the mount boundary.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U moduless"]
       interval: 5s
@@ -35,49 +41,29 @@ services:
       dockerfile: core/Dockerfile
     environment:
       HTTP_ADDR: ":80"
-      GRPC_ADDR: ":9000"
       DATABASE_URL: "postgres://moduless:moduless@postgres:5432/moduless?sslmode=disable"
+      PLUGIN_DIR: "/app/plugins"
+      PLUGIN_DATA_DIR: "/app/plugin-data"
+      PLUGIN_LOG_LEVEL: "info"
+      # Object storage is optional; without it the file capability reports
+      # Unavailable and everything else still works.
+      # RUSTFS_ENDPOINT: "http://rustfs:9000"
+      # RUSTFS_BUCKET: "moduless"
+      # RUSTFS_ACCESS_KEY: ""
+      # RUSTFS_SECRET_KEY: ""
     ports:
       - "8080:80"
+    volumes:
+      # Plugin packages, mounted so they can be updated without rebuilding the
+      # image. Each package is a directory: manifest.yaml, bin/plugin, and an
+      # optional frontend/.
+      - ./plugins:/app/plugins
+      - plugindata:/app/plugin-data
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:80/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
 
-  go-example:
-    build:
-      context: .
-      dockerfile: extension-example/go/Dockerfile
-    environment:
-      CORE_URL: "core:9000"
-    depends_on:
-      core:
-        condition: service_healthy
-    restart: unless-stopped
-
-  python-example:
-    build:
-      context: .
-      dockerfile: extension-example/python/Dockerfile
-    environment:
-      CORE_URL: "core:9000"
-    depends_on:
-      core:
-        condition: service_healthy
-    restart: unless-stopped
-
-  java-example:
-    build:
-      context: .
-      dockerfile: extension-example/java/Dockerfile
-    environment:
-      CORE_URL: "core:9000"
-    depends_on:
-      core:
-        condition: service_healthy
-    restart: unless-stopped
+volumes:
+  pgdata:
+  plugindata:

@@ -1,0 +1,3 @@
+-- Recreating these tables would produce empty shells: the extension model they
+-- served no longer exists in the code, so there is nothing to roll back to.
+-- Restore from a backup taken before the migration instead.

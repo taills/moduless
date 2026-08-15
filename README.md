@@ -4,111 +4,154 @@
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-A low-friction, highly-isolated, container-friendly modular development framework.
-A Go **Core Gateway** fronts all HTTP traffic and hosts micro-frontends in memory;
-language-specific **extensions** (Go / Python / Java) open **no listening ports** —
-they dial Core over a reverse gRPC tunnel and serve requests through their native
-web framework (Gin / FastAPI / Spring Boot).
+A Go web gateway whose features are plugins — separate processes that Core
+starts, supervises, hot-reloads and upgrades without dropping a request.
 
-> Design spec: [`docs/superpowers/specs/2026-06-30-modular-framework-design.md`](docs/superpowers/specs/2026-06-30-modular-framework-design.md)
-> Implementation plans: [`docs/superpowers/plans/`](docs/superpowers/plans/)
-
-## Architecture at a glance
+Plugins serve their own HTTP APIs, ship their own micro-frontends, and can
+intercept any request in the gateway's lifecycle, in the style of an IIS
+filter. Enabling one makes its menu appear in the console; disabling one makes
+it disappear, with no page reload.
 
 ```
-Browser ──HTTP──▶ Core Gateway (:80) ──reverse gRPC tunnel (:9000)──▶ Extension (Go/Python/Java)
-                     │  in-memory micro-frontend cache (zip → memory)
-                     │  CMDS (PostgreSQL 18 JSONB document store)
-                     │  File service (RustFS / S3, clean path-param downloads)
-                     │  Event bus · UI slots · audit · diagnostics
+Browser ──HTTP──▶ Core (:80)
+                    ├─ filter pipeline   pre_route → authenticate → authorize →
+                    │                    pre_handler → [backend] → post_handler → log
+                    ├─ /api/plugins/*    a plugin's own HTTP API
+                    ├─ /plugins/*        a plugin's micro-frontend
+                    └─ PluginHost ──exec──▶ plugin subprocess ×N
+                         │  HashiCorp go-plugin over a unix socket
+                         ▼
+                       HostServices: documents · durable queue · cache · locks
+                       config · files · outbound HTTP · events · logs & metrics
 ```
 
-Core principles enforced by the implementation:
+Core listens on one port. Plugins open none.
 
-- **Zero-port extensions** — extensions only dial out to Core's gRPC port.
-- **Approval-gated registration** — a new extension is parked as `待注册` (pending)
-  until an admin approves it in the console; Core then issues a per-instance secret
-  (one key may hold many) that the SDK persists to `manifest.yaml`. Unauthorized or
-  unapproved keys cannot route. See [docs/deployment.md](docs/deployment.md).
-- **CMDS** — extensions never touch PostgreSQL; collections/indexes are declared in
-  `manifest.yaml` and Core provisions `ext_<key>_<collection>` tables on approval.
-- **Core-managed files** — uploads go straight to Core/RustFS returning a `file_id`;
-  downloads use clean path params `/api/system/files/download/<file_id>/<token>` (no `?`).
-- **In-memory FE cache** — frontend zips stream to Core and are served from memory.
+## Why subprocesses
 
-## Repository layout
+Core starts each plugin with `exec`, which is what makes the rest possible:
 
-| Path | Description |
-|------|-------------|
-| `proto/` | gRPC contract (`tunnel.proto`) shared by all languages |
-| `core/` | Go Core Gateway: `tunnel`, `gateway`, `db` (CMDS), `storage`, `event`, `middleware`, `main.go` |
-| `sdk/go`, `sdk/python`, `sdk/java` | Extension SDKs |
-| `extension-example/{go,python,java}` | Runnable example extensions (backend + frontend + manifest) |
-| `db/` | sqlc config + queries; migrations live in `core/db/migrations` (embedded) |
-| `scripts/` | Protobuf code-gen scripts |
+- **Hot load, unload and upgrade.** Core owns the process, so it can start a
+  new version, health-check it, swap traffic atomically and drain the old one.
+  Measured with continuous traffic across a swap: zero failed requests.
+- **Crash isolation with recovery.** A plugin panic does not touch Core. The
+  supervisor restarts it with exponential backoff and quarantines one that
+  keeps crashing.
+- **No network exposure.** There is no port to reach a plugin on, and no
+  registration protocol to authenticate — Core is the parent process.
 
-## Getting the source
+## Filters
+
+A plugin declares which lifecycle phases and paths it cares about, and Core
+compiles that into a match table. Requests nobody subscribed to cost almost
+nothing:
+
+| | |
+|---|---|
+| phase with no subscribers | **1.9 ns**, zero allocations |
+| subscribed, path does not match | **8.2 ns**, zero allocations |
+| an actual cross-process filter call | ~37,000 ns |
+
+Filters default to fail-open, because most of them observe rather than guard
+and a broken observer should not take the site down. Anything enforcing a
+security decision opts in to `fail_closed`.
+
+## A plugin
+
+```go
+func main() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /notes", listNotes)
+
+	sdk.Serve(sdk.Config{
+		Handler: mux,
+		Filters: map[sdk.Phase]sdk.FilterFunc{
+			sdk.PhasePreRoute: rateLimit,
+		},
+		Jobs: map[string]sdk.JobFunc{
+			"nightly-summary": summarise,
+		},
+	})
+}
+```
+
+`sdk.Serve` takes a standard `http.Handler`, so any router or middleware works
+unchanged. Everything a plugin can reach — the document store, the queue,
+caching, locks, files, outbound HTTP — goes through Core, and every call
+carries the request's trace id automatically, so a slow query is attributable
+to the request that caused it.
+
+Full guide: [docs/plugin-development.md](docs/plugin-development.md).
+Working example: [`extension-example/plugin`](extension-example/plugin).
+
+## Running
 
 ```bash
 git clone git@github.com:taills/moduless.git
 cd moduless
+
+# Build the console once
+cd core/frontend && npm install && npm run build && cd ../..
+
+# Build the example plugin into the plugin directory
+mkdir -p plugins/notes/bin
+CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/plugin
+cp extension-example/plugin/manifest.yaml plugins/notes/
+
+# Run. Without DATABASE_URL the data, queue and file capabilities report
+# Unavailable and everything else still works.
+PLUGIN_DIR=./plugins go run ./core
 ```
 
-The Go module path is `github.com/taills/moduless`.
-
-## Code generation
+Or with Docker:
 
 ```bash
-./scripts/gen-proto.sh            # Go stubs  -> proto/tunnel/
-./scripts/gen-proto-python.sh     # Python    -> sdk/python/sdk/proto/
-cd sdk/java && mvn protobuf:compile protobuf:compile-custom   # Java
-sqlc generate -f db/sqlc.yaml     # CMDS / system query code
+docker compose up --build   # console at http://localhost:8080, admin / admin123
 ```
 
-## Running
+## Data
 
-Core (HTTP `:80`, gRPC `:9000` by default; override with `HTTP_ADDR` / `GRPC_ADDR`):
+Plugins never connect to PostgreSQL. They declare collections in
+`manifest.yaml`, Core provisions the tables, and access goes through a
+document store with sorting, keyset pagination, aggregation, batch writes,
+transactions and optimistic locking.
 
-```bash
-# Tunnel + event bus only:
-go run ./core
-# Full stack (CMDS + files + audit) — set DATABASE_URL (+ RUSTFS_* for files):
-DATABASE_URL='postgres://user:pass@localhost:5432/app?sslmode=disable' go run ./core
-```
+Keyset pagination rather than OFFSET is deliberate: OFFSET makes the database
+walk and discard every skipped row, so deep pages get slower, and rows shifting
+between requests silently duplicate or skip entries.
 
-Example extensions (set `CORE_URL`, optional `MANIFEST_PATH` to auto-provision schema/slots):
+The durable queue is PostgreSQL-backed — at-least-once delivery with retries,
+backoff, dead-lettering, delayed messages and deduplication, without adding a
+broker to the deployment.
 
-```bash
-MANIFEST_PATH=extension-example/go/manifest.yaml     go run ./extension-example/go/backend
-python3 extension-example/python/backend/main.py
-mvn spring-boot:run -pl extension-example/java/backend   # requires JDK 17
-```
+## Trust model
 
-Then call an extension API through the gateway:
+Plugins are reviewed by an operator before installation and run with Core's own
+privileges, like an ISAPI filter inside the IIS worker process. Safety comes
+from only installing plugins you trust.
 
-```bash
-curl http://localhost/api/extensions/go_example/info
-```
+Core does enforce, on its own side of the connection: the permission set a
+plugin declared, per-plugin namespacing of documents, cache, queue and files,
+transaction ownership, the outbound HTTP allow-list (including refusing
+addresses that resolve to private or link-local ranges), and a SHA-256 check
+that the binary is the one that was installed.
+
+It does not confine the filesystem, CPU or system calls. Genuinely untrusted
+code belongs behind a container boundary.
 
 ## Testing
 
 ```bash
-go test ./core/... ./sdk/go/... ./tests/... ./manifest/...   # add -race
-pytest sdk/python/
-mvn test -pl sdk/java       # requires JDK 17
+go test ./... -race
+
+# Database-backed tests skip without this
+TEST_DATABASE_URL='postgres://postgres:pass@localhost:5432/test?sslmode=disable' go test ./...
 ```
 
-DB-backed Go tests (CMDS, file service, E2E) auto-skip unless `TEST_DATABASE_URL`
-points at a PostgreSQL instance:
-
-```bash
-TEST_DATABASE_URL='postgres://postgres:pass@localhost:5432/app?sslmode=disable' go test ./...
-```
+The end-to-end suite forks real plugin processes and drives them over real
+HTTP, including a hot upgrade under continuous load and a deliberate crash.
 
 ## License
 
-Licensed under the **Apache License, Version 2.0** — see [`LICENSE`](LICENSE).
-
-All upstream dependencies compiled into the distributed artifacts use permissive
-licenses (Apache-2.0 / MIT / BSD-3-Clause / ISC) compatible with Apache-2.0. The full
-dependency-license review is in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+Apache 2.0 — see [`LICENSE`](LICENSE). Dependency licence review in
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

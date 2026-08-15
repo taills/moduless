@@ -33,33 +33,6 @@ func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const createExtensionSecret = `-- name: CreateExtensionSecret :one
-INSERT INTO extension_secrets (extension_key, secret_hash, label)
-VALUES ($1, $2, $3)
-RETURNING id, extension_key, secret_hash, label, created_at, last_used_at, revoked_at
-`
-
-type CreateExtensionSecretParams struct {
-	ExtensionKey string `json:"extension_key"`
-	SecretHash   string `json:"secret_hash"`
-	Label        string `json:"label"`
-}
-
-func (q *Queries) CreateExtensionSecret(ctx context.Context, arg CreateExtensionSecretParams) (ExtensionSecret, error) {
-	row := q.db.QueryRowContext(ctx, createExtensionSecret, arg.ExtensionKey, arg.SecretHash, arg.Label)
-	var i ExtensionSecret
-	err := row.Scan(
-		&i.ID,
-		&i.ExtensionKey,
-		&i.SecretHash,
-		&i.Label,
-		&i.CreatedAt,
-		&i.LastUsedAt,
-		&i.RevokedAt,
-	)
-	return i, err
-}
-
 const createUser = `-- name: CreateUser :exec
 INSERT INTO system_users (username, password_hash, role) VALUES ($1, $2, $3)
 `
@@ -75,15 +48,6 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) error {
 	return err
 }
 
-const deleteExtension = `-- name: DeleteExtension :exec
-DELETE FROM extensions WHERE key = $1
-`
-
-func (q *Queries) DeleteExtension(ctx context.Context, key string) error {
-	_, err := q.db.ExecContext(ctx, deleteExtension, key)
-	return err
-}
-
 const deleteUser = `-- name: DeleteUser :exec
 DELETE FROM system_users WHERE id = $1
 `
@@ -91,39 +55,6 @@ DELETE FROM system_users WHERE id = $1
 func (q *Queries) DeleteUser(ctx context.Context, id int32) error {
 	_, err := q.db.ExecContext(ctx, deleteUser, id)
 	return err
-}
-
-const getExtension = `-- name: GetExtension :one
-SELECT key, display_name, version, menu_icon, menu_path, status, created_at, approved_at, updated_at, menus FROM extensions WHERE key = $1
-`
-
-func (q *Queries) GetExtension(ctx context.Context, key string) (Extension, error) {
-	row := q.db.QueryRowContext(ctx, getExtension, key)
-	var i Extension
-	err := row.Scan(
-		&i.Key,
-		&i.DisplayName,
-		&i.Version,
-		&i.MenuIcon,
-		&i.MenuPath,
-		&i.Status,
-		&i.CreatedAt,
-		&i.ApprovedAt,
-		&i.UpdatedAt,
-		&i.Menus,
-	)
-	return i, err
-}
-
-const getExtensionVersion = `-- name: GetExtensionVersion :one
-SELECT version FROM extension_versions WHERE extension_key = $1
-`
-
-func (q *Queries) GetExtensionVersion(ctx context.Context, extensionKey string) (string, error) {
-	row := q.db.QueryRowContext(ctx, getExtensionVersion, extensionKey)
-	var version string
-	err := row.Scan(&version)
-	return version, err
 }
 
 const getFile = `-- name: GetFile :one
@@ -258,43 +189,6 @@ func (q *Queries) InsertFile(ctx context.Context, arg InsertFileParams) error {
 	return err
 }
 
-const listActiveExtensionSecrets = `-- name: ListActiveExtensionSecrets :many
-SELECT id, extension_key, secret_hash, label, created_at, last_used_at, revoked_at FROM extension_secrets
-WHERE extension_key = $1 AND revoked_at IS NULL
-ORDER BY id
-`
-
-func (q *Queries) ListActiveExtensionSecrets(ctx context.Context, extensionKey string) ([]ExtensionSecret, error) {
-	rows, err := q.db.QueryContext(ctx, listActiveExtensionSecrets, extensionKey)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ExtensionSecret
-	for rows.Next() {
-		var i ExtensionSecret
-		if err := rows.Scan(
-			&i.ID,
-			&i.ExtensionKey,
-			&i.SecretHash,
-			&i.Label,
-			&i.CreatedAt,
-			&i.LastUsedAt,
-			&i.RevokedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listAuditLogs = `-- name: ListAuditLogs :many
 SELECT id, user_id, action, extension_key, http_path, client_ip, created_at FROM audit_logs ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
@@ -321,81 +215,6 @@ func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([
 			&i.HttpPath,
 			&i.ClientIp,
 			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listExtensionSecrets = `-- name: ListExtensionSecrets :many
-SELECT id, extension_key, secret_hash, label, created_at, last_used_at, revoked_at FROM extension_secrets
-WHERE extension_key = $1
-ORDER BY id
-`
-
-func (q *Queries) ListExtensionSecrets(ctx context.Context, extensionKey string) ([]ExtensionSecret, error) {
-	rows, err := q.db.QueryContext(ctx, listExtensionSecrets, extensionKey)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ExtensionSecret
-	for rows.Next() {
-		var i ExtensionSecret
-		if err := rows.Scan(
-			&i.ID,
-			&i.ExtensionKey,
-			&i.SecretHash,
-			&i.Label,
-			&i.CreatedAt,
-			&i.LastUsedAt,
-			&i.RevokedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listExtensions = `-- name: ListExtensions :many
-SELECT key, display_name, version, menu_icon, menu_path, status, created_at, approved_at, updated_at, menus FROM extensions ORDER BY created_at DESC
-`
-
-func (q *Queries) ListExtensions(ctx context.Context) ([]Extension, error) {
-	rows, err := q.db.QueryContext(ctx, listExtensions)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Extension
-	for rows.Next() {
-		var i Extension
-		if err := rows.Scan(
-			&i.Key,
-			&i.DisplayName,
-			&i.Version,
-			&i.MenuIcon,
-			&i.MenuPath,
-			&i.Status,
-			&i.CreatedAt,
-			&i.ApprovedAt,
-			&i.UpdatedAt,
-			&i.Menus,
 		); err != nil {
 			return nil, err
 		}
@@ -449,64 +268,6 @@ func (q *Queries) ListUsers(ctx context.Context) ([]ListUsersRow, error) {
 	return items, nil
 }
 
-const revokeExtensionSecret = `-- name: RevokeExtensionSecret :exec
-UPDATE extension_secrets SET revoked_at = NOW() WHERE id = $1 AND extension_key = $2
-`
-
-type RevokeExtensionSecretParams struct {
-	ID           int64  `json:"id"`
-	ExtensionKey string `json:"extension_key"`
-}
-
-func (q *Queries) RevokeExtensionSecret(ctx context.Context, arg RevokeExtensionSecretParams) error {
-	_, err := q.db.ExecContext(ctx, revokeExtensionSecret, arg.ID, arg.ExtensionKey)
-	return err
-}
-
-const setExtensionStatus = `-- name: SetExtensionStatus :exec
-UPDATE extensions
-SET status = $1::text,
-    approved_at = CASE WHEN $1::text = 'approved' THEN NOW() ELSE approved_at END,
-    updated_at = NOW()
-WHERE key = $2
-`
-
-type SetExtensionStatusParams struct {
-	Status string `json:"status"`
-	Key    string `json:"key"`
-}
-
-func (q *Queries) SetExtensionStatus(ctx context.Context, arg SetExtensionStatusParams) error {
-	_, err := q.db.ExecContext(ctx, setExtensionStatus, arg.Status, arg.Key)
-	return err
-}
-
-const touchExtensionSecret = `-- name: TouchExtensionSecret :exec
-UPDATE extension_secrets SET last_used_at = NOW() WHERE id = $1
-`
-
-func (q *Queries) TouchExtensionSecret(ctx context.Context, id int64) error {
-	_, err := q.db.ExecContext(ctx, touchExtensionSecret, id)
-	return err
-}
-
-const updateExtensionVersion = `-- name: UpdateExtensionVersion :exec
-INSERT INTO extension_versions (extension_key, version, updated_at)
-VALUES ($1, $2, NOW())
-ON CONFLICT (extension_key)
-DO UPDATE SET version = EXCLUDED.version, updated_at = NOW()
-`
-
-type UpdateExtensionVersionParams struct {
-	ExtensionKey string `json:"extension_key"`
-	Version      string `json:"version"`
-}
-
-func (q *Queries) UpdateExtensionVersion(ctx context.Context, arg UpdateExtensionVersionParams) error {
-	_, err := q.db.ExecContext(ctx, updateExtensionVersion, arg.ExtensionKey, arg.Version)
-	return err
-}
-
 const updateUserPassword = `-- name: UpdateUserPassword :exec
 UPDATE system_users SET password_hash = $2 WHERE id = $1
 `
@@ -533,53 +294,6 @@ type UpdateUserRoleParams struct {
 func (q *Queries) UpdateUserRole(ctx context.Context, arg UpdateUserRoleParams) error {
 	_, err := q.db.ExecContext(ctx, updateUserRole, arg.ID, arg.Role)
 	return err
-}
-
-const upsertPendingExtension = `-- name: UpsertPendingExtension :one
-INSERT INTO extensions (key, display_name, version, menu_icon, menu_path, status, updated_at, menus)
-VALUES ($1, $2, $3, $4, $5, 'pending', NOW(), $6)
-ON CONFLICT (key) DO UPDATE
-    SET display_name = EXCLUDED.display_name,
-        version      = EXCLUDED.version,
-        menu_icon    = EXCLUDED.menu_icon,
-        menu_path    = EXCLUDED.menu_path,
-        menus        = EXCLUDED.menus,
-        updated_at   = NOW()
-RETURNING key, display_name, version, menu_icon, menu_path, status, created_at, approved_at, updated_at, menus
-`
-
-type UpsertPendingExtensionParams struct {
-	Key         string `json:"key"`
-	DisplayName string `json:"display_name"`
-	Version     string `json:"version"`
-	MenuIcon    string `json:"menu_icon"`
-	MenuPath    string `json:"menu_path"`
-	Menus       []byte `json:"menus"`
-}
-
-func (q *Queries) UpsertPendingExtension(ctx context.Context, arg UpsertPendingExtensionParams) (Extension, error) {
-	row := q.db.QueryRowContext(ctx, upsertPendingExtension,
-		arg.Key,
-		arg.DisplayName,
-		arg.Version,
-		arg.MenuIcon,
-		arg.MenuPath,
-		arg.Menus,
-	)
-	var i Extension
-	err := row.Scan(
-		&i.Key,
-		&i.DisplayName,
-		&i.Version,
-		&i.MenuIcon,
-		&i.MenuPath,
-		&i.Status,
-		&i.CreatedAt,
-		&i.ApprovedAt,
-		&i.UpdatedAt,
-		&i.Menus,
-	)
-	return i, err
 }
 
 const verifyDownloadToken = `-- name: VerifyDownloadToken :one

@@ -1,129 +1,144 @@
 # CLAUDE.md - Developer Guide
 
-Welcome to the Multi-Language Modular Framework project. This guide outlines build, test, and style guidelines for working with the Core Gateway and its multi-language SDKs.
+Moduless is a Go web gateway with a plugin system. Core fronts all HTTP traffic
+and runs plugins as subprocesses it starts itself.
 
-## Directory Layout
+## Architecture
 
 ```
-/
-├── proto/                    # gRPC Protobuf contracts
-├── core/                     # Go Core Gateway (HTTP Router, Tunnel server)
-├── sdk/                      # Multi-language SDKs
-│   ├── go/                   # Go Extension SDK
-│   ├── python/               # Python Extension SDK (FastAPI / ASGI)
-│   └── java/                 # Java Extension SDK (Spring Boot / Servlet)
-├── extension-example/        # Example micro-frontend + backend modules
-│   ├── go/
-│   ├── python/
-│   └── java/
-├── scripts/                  # Protobuf build and code gen scripts
-└── docs/                     # Spec and implementation plans
+Browser ──HTTP──▶ Core (:80)
+                    ├─ filter pipeline   plugins intercept request lifecycle phases
+                    ├─ /api/plugins/*    routed to a plugin's HTTP handler
+                    ├─ /plugins/*        plugin micro-frontends, read from disk
+                    ├─ SSE               console learns about changes without reloading
+                    └─ PluginHost ──exec──▶ plugin subprocess ×N
+                         │  go-plugin: unix socket, AutoMTLS, SHA-256 verified
+                         ▼
+                       HostServices (reverse channel)
+                         documents · queue · cache · locks · config
+                         files · outbound HTTP · events · logs & metrics
 ```
 
----
+Core listens on **one** port. Plugins open none — Core is their parent process
+and talks to them over a private connection.
 
-## Build & Run Commands
+## Directory layout
 
-### 1. Protobuf Code Generation
-Generate the gRPC and Protobuf stubs before running any compiler:
-* **Go**: Run `./scripts/gen-proto.sh`
-* **Python**: Run `./scripts/gen-proto-python.sh`
-* **Java**: Run `cd sdk/java && mvn protobuf:compile protobuf:compile-custom`
+```
+proto/           plugin.proto (Host→Plugin) and host.proto (Plugin→Host)
+pluginapi/       go-plugin glue shared by Core and every plugin binary
+pathmatch/       zero-allocation glob matcher for filter path rules
+manifest/        manifest.yaml parsing and validation
+core/
+  pluginhost/    launching, supervising and atomically swapping plugins
+  pipeline/      the IIS-style request filter pipeline
+  hostsvc/       capabilities Core exposes back to plugins
+  gateway/       HTTP routing, admin API, console assets
+  db/            document store, durable queue, migrations, sqlc
+  auth/ event/ storage/ middleware/
+  frontend/      the console (Vue 3 + qiankun)
+sdk/plugin/      what plugin authors write against
+extension-example/plugin/   a complete example plugin
+tests/           end-to-end tests that fork real plugin processes
+```
 
-### 2. Running Core Gateway
-* **Run in Dev Mode**: `go run core/main.go` (listens to HTTP :80 and gRPC :9000 by default)
+## Commands
 
-Core serves the **qiankun host app (console)** at `/`. Build it once with
-`cd core/frontend && npm install && npm run build` (Core reads it from
-`HOST_FRONTEND_DIR`, default `./core/frontend/dist`), or run its dev server with
-`npm run dev` (proxies `/api` and `/extensions` to a running Core). With a
-database configured, Core seeds a default admin on first start — `admin` /
-`admin123` (override via `ADMIN_USERNAME` / `ADMIN_PASSWORD`). Login issues a
-session token; the gateway enforces it on `/api/extensions/*`.
+```bash
+# Generate protobuf stubs (needs protoc, protoc-gen-go, protoc-gen-go-grpc)
+./scripts/gen-proto.sh
 
-The console includes **baseline admin features** (admin role only): **用户管理**
-(`/api/system/users/*`) and **扩展管理** (`/api/system/extensions/*`).
+# Regenerate the type-safe query layer after editing db/query.sql
+cd db && sqlc generate
 
-#### Extension registration & approval
+# Build and test
+go build ./...
+go test ./... -race
+go vet ./... && gofmt -l .
 
-Extensions are **not** auto-trusted. Registration follows an admin approval flow
-(enforced whenever `DATABASE_URL` is set; open registration without it):
+# Database-backed tests skip unless this points at a PostgreSQL instance
+TEST_DATABASE_URL='postgres://postgres:pass@localhost:5432/test?sslmode=disable' go test ./...
 
-1. An extension dials Core with no secret → recorded as **`待注册` (pending)**,
-   connection held open but **not routed**.
-2. Admin clicks **批准** in 扩展管理 → Core mints a per-instance secret, pushes it
-   over the tunnel (the SDK persists it into `manifest.yaml` as `secret:`),
-   provisions schema/slots, and routes it (**`已注册`**).
-3. Reconnects replay the persisted secret for immediate routing.
-4. **拒绝** revokes secrets + disconnects; **删除** lets the extension re-apply.
+# Console
+cd core/frontend && npm install && npm run build   # or npm run dev
+```
 
-One extension key may own **multiple secrets** (one per instance). Generate extra
-secrets in the console and pass them to replicas via the `EXTENSION_SECRET` env.
-A no-secret dial to an approved key is **not routed**; it is parked as a **pending
-instance** for admin re-approval (so a restarted replica that lost its persisted
-secret recovers by re-approval — Core mints it a fresh secret). Key hijacking is
-still prevented: an unauthenticated dial can neither downgrade the approved row
-nor be routed without an explicit admin **批准**. See
-[docs/deployment.md](docs/deployment.md) for secret persistence in containers.
+## Running
 
-#### Extension menus
+```bash
+# Without a database: plugins run, but data/queue/file capabilities report Unavailable
+PLUGIN_DIR=./plugins go run ./core
 
-An extension declares its host-app menu tree in `manifest.yaml` under `menus:` —
-a nested list of nodes, each with `path`, `title`, `icon`, `order`, `entry`
-(the micro-frontend html path; empty = a pure organizational node), `roles`
-(when non-empty, Core filters the node out for users lacking the role before
-sending the tree to the host), and `children`. The legacy single `menu:`
-(`icon`/`path`) still works and is auto-promoted to a one-node `menus:` tree, so
-old manifests need no change. Core persists the tree (migration `000005`,
-backfilled from legacy fields by `000006`), merges nodes across extensions by
-`path` (first declarer wins a shared parent's title/icon), and the console renders
-the role-filtered result. Paths must be unique **within** one extension;
-cross-extension path collisions are expected and merged by Core.
+# Full stack
+DATABASE_URL='postgres://...' PLUGIN_DIR=./plugins go run ./core
+```
 
-### 3. Running Extensions
-Extensions do not listen to ports. Run them in IDEs or terminals by passing the `CORE_URL` or configuration:
-* **Go Extension**: `go run extension-example/go/backend/main.go`
-* **Python Extension**: `python3 extension-example/python/backend/main.py`
-* **Java Extension**: `mvn spring-boot:run -pl extension-example/java/backend`
+The default admin is seeded only when the user table is empty — a database
+carrying earlier test data will not get one.
 
-In dev mode the micro-frontend runs from its own Vite dev server (`npm run dev`). In **production** the built `dist/` is bundled into the backend image and the SDK uploads it to Core on startup — set `FRONTEND_DIR` to the dist path (the examples read this env var). Each example frontend uses `vite-plugin-qiankun` so the console can load it as a micro-app. Each example ships a multi-stage `Dockerfile`; `docker compose up --build` runs Core + PostgreSQL + all three examples. See [docs/deployment.md](docs/deployment.md) for container, Kubernetes, and systemd deployment.
+`go run` leaves the real server process alive when the wrapper is killed. Build
+a binary when you need to stop it reliably.
 
----
+### Environment
 
-## Testing Commands
+| Variable | Default | Purpose |
+|---|---|---|
+| `HTTP_ADDR` | `:80` | Listen address |
+| `DATABASE_URL` | — | Enables data, queue, files, auth and audit |
+| `PLUGIN_DIR` | `./plugins` | Where plugin packages live |
+| `PLUGIN_DATA_DIR` | — | Root for per-plugin writable directories |
+| `PLUGIN_LOG_LEVEL` | `warn` | Plugin log verbosity |
+| `PLUGIN_DEV_MODE` | off | Skips Pdeathsig; development only |
+| `HOST_FRONTEND_DIR` | `./core/frontend/dist` | Built console |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `admin123` | Seeded on first run |
+| `RUSTFS_*` | — | Object storage; without it the file capability is unavailable |
 
-Ensure all tests pass before proposing code changes:
+## Plugin model
 
-### Go (Core & SDK)
-* **Run all Go tests**: `go test ./core/... ./sdk/go/... ./tests/... -v`
-* **Run specific package test**: `go test -v ./core/tunnel/...`
+A plugin package is a directory:
 
-### Python (SDK)
-* **Run Python tests**: `pytest sdk/python/`
+```
+notes/
+├── manifest.yaml
+├── bin/plugin        # CGO_ENABLED=0 static binary
+└── frontend/         # optional micro-frontend dist
+```
 
-### Java (SDK)
-* **Run Java tests**: `mvn test -pl sdk/java`
+Core scans `PLUGIN_DIR` at startup, validates each manifest, and starts the
+plugins. Enable, disable, reload and rescan are admin API calls under
+`/api/system/plugins/*`, surfaced in the console under 插件管理.
 
----
+See [docs/plugin-development.md](docs/plugin-development.md) for the author's
+guide. Three rules matter most, because each fails in a way that does not point
+at its cause:
 
-## Development & Code Style Guidelines
+1. **A plugin must never write to stdout.** go-plugin reads the startup
+   handshake from the first stdout line.
+2. **Plugins must be built with `CGO_ENABLED=0`.** A dynamically linked binary
+   fails to exec in the musl-based runtime image.
+3. **Deploying a new version must replace the binary, not overwrite it.** The
+   previous version is still serving until the upgrade commits, and writing
+   into a file that is executing corrupts that process. Use `mv`, not `cp`.
 
-All code contributions must strictly adhere to the following rules:
+## Conventions
 
-### 1. Networking & Ports
-* **Rule**: Extensions must **never** expose or bind to local TCP network ports in both dev and production.
-* **Mechanism**: Extensions only dial outward to Core's gRPC port (`:9000` by default). All API traffic is routed back through the reverse gRPC tunnel.
+**Plugins never touch PostgreSQL.** Collections are declared in `manifest.yaml`
+and Core provisions `ext_<key>_<collection>` tables. This is why `DATABASE_URL`
+is deliberately withheld from plugin processes: if a plugin could read it, Core
+would no longer own schema, migrations or isolation.
 
-### 2. Database (CMDS) Usage
-* **Rule**: Extensions must **never** connect to PostgreSQL or other databases directly.
-* **Mechanism**: Use the SDK Database Client (`sdk.DB` or `sdk.db`). Define collections and indexes declaratively in the extension's `manifest.yaml`. Core automatically manages table provisioning, index alignment, and schema migrations.
+**Binary content does not travel through the plugin transport on reads.**
+Uploads go to `/api/system/files/upload`; a plugin asks for a short-lived
+download URL and the browser fetches from Core directly. Download URLs use
+clean path parameters — `/api/system/files/download/<file_id>/<token>` — with no
+query string.
 
-### 3. Storage & Files
-* **Rule**: Uploads and downloads are managed entirely by Core. No binary file buffers should travel through the gRPC tunnel.
-* **Upload**: Frontend uploads directly to `/api/system/files/upload`. Core stores it in RustFS (S3) and returns a `file_id` which the extension stores.
-* **Download**: Extensions request a short-lived download token via `sdk.Files.GenerateDownloadURL`. Download URLs must strictly use clean path parameters: `/api/system/files/download/<file_id>/<temp_token>` (no query parameters like `?` are allowed).
+**Trust model.** Plugins are reviewed before installation and run with Core's
+own privileges, like an ISAPI filter inside the IIS worker process. Core
+enforces permissions, data namespacing and the egress allow-list on its own
+side of the connection, but there is no uid downgrade, cgroup limit or seccomp
+profile. Genuinely untrusted code belongs behind a container boundary.
 
-### 4. Language Idioms & Code Conventions
-* **Go**: Follow standard Go formatting (`go fmt`). Use type-safe SQL compiles generated by `sqlc`. Maintain migrations in `go-migrate` format.
-* **Python**: Format code using PEP8 rules. Use type hints and standard Pydantic models for request validation in FastAPI.
-* **Java**: Write clean Spring Boot code. Manage dependencies strictly via Maven POMs. Use ThreadLocal variables for request scopes.
+**Go style.** `gofmt` and `go vet` are mandatory. Table-driven tests, standard
+library `testing`, no assertion frameworks. Migrations are `go-migrate` format
+and embedded; queries go through sqlc.

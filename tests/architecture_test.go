@@ -1,10 +1,12 @@
 package tests
 
 import (
+	"fmt"
 	"github.com/taills/moduless/core/hostsvc"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -151,5 +153,75 @@ func TestEveryHostCapabilityIsWiredInMain(t *testing.T) {
 			t.Errorf("hostsvc.Deps.%s is never assigned in core/main.go; the capability would "+
 				"report Unavailable forever, which looks exactly like a Core started without a database", name)
 		}
+	}
+}
+
+// MaxTrackedFileBytes is what a source file is allowed to weigh.
+//
+// Generous: the largest legitimate file in this repository is a generated
+// protobuf stub in the low hundreds of kilobytes.
+const MaxTrackedFileBytes = 2 << 20
+
+// No build output in the repository.
+//
+// Four compiled plugin binaries — 18MB each, 75MB together — were committed
+// and pushed over four rounds of this work. `go build ./extension-example/notes`
+// with no -o writes ./notes into the working directory, and a `git add -A`
+// takes it from there. Nothing complained: the build was fine, the tests were
+// fine, and git does not mind what it is given.
+//
+// Binaries in git are close to unfixable after the fact. Removing them stops
+// the growth but does not recover the space — that needs a history rewrite and
+// a force push, which is a decision for whoever owns the repository, not a
+// cleanup. So this checks the thing that is still preventable: that no more
+// arrive.
+func TestNoBuildOutputIsTracked(t *testing.T) {
+	// Rooted explicitly. Run from this package's directory, `git ls-files`
+	// scopes to it — so the first version of this test inspected tests/** and
+	// nothing else, and passed happily with an 18MB binary sitting at the
+	// repository root, which is the only place they ever land.
+	cmd := exec.Command("git", "ls-files", "-z")
+	cmd.Dir = ".."
+	out, err := cmd.Output()
+	if err != nil {
+		t.Skipf("git ls-files: %v", err)
+	}
+
+	var offenders []string
+	for _, name := range strings.Split(string(out), "\x00") {
+		if name == "" {
+			continue
+		}
+		info, err := os.Stat(filepath.Join("..", name))
+		if err != nil {
+			continue // deleted in the working tree, or a submodule
+		}
+		if info.Size() > MaxTrackedFileBytes {
+			offenders = append(offenders,
+				fmt.Sprintf("%s (%.1f MB)", name, float64(info.Size())/(1<<20)))
+		}
+	}
+
+	if len(offenders) > 0 {
+		t.Errorf("tracked files over %d MB, which is what build output looks like:\n  %s",
+			MaxTrackedFileBytes>>20, strings.Join(offenders, "\n  "))
+	}
+}
+
+// The names `go build` produces without -o are ignored, so the next one does
+// not get committed either. The check above catches a binary that is already
+// tracked; this one catches the gap that let it happen.
+func TestBuildOutputNamesAreIgnored(t *testing.T) {
+	// Every package that produces a binary, and the file name it lands on.
+	for _, name := range []string{
+		"notes", "ratelimit", "audit", "inventory", "apikey", "echoplugin",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := exec.Command("git", "check-ignore", "-q", filepath.Join("..", name)).CombinedOutput()
+			if err != nil {
+				t.Errorf("./%s is not ignored, so `go build ./extension-example/%s` "+
+					"leaves something a `git add -A` will commit: %s", name, name, out)
+			}
+		})
 	}
 }

@@ -5,6 +5,23 @@
 *.out
 vendor/
 
+# Compiled plugin binaries.
+#
+# `go build ./extension-example/notes` with no -o writes ./notes, and four of
+# those — 18MB each — reached the repository through a `git add -A`. Named
+# explicitly rather than by a pattern: the names collide with nothing, and a
+# rule broad enough to catch any extensionless executable would also catch
+# files somebody meant to commit.
+/notes
+/ratelimit
+/audit
+/inventory
+/apikey
+/echoplugin
+/orphanhost
+/moduless
+/core-bin
+
 # Python
 __pycache__/
 *.py[cod]

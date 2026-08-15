@@ -2,10 +2,13 @@ package hostsvc
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/taills/moduless/core/event"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -352,5 +355,125 @@ func TestQueueDepthLimitRefusesAndRecovers(t *testing.T) {
 	q.setDepthForTest("noisy", 3)
 	if err := q.checkDepth("noisy"); err != nil {
 		t.Errorf("still refused after draining: %v", err)
+	}
+}
+
+// A lock that expires must eventually stop occupying memory.
+//
+// Expiry alone does not free anything: an expired entry sits in the map until
+// something asks for that exact name again. A plugin taking a lock per
+// document id — which is a reasonable thing to try — therefore leaves one
+// entry per id behind for the life of the process.
+func TestExpiredLocksAreSweptAway(t *testing.T) {
+	locks := NewMemoryLocks()
+
+	now := time.Now()
+	locks.SetClock(func() time.Time { return now })
+
+	ctx := context.Background()
+	for i := range 500 {
+		if _, ok, err := locks.Acquire(ctx, "p", fmt.Sprintf("doc-%d", i), time.Second, 0); err != nil || !ok {
+			t.Fatalf("acquire %d: ok=%v err=%v", i, ok, err)
+		}
+	}
+	if got := locks.Held(); got != 500 {
+		t.Fatalf("holding %d locks, want 500", got)
+	}
+
+	// Everything above has lapsed, and enough time has passed for a sweep.
+	now = now.Add(time.Minute)
+	if _, ok, _ := locks.Acquire(ctx, "p", "one-more", time.Second, 0); !ok {
+		t.Fatal("could not acquire after expiry")
+	}
+
+	if got := locks.Held(); got > 2 {
+		t.Errorf("%d entries still tracked after every lease lapsed; a plugin locking "+
+			"per document id would grow this forever", got)
+	}
+}
+
+// And a plugin genuinely holding an unreasonable number at once is refused
+// rather than allowed to grow the table without limit.
+func TestLockCountIsBounded(t *testing.T) {
+	locks := NewMemoryLocks()
+	locks.MaxHeld = 10
+
+	ctx := context.Background()
+	for i := range 10 {
+		if _, ok, _ := locks.Acquire(ctx, "p", fmt.Sprintf("n%d", i), time.Minute, 0); !ok {
+			t.Fatalf("lock %d within the limit was refused", i)
+		}
+	}
+
+	if _, ok, _ := locks.Acquire(ctx, "p", "one-too-many", time.Minute, 0); ok {
+		t.Error("a lock past the ceiling was granted; the table has no bound")
+	}
+
+	// A name already tracked can still be re-taken once released, so being at
+	// the ceiling does not block the work already in progress.
+	locks.Release("p", "n0", "")
+	if got := locks.Held(); got != 10 {
+		t.Logf("held after a mismatched release: %d", got)
+	}
+}
+
+// Each subscription is a live stream with a buffered channel behind it, held
+// until the plugin closes it. A plugin subscribing inside a request handler —
+// which is an easy mistake, since Subscribe looks like a registration —
+// accumulates both, and the symptom shows up as Core's memory rather than the
+// plugin's.
+func TestSubscriptionsAreBoundedPerPlugin(t *testing.T) {
+	events := NewBusEvents(event.NewEventBus())
+	events.MaxSubscriptionsPerPlugin = 3
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Hold the allowance open.
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Go(func() {
+			_ = events.Subscribe(ctx, "chatty", "thing", func(Event) error { return nil })
+		})
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for events.Subscriptions("chatty") < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := events.Subscriptions("chatty"); got != 3 {
+		t.Fatalf("%d subscriptions established, want 3", got)
+	}
+
+	// One past it, refused and named.
+	err := events.Subscribe(ctx, "chatty", "thing", func(Event) error { return nil })
+	if err == nil {
+		t.Error("a subscription past the limit was accepted")
+	} else {
+		t.Logf("refused: %v", err)
+		if !strings.Contains(err.Error(), "chatty") {
+			t.Errorf("the refusal does not name the plugin: %v", err)
+		}
+	}
+
+	// A different plugin is unaffected.
+	otherCtx, otherCancel := context.WithCancel(context.Background())
+	go func() { _ = events.Subscribe(otherCtx, "quiet", "thing", func(Event) error { return nil }) }()
+	for events.Subscriptions("quiet") == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if events.Subscriptions("quiet") != 1 {
+		t.Error("an unrelated plugin could not subscribe while another was at its limit")
+	}
+	otherCancel()
+
+	// Closing them returns the allowance.
+	cancel()
+	wg.Wait()
+	for events.Subscriptions("chatty") != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := events.Subscriptions("chatty"); got != 0 {
+		t.Errorf("%d subscriptions still counted after the streams ended", got)
 	}
 }

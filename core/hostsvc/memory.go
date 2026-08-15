@@ -143,11 +143,60 @@ type MemoryLocks struct {
 	mu   sync.Mutex
 	held map[string]lockState
 	now  func() time.Time
+
+	// MaxHeld bounds how many locks may be held at once, across all plugins.
+	//
+	// Expiry alone does not bound this: an expired entry stays in the map
+	// until something asks for that exact name again, so a plugin taking a
+	// lock per document id leaves one entry per id behind forever. Sweeping
+	// handles that; the cap handles the other case, a plugin genuinely holding
+	// an unreasonable number at once.
+	MaxHeld int
+
+	lastSweep time.Time
 }
 
+// DefaultMaxLocks is the ceiling on simultaneously held locks.
+//
+// Locks coordinate work, so the count tracks concurrency rather than data
+// volume: a plugin needing more than this at one moment is using them as a
+// keyed map rather than as mutual exclusion.
+const DefaultMaxLocks = 10_000
+
 func NewMemoryLocks() *MemoryLocks {
-	return &MemoryLocks{held: make(map[string]lockState), now: time.Now}
+	return &MemoryLocks{
+		held:      make(map[string]lockState),
+		now:       time.Now,
+		MaxHeld:   DefaultMaxLocks,
+		lastSweep: time.Now(),
+	}
 }
+
+// Held reports how many lock entries are being tracked, for diagnostics.
+func (l *MemoryLocks) Held() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.held)
+}
+
+// sweepExpiredLocked drops entries whose lease has lapsed.
+//
+// Amortised onto acquisition rather than run on a timer: locks are only ever
+// created by acquiring one, so the work happens exactly when the map might be
+// growing and never on an idle system.
+func (l *MemoryLocks) sweepExpiredLocked(now time.Time) {
+	if now.Sub(l.lastSweep) < lockSweepInterval {
+		return
+	}
+	l.lastSweep = now
+	for k, st := range l.held {
+		if now.After(st.expiresAt) {
+			delete(l.held, k)
+		}
+	}
+}
+
+const lockSweepInterval = 30 * time.Second
 
 // SetClock overrides the time source. Test-only.
 func (l *MemoryLocks) SetClock(now func() time.Time) { l.now = now }
@@ -184,7 +233,16 @@ func (l *MemoryLocks) tryAcquire(pluginKey, name string, ttl time.Duration) (Lea
 
 	k := lockKey(pluginKey, name)
 	now := l.now()
+	l.sweepExpiredLocked(now)
+
 	if cur, ok := l.held[k]; ok && now.Before(cur.expiresAt) {
+		return Lease{}, false
+	}
+
+	// Refuse a new name once the table is full, rather than growing without
+	// bound. Re-taking a name already tracked is always allowed, so a plugin
+	// at the ceiling can still renew the work it is actually doing.
+	if _, existing := l.held[k]; !existing && l.maxHeld() > 0 && len(l.held) >= l.maxHeld() {
 		return Lease{}, false
 	}
 
@@ -223,6 +281,13 @@ func (l *MemoryLocks) Release(pluginKey, name, leaseID string) {
 	if cur, ok := l.held[k]; ok && cur.leaseID == leaseID {
 		delete(l.held, k)
 	}
+}
+
+func (l *MemoryLocks) maxHeld() int {
+	if l.MaxHeld > 0 {
+		return l.MaxHeld
+	}
+	return DefaultMaxLocks
 }
 
 func randomLeaseID() string {

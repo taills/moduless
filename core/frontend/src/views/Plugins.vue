@@ -116,7 +116,12 @@ onMounted(load);
         </tr>
       </thead>
       <tbody>
-        <tr v-for="p in plugins" :key="p.key">
+        <!-- Two rows per plugin, so the loop wraps both. The config row used
+             to sit outside the v-for, where `p` does not exist: the page threw
+             on every render of a non-empty list, and the build did not mind
+             because Vue only finds out when it runs. -->
+        <template v-for="p in plugins" :key="p.key">
+        <tr>
           <td><code>{{ p.key }}</code></td>
           <td>{{ p.display_name || "-" }}</td>
           <td>{{ p.version || "-" }}</td>
@@ -144,9 +149,10 @@ onMounted(load);
             </button>
           </td>
         </tr>
-        <tr v-if="configuring === p.key" :key="p.key + ':config'" class="config-row">
+        <tr v-if="configuring === p.key" class="config-row">
           <td colspan="8"><PluginConfig :plugin-key="p.key" /></td>
         </tr>
+        </template>
       </tbody>
     </table>
     <p v-else class="muted">插件目录为空。把插件包放进 Core 的 PLUGIN_DIR 后点击「重新扫描插件目录」。</p>

@@ -10,6 +10,7 @@ import (
 
 	"github.com/taills/moduless/core/pluginhost"
 	"github.com/taills/moduless/manifest"
+	pb "github.com/taills/moduless/proto/plugin"
 )
 
 // End-to-end benchmarks: a real browser-shaped HTTP request, through the real
@@ -267,5 +268,127 @@ func TestE2EThroughputSnapshot(t *testing.T) {
 	if rps < floor {
 		t.Errorf("throughput fell to %.0f req/s, below the %d req/s floor; "+
 			"this is an order-of-magnitude regression, not variance", rps, floor)
+	}
+}
+
+// The cross-process call on its own, with no HTTP in front of it.
+//
+// The end-to-end numbers include Go's HTTP server, the pipeline, and the
+// gateway's own work. This one isolates what a single gRPC round trip to a
+// plugin actually costs, which is the floor everything else sits on: if a
+// filter chain is to get cheaper, this is the number that has to move.
+func BenchmarkPluginRPCOnly(b *testing.B) {
+	inst := launchPlugin(b, "hello", "1.0.0", nil)
+	ctx := context.Background()
+	req := &pb.HttpRequest{Method: "GET", Path: "/items"}
+
+	// Warm the connection.
+	if _, err := inst.Client.HandleHTTP(ctx, req); err != nil {
+		b.Fatalf("warmup: %v", err)
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := inst.Client.HandleHTTP(ctx, req); err != nil {
+			b.Fatalf("HandleHTTP: %v", err)
+		}
+	}
+}
+
+// A filter call, which is the one a chain pays per hop.
+func BenchmarkFilterRPCOnly(b *testing.B) {
+	inst := launchPlugin(b, "hello", "1.0.0", nil)
+	ctx := context.Background()
+	req := &pb.FilterRequest{
+		Phase:  pb.Phase_PHASE_PRE_ROUTE,
+		Method: "GET",
+		Path:   "/items",
+	}
+
+	if _, err := inst.Client.Filter(ctx, req); err != nil {
+		b.Fatalf("warmup: %v", err)
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := inst.Client.Filter(ctx, req); err != nil {
+			b.Fatalf("Filter: %v", err)
+		}
+	}
+}
+
+// How much of the round trip is payload rather than the crossing itself.
+func BenchmarkRPCPayloadSize(b *testing.B) {
+	inst := launchPlugin(b, "hello", "1.0.0", nil)
+	ctx := context.Background()
+
+	for _, size := range []int{0, 1 << 10, 16 << 10, 256 << 10} {
+		b.Run(fmt.Sprintf("%dB", size), func(b *testing.B) {
+			req := &pb.HttpRequest{Method: "POST", Path: "/echo", Body: make([]byte, size)}
+			if _, err := inst.Client.HandleHTTP(ctx, req); err != nil {
+				b.Fatalf("warmup: %v", err)
+			}
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := inst.Client.HandleHTTP(ctx, req); err != nil {
+					b.Fatalf("HandleHTTP: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// The filter chain with a realistic number of request headers.
+//
+// A browser sends a dozen or so; the benchmarks above send three. Header count
+// is the multiplier on any per-filter work that touches them, so this is where
+// a difference would show if there is one.
+func BenchmarkE2EFilterDepthWithHeaders(b *testing.B) {
+	headers := map[string]string{
+		"User-Agent":       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+		"Accept":           "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+		"Accept-Language":  "en-GB,en;q=0.9,zh-CN;q=0.8",
+		"Accept-Encoding":  "gzip, deflate, br",
+		"Cookie":           "moduless_token=abcdef0123456789; theme=dark; sidebar=collapsed",
+		"Referer":          "http://localhost:8080/apps/notes",
+		"Sec-Fetch-Dest":   "empty",
+		"Sec-Fetch-Mode":   "cors",
+		"Sec-Fetch-Site":   "same-origin",
+		"X-Requested-With": "XMLHttpRequest",
+		"Cache-Control":    "no-cache",
+		"Pragma":           "no-cache",
+	}
+
+	for _, count := range []int{1, 3, 5} {
+		b.Run(fmt.Sprintf("filters_%d", count), func(b *testing.B) {
+			url, cleanup := benchGateway(b, count)
+			defer cleanup()
+
+			client := warmClient()
+			target := url + "/api/plugins/hello/items"
+
+			do := func() {
+				req, err := http.NewRequest(http.MethodGet, target, nil)
+				if err != nil {
+					b.Fatalf("request: %v", err)
+				}
+				for k, v := range headers {
+					req.Header.Set(k, v)
+				}
+				resp, err := client.Do(req)
+				if err != nil {
+					b.Fatalf("GET: %v", err)
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+			}
+			do()
+
+			b.ReportAllocs()
+			for b.Loop() {
+				do()
+			}
+		})
 	}
 }

@@ -679,3 +679,54 @@ func BenchmarkRunNonMatchingFilter(b *testing.B) {
 		r.Run(ctx, chain, res, pb.Phase_PHASE_PRE_ROUTE, rc)
 	}
 }
+
+// A filter that changes the headers must change them for the filters after it.
+//
+// Applying the mutation to rc.Header is only half of it: the next filter is
+// sent a converted copy, and if that conversion is cached — it is, since every
+// filter in a chain would otherwise re-convert the same headers — then the
+// cache has to be dropped when a mutation lands. Miss that and later filters
+// quietly judge the request by headers that are no longer there, which is the
+// worst kind of wrong for an authorization filter.
+func TestMutatedHeadersReachLaterFilters(t *testing.T) {
+	var r Runner
+
+	// Two filters on one plugin, so both resolve to the same target; the
+	// second call is the one whose view of the headers matters.
+	target := newFakeTarget(&pb.FilterResponse{
+		Action: pb.FilterResponse_ACTION_MUTATE,
+		Mutation: &pb.RequestMutation{
+			SetRequestHeaders:    map[string]*pb.HeaderValues{"X-Tenant": {Values: []string{"acme"}}},
+			RemoveRequestHeaders: []string{"X-Secret"},
+		},
+	})
+
+	chain := buildChain(t, "p", false,
+		decl(manifest.PhasePreRoute, []string{"/**"}, func(d *manifest.FilterDecl) {
+			d.Name, d.Order = "first", 1
+		}),
+		decl(manifest.PhasePreRoute, []string{"/**"}, func(d *manifest.FilterDecl) {
+			d.Name, d.Order = "second", 2
+		}),
+	)
+
+	rc := newCtx()
+	rc.Header.Set("X-Secret", "leak")
+
+	r.Run(context.Background(), chain, fakeResolver{"p": target}, pb.Phase_PHASE_PRE_ROUTE, rc)
+
+	if got := target.calls.Load(); got != 2 {
+		t.Fatalf("%d filter call(s), want both to have run", got)
+	}
+	req := target.lastReq.Load()
+	if req == nil {
+		t.Fatal("the second filter was never called")
+	}
+
+	if got := req.GetHeaders()["X-Tenant"].GetValues(); len(got) == 0 || got[0] != "acme" {
+		t.Errorf("the second filter saw X-Tenant = %v, want the value the first one set", got)
+	}
+	if _, present := req.GetHeaders()["X-Secret"]; present {
+		t.Error("the second filter still sees a header the first one removed")
+	}
+}

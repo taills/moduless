@@ -45,6 +45,14 @@ type RequestContext struct {
 
 	startedAt time.Time
 
+	// protoHeaders caches the wire form of Header.
+	//
+	// Every filter in a chain is sent the same headers, and converting them
+	// allocates a map plus one value per header — repeated per filter, for a
+	// result that cannot differ unless a filter changes the headers. The cache
+	// is dropped when one does.
+	protoHeaders map[string]*pb.HeaderValues
+
 	// admissions records, per plugin, the capacity this request already holds.
 	//
 	// A request calls one plugin more than once — a filter, then the backend,
@@ -161,6 +169,20 @@ func (rc *RequestContext) SetValue(k, v string) {
 // Bodies are attached only when that specific filter asked for them: a 64KB
 // body roughly quadruples the cost of the call, and most filters only need
 // method, path, headers and identity.
+// wireHeaders returns the request headers in wire form, converting once per
+// request rather than once per filter.
+//
+// The result is shared across every filter in the chain. That is safe because
+// nothing mutates it: a filter changing headers goes through applyMutation,
+// which edits rc.Header and drops this cache, and the protobuf marshaller only
+// reads.
+func (rc *RequestContext) wireHeaders() map[string]*pb.HeaderValues {
+	if rc.protoHeaders == nil {
+		rc.protoHeaders = ToProtoHeaders(rc.Header)
+	}
+	return rc.protoHeaders
+}
+
 func (rc *RequestContext) buildFilterRequest(phase pb.Phase, f *Filter) *pb.FilterRequest {
 	req := &pb.FilterRequest{
 		TraceId:       rc.TraceID,
@@ -168,7 +190,7 @@ func (rc *RequestContext) buildFilterRequest(phase pb.Phase, f *Filter) *pb.Filt
 		Method:        rc.Method,
 		Path:          rc.Path,
 		Query:         rc.Query,
-		Headers:       ToProtoHeaders(rc.Header),
+		Headers:       rc.wireHeaders(),
 		ClientIp:      rc.ClientIP,
 		Identity:      rc.Identity,
 		Context:       rc.Values,
@@ -214,6 +236,9 @@ func (rc *RequestContext) applyMutation(m *pb.RequestMutation, phase pb.Phase, a
 		rc.Header = http.Header{}
 	}
 	applyHeaderMutation(rc.Header, m.GetSetRequestHeaders(), m.GetRemoveRequestHeaders())
+	// The headers just changed, so the cached wire form no longer describes
+	// them. Later filters must see the edit — that is what mutation is for.
+	rc.protoHeaders = nil
 
 	if isResponsePhase(phase) {
 		if rc.ResponseHeader == nil {

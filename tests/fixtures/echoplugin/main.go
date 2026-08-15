@@ -312,6 +312,16 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 		time.Sleep(150 * time.Millisecond)
 	}
 
+	if strings.HasSuffix(req.GetPath(), "/phases") {
+		return &pb.HttpResponse{
+			StatusCode: 200,
+			Headers: map[string]*pb.HeaderValues{
+				"Content-Type": {Values: []string{"text/plain"}},
+			},
+			Body: []byte(strings.Join(phasesFor(req.GetQuery()), " ")),
+		}, nil
+	}
+
 	return &pb.HttpResponse{
 		StatusCode: 200,
 		Headers: map[string]*pb.HeaderValues{
@@ -337,7 +347,39 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 	}, nil
 }
 
+// phaseLog records every phase this plugin was called in, per trace.
+//
+// A request's lifecycle is a sequence of claims — pre_route then authenticate
+// then authorize, log runs for every request including the ones an earlier
+// filter refused — and each of those was only ever checked one phase at a
+// time, with fakes. Recording the real sequence is what lets a test assert the
+// order rather than the parts.
+var phaseLog struct {
+	sync.Mutex
+	seen map[string][]string
+}
+
+func recordPhase(traceID string, phase pb.Phase) {
+	if traceID == "" {
+		return
+	}
+	phaseLog.Lock()
+	defer phaseLog.Unlock()
+	if phaseLog.seen == nil {
+		phaseLog.seen = map[string][]string{}
+	}
+	phaseLog.seen[traceID] = append(phaseLog.seen[traceID], phase.String())
+}
+
+func phasesFor(traceID string) []string {
+	phaseLog.Lock()
+	defer phaseLog.Unlock()
+	return phaseLog.seen[traceID]
+}
+
 func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterResponse, error) {
+	recordPhase(req.GetTraceId(), req.GetPhase())
+
 	// Matched by suffix: a filter sees whatever path the phase gives it, which
 	// is the full request path in pre_route and the plugin-relative one later.
 	// Matching on the whole string made a test silently exercise nothing.

@@ -132,3 +132,12 @@ MEASURE=1 CEILINGS="4 8" TEST_DATABASE_URL=... go test ./tests/ -run TestTransac
 这个测试第一版守不住任何东西：它用的是空 header map，而它要抓的回归（每个 filter 重复转换 header 而不是转换一次）在没有 header 时不分配任何东西。现在用的是真实请求会带的那几个头，把 header 缓存关掉能让它从 5 涨到 14 并失败。
 
 一次跨 40 轮改动之后的比对，与 `docs/plugin-development.md` 里记录的数字：Core 自身路由 52→41µs（更快），纯 RPC 37/43→38/43（不变），filter 路径全部落在噪声内。没有回归。
+
+
+## 生命周期顺序
+
+`tests/lifecycle_test.go` 是唯一一处断言**一次真实请求经过真实插件进程时，阶段实际发生的顺序**。在它之前，每个阶段都被单独测过，顺序也在 pipeline 层用 fake 测过 —— 而上一个 bug 恰好活在这两者之间：401 和 authenticate 各自都对，只是顺序反了，于是那个阶段永远不可达。**两半都正确、顺序错误的 bug，任何单元测试都抓不到。**
+
+序列不是从副作用推断的，是从插件里读回来的：fixture 记录每个 trace 被调用过哪些阶段，测试再问它。断言的是发生了什么，而不是应该发生什么。
+
+覆盖：完整顺序、`on_error` 成功时不触发 / 后端死掉时触发、被短路的请求仍然跑 `log`、跨插件的 `order` 决定谁先跑（用「低 order 的拒绝，高 order 的不该被调到」来观测，因为两个 Continue 的先后从外部看不出来）。

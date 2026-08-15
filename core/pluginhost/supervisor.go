@@ -54,8 +54,13 @@ type Supervisor struct {
 	relaunch RelaunchFunc
 	now      func() time.Time
 
-	mu      sync.Mutex
-	crashes map[string]*crashRecord
+	mu sync.Mutex
+	// crashes counts recent deaths per plugin; quarantined records the ones
+	// Core has given up on. Quarantine outlives the instances themselves —
+	// they are removed from the registry — so without this the reason a plugin
+	// has no replicas would be lost the moment it was isolated.
+	crashes     map[string]*crashRecord
+	quarantined map[string]time.Time
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -79,12 +84,13 @@ func NewSupervisor(reg *Registry, relaunch RelaunchFunc, cfg SupervisorConfig) *
 		cfg.CrashWindow = 5 * time.Minute
 	}
 	return &Supervisor{
-		cfg:      cfg,
-		registry: reg,
-		relaunch: relaunch,
-		now:      time.Now,
-		crashes:  map[string]*crashRecord{},
-		stop:     make(chan struct{}),
+		cfg:         cfg,
+		registry:    reg,
+		relaunch:    relaunch,
+		now:         time.Now,
+		crashes:     map[string]*crashRecord{},
+		quarantined: map[string]time.Time{},
+		stop:        make(chan struct{}),
 	}
 }
 
@@ -144,7 +150,13 @@ func (s *Supervisor) isUnexpected(inst *Instance) bool {
 // recover applies the restart policy for a crashed plugin.
 func (s *Supervisor) recover(ctx context.Context, key string) {
 	if s.tooManyCrashes(key) {
-		logf("plugin %s: crash threshold exceeded, quarantining", key)
+		logf("plugin %s: crash threshold exceeded after %d crashes in %s, quarantining",
+			key, s.cfg.CrashThreshold, s.cfg.CrashWindow)
+
+		s.mu.Lock()
+		s.quarantined[key] = s.now()
+		s.mu.Unlock()
+
 		for _, inst := range s.registry.Remove(key) {
 			inst.MarkQuarantined()
 			inst.Kill()
@@ -226,4 +238,20 @@ func (s *Supervisor) ClearCrashes(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.crashes, key)
+	// Enabling, disabling or upgrading a plugin is an admin saying "try this
+	// again", which is exactly what clears a quarantine.
+	delete(s.quarantined, key)
+}
+
+// QuarantinedSince reports when Core gave up restarting a plugin, if it has.
+//
+// The isolated instances are gone from the registry by then, so this is the
+// only thing that can tell an operator why a plugin they enabled is running no
+// replicas — and distinguish "Core stopped trying" from "it is restarting
+// right now".
+func (s *Supervisor) QuarantinedSince(key string) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, ok := s.quarantined[key]
+	return at, ok
 }

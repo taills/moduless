@@ -211,7 +211,21 @@ func (i *Instance) terminate() {
 	if i.proc != nil {
 		i.proc.Kill()
 	}
-	i.setState(StateStopped)
+	// Quarantine outlives the process it describes. It records *why* a plugin
+	// is not running — it crash-looped past the threshold and needs a human —
+	// and clearing it is an admin action. Letting the kill that enforces the
+	// quarantine overwrite it with Stopped would make a plugin Core gave up on
+	// indistinguishable from one an operator switched off, in the console and
+	// in every log after it.
+	for {
+		cur := i.state.Load()
+		if State(cur) == StateQuarantined {
+			return
+		}
+		if i.state.CompareAndSwap(cur, int32(StateStopped)) {
+			return
+		}
+	}
 }
 
 // Kill terminates the process immediately, without draining. Used on the

@@ -66,14 +66,22 @@ func checksum(t testing.TB, path string) []byte {
 // instance, so the reverse channel is exercised too.
 func launchPlugin(t testing.TB, key, version string, granted []string) *pluginhost.Instance {
 	t.Helper()
+	return launchReplica(t, key, key+"-"+version, version, 0, granted)
+}
+
+// launchReplica is launchPlugin with an explicit instance id and load-balancing
+// weight, for tests that run several replicas of the same plugin.
+func launchReplica(t testing.TB, key, instanceID, version string, weight int, granted []string) *pluginhost.Instance {
+	t.Helper()
 
 	cfg := hostsvc.NewStaticConfig()
 	cfg.Set(key, map[string]string{"greeting": "hello-from-core"})
 
 	inst, err := pluginhost.Launch(context.Background(), pluginhost.LaunchSpec{
 		Key:        key,
-		InstanceID: key + "-" + version,
+		InstanceID: instanceID,
 		Version:    version,
+		Weight:     weight,
 		BinaryPath: pluginBinary,
 		Checksum:   checksum(t, pluginBinary),
 		HostImpl: hostsvc.New(key, granted, hostsvc.Deps{

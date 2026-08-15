@@ -30,6 +30,7 @@ type echoImpl struct {
 	mu       sync.RWMutex
 	host     pb.HostServicesClient
 	key      string
+	instance string // which replica this process is, echoed back on responses
 	hostEcho string // value round-tripped through the reverse connection
 }
 
@@ -42,6 +43,7 @@ func (e *echoImpl) bindHost(conn *grpc.ClientConn) {
 func (e *echoImpl) Configure(ctx context.Context, req *pb.ConfigureRequest) (*pb.ConfigureResponse, error) {
 	e.mu.Lock()
 	e.key = req.GetPluginKey()
+	e.instance = req.GetInstanceId()
 	host := e.host
 	e.mu.Unlock()
 
@@ -67,7 +69,7 @@ func (e *echoImpl) Configure(ctx context.Context, req *pb.ConfigureRequest) (*pb
 
 func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.HttpResponse, error) {
 	e.mu.RLock()
-	greeting := e.hostEcho
+	greeting, instance := e.hostEcho, e.instance
 	e.mu.RUnlock()
 
 	body := req.GetBody()
@@ -134,8 +136,11 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 	return &pb.HttpResponse{
 		StatusCode: 200,
 		Headers: map[string]*pb.HeaderValues{
-			"Content-Type":  {Values: []string{"text/plain"}},
-			"X-Echo-Path":   {Values: []string{req.GetPath()}},
+			"Content-Type": {Values: []string{"text/plain"}},
+			"X-Echo-Path":  {Values: []string{req.GetPath()}},
+			// Which replica answered, so load-balancing can be observed from
+			// outside rather than inferred.
+			"X-Instance":    {Values: []string{instance}},
 			"X-Host-Config": {Values: []string{greeting}},
 			// Two values on one header, to prove repeated headers survive the
 			// round trip. The legacy tunnel dropped all but the first.

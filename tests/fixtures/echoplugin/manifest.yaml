@@ -1,0 +1,13 @@
+# Manifest for the test fixture, so it can be installed as a real plugin
+# package and driven through Manager rather than launched directly. Tests that
+# exercise scanning, enabling, crash recovery and quarantine need a package on
+# disk, not a bare binary.
+key: echo
+display_name: Echo fixture
+version: 1.0.0
+
+runtime:
+  entrypoint: bin/echo
+  replicas: 1
+
+permissions: []

@@ -44,6 +44,11 @@ type ManagerConfig struct {
 	// production and against a map in tests.
 	ConfigSource func(pluginKey string) map[string]string
 
+	// Supervisor tunes crash recovery: restart backoff, and how many crashes
+	// within a window put a plugin into quarantine. The zero value uses
+	// DefaultSupervisorConfig.
+	Supervisor SupervisorConfig
+
 	// DevMode relaxes process isolation for local development. Never in
 	// production: see the sandbox notes.
 	DevMode bool
@@ -63,6 +68,13 @@ type Status struct {
 	Jobs        int      `json:"jobs"`
 	HasFrontend bool     `json:"has_frontend"`
 	LoadError   string   `json:"load_error,omitempty"`
+
+	// Quarantined means Core stopped restarting this plugin after it crashed
+	// repeatedly. Without it, a quarantined plugin looks identical in the
+	// console to one that is merely between restarts: enabled, zero replicas.
+	// One of those resolves itself and the other never will.
+	Quarantined   bool      `json:"quarantined,omitempty"`
+	QuarantinedAt time.Time `json:"quarantined_at,omitempty"`
 }
 
 // Manager owns installed packages and drives their lifecycle: enable, disable
@@ -94,7 +106,11 @@ func NewManager(cfg ManagerConfig, reg *Registry, hostFor HostServicesFor) *Mana
 		enabled:  map[string]struct{}{},
 		errors:   map[string]string{},
 	}
-	m.sup = NewSupervisor(reg, m.relaunch, DefaultSupervisorConfig())
+	supCfg := cfg.Supervisor
+	if supCfg == (SupervisorConfig{}) {
+		supCfg = DefaultSupervisorConfig()
+	}
+	m.sup = NewSupervisor(reg, m.relaunch, supCfg)
 	return m
 }
 
@@ -153,6 +169,12 @@ func (m *Manager) Enable(ctx context.Context, key string) error {
 	m.mu.Lock()
 	m.enabled[key] = struct{}{}
 	m.mu.Unlock()
+
+	// Enabling is an admin deciding to try this plugin again, which clears any
+	// quarantine and the crash history behind it. Leaving them would report a
+	// running plugin as isolated, and would re-quarantine it on its first
+	// hiccup rather than after the usual threshold.
+	m.sup.ClearCrashes(key)
 
 	logf("plugin %s v%s enabled (%d replica(s))", key, pkg.Version(), len(instances))
 	return nil
@@ -279,6 +301,9 @@ func (m *Manager) List() []Status {
 			if inst.State() == StateReady {
 				st.Ready++
 			}
+		}
+		if at, isolated := m.sup.QuarantinedSince(key); isolated {
+			st.Quarantined, st.QuarantinedAt = true, at
 		}
 		out = append(out, st)
 	}

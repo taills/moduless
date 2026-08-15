@@ -465,3 +465,57 @@ func TestBatchWriteIsAtomic(t *testing.T) {
 		t.Error("a failed batch left a partial write behind")
 	}
 }
+
+// A transaction holds a database connection for as long as it is open, so one
+// plugin opening many is one plugin taking the pool. Everything else — other
+// plugins, Core's own session lookups — then waits behind it until those
+// transactions time out, which can be minutes.
+//
+// The quota turns that into a refusal aimed at whoever caused it.
+func TestTransactionQuotaIsPerPlugin(t *testing.T) {
+	conn := testDB(t)
+	reg := NewTxRegistry()
+	defer reg.Close()
+
+	ctx := context.Background()
+
+	var ids []string
+	for i := range MaxOpenTxPerPlugin {
+		id, err := reg.Begin(ctx, conn, "greedy", time.Minute)
+		if err != nil {
+			t.Fatalf("transaction %d of the allowance was refused: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+
+	// One past the quota.
+	if _, err := reg.Begin(ctx, conn, "greedy", time.Minute); err == nil {
+		t.Errorf("a plugin opened %d concurrent transactions; the pool has no defence against that",
+			MaxOpenTxPerPlugin+1)
+	} else {
+		t.Logf("refused: %v", err)
+	}
+
+	// Another plugin is unaffected: the quota is per plugin, not global, so
+	// one plugin's mistake does not become everyone's outage.
+	other, err := reg.Begin(ctx, conn, "innocent", time.Minute)
+	if err != nil {
+		t.Errorf("a second plugin was refused because the first had used its quota: %v", err)
+	} else {
+		_ = reg.Rollback("innocent", other)
+	}
+
+	// And releasing one frees the allowance again.
+	if err := reg.Rollback("greedy", ids[0]); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if id, err := reg.Begin(ctx, conn, "greedy", time.Minute); err != nil {
+		t.Errorf("the allowance was not returned after a rollback: %v", err)
+	} else {
+		_ = reg.Rollback("greedy", id)
+	}
+
+	for _, id := range ids[1:] {
+		_ = reg.Rollback("greedy", id)
+	}
+}

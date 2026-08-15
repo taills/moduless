@@ -33,6 +33,18 @@ const DefaultTxTimeout = 30 * time.Second
 // MaxTxTimeout is the ceiling regardless of what a plugin requests.
 const MaxTxTimeout = 5 * time.Minute
 
+// MaxOpenTxPerPlugin bounds how many transactions one plugin may hold at once.
+//
+// Each holds a database connection for as long as it is open, so without a
+// per-plugin bound one plugin can take the whole pool and every other plugin —
+// and Core's own queries — waits behind it. A cap turns "everything stops"
+// into "that plugin is told no", which is both recoverable and attributable.
+//
+// Four is generous for work that is supposed to be short. A plugin needing
+// more concurrent transactions than that is describing a batch job, and a
+// batch job wants one transaction rather than four.
+const MaxOpenTxPerPlugin = 4
+
 type openTx struct {
 	tx        *sql.Tx
 	pluginKey string
@@ -103,6 +115,22 @@ func (r *TxRegistry) Begin(ctx context.Context, db *sql.DB, pluginKey string, ti
 	}
 	if timeout > MaxTxTimeout {
 		timeout = MaxTxTimeout
+	}
+
+	// Counted before the connection is taken, so a plugin over its quota is
+	// refused rather than made to wait for the pool.
+	r.mu.Lock()
+	open := 0
+	for _, t := range r.txs {
+		if t.pluginKey == pluginKey {
+			open++
+		}
+	}
+	r.mu.Unlock()
+	if open >= MaxOpenTxPerPlugin {
+		return "", fmt.Errorf("plugin %s already has %d transactions open, the limit is %d; "+
+			"a transaction holds a database connection, so they must be short and few",
+			pluginKey, open, MaxOpenTxPerPlugin)
 	}
 
 	// The transaction deliberately outlives the call that opened it: a plugin

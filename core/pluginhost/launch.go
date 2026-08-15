@@ -22,6 +22,11 @@ import (
 type LaunchSpec struct {
 	Key        string
 	InstanceID string
+	Version    string
+
+	// Weight drives smooth weighted round-robin when a plugin runs more than
+	// one replica. Zero means 1.
+	Weight int
 
 	// BinaryPath is the executable inside the verified, content-addressed
 	// plugin directory.
@@ -68,14 +73,8 @@ type LaunchSpec struct {
 	DevMode bool
 }
 
-// Instance is a live plugin process plus the client used to drive it.
-type Instance struct {
-	Key        string
-	InstanceID string
-
-	Client   *pluginapi.Client
-	goClient *goplugin.Client
-}
+// Instance is defined in instance.go; Launch returns one that is already
+// marked ready.
 
 // Launch starts the plugin process, completes the handshake, dispenses the
 // client, and performs the initial Configure handshake that also establishes
@@ -172,27 +171,9 @@ func Launch(ctx context.Context, spec LaunchSpec) (inst *Instance, err error) {
 		return nil, fmt.Errorf("plugin %s: not ready: %s", spec.Key, resp.GetError())
 	}
 
-	return &Instance{
-		Key:        spec.Key,
-		InstanceID: spec.InstanceID,
-		Client:     pc,
-		goClient:   client,
-	}, nil
-}
-
-// Kill terminates the plugin process. It is safe to call more than once.
-func (i *Instance) Kill() {
-	if i != nil && i.goClient != nil {
-		i.goClient.Kill()
-	}
-}
-
-// Exited reports whether the plugin process has terminated.
-//
-// go-plugin offers only this boolean poll — there is no exit notification
-// channel — which is why the supervisor pairs it with a gRPC health watch.
-func (i *Instance) Exited() bool {
-	return i == nil || i.goClient == nil || i.goClient.Exited()
+	inst = NewInstance(spec.Key, spec.InstanceID, spec.Version, spec.Weight, pc, client)
+	inst.MarkReady()
+	return inst, nil
 }
 
 func hclogLevel(s string) hclog.Level {

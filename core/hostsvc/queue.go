@@ -35,6 +35,9 @@ type PGQueue struct {
 	// catching it a few seconds earlier.
 	depthMu sync.RWMutex
 	depth   map[string]int64
+	// dead is what the last maintenance pass found parked. Cached the same
+	// way as depth: it is read per plugin for the console and measured once.
+	dead map[string]int64
 }
 
 // DefaultMaxQueueDepth is the per-plugin ceiling on waiting messages.
@@ -46,6 +49,7 @@ func NewPGQueue(q *db.Queue) *PGQueue {
 		PollInterval: 500 * time.Millisecond,
 		MaxDepth:     DefaultMaxQueueDepth,
 		depth:        map[string]int64{},
+		dead:         map[string]int64{},
 	}
 }
 
@@ -54,6 +58,14 @@ func (p *PGQueue) Depth(pluginKey string) int64 {
 	p.depthMu.RLock()
 	defer p.depthMu.RUnlock()
 	return p.depth[pluginKey]
+}
+
+// Dead reports how many messages this plugin has given up on, as of the last
+// maintenance pass.
+func (p *PGQueue) Dead(pluginKey string) int64 {
+	p.depthMu.RLock()
+	defer p.depthMu.RUnlock()
+	return p.dead[pluginKey]
 }
 
 func (p *PGQueue) Enqueue(ctx context.Context, pluginKey, topic string, payload []byte, opts EnqueueOptions) (int64, bool, error) {
@@ -163,6 +175,11 @@ func (p *PGQueue) StartMaintenance(ctx context.Context, interval, retention time
 								"further enqueues are refused until it drains", key, n, limit)
 						}
 					}
+				}
+				if dead, err := p.q.DeadDepth(ctx); err == nil {
+					p.depthMu.Lock()
+					p.dead = dead
+					p.depthMu.Unlock()
 				}
 				if n, err := p.q.ReapExpired(ctx); err == nil && n > 0 {
 					logf("queue: returned %d message(s) whose consumer stopped responding", n)

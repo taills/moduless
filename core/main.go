@@ -94,7 +94,16 @@ func main() {
 		defer txRegistry.Close()
 		hostDeps.Data = hostsvc.NewCMDSData(conn, db.NewCMDSManager(conn), txRegistry)
 
-		queue := hostsvc.NewPGQueue(db.NewQueue(conn))
+		rawQueue := db.NewQueue(conn)
+		// The moment work that was accepted will never be done. Nothing marked
+		// it before: the handler had already returned an error and moved on,
+		// and the depth the console shows counts pending and processing, so
+		// giving up on a backlog made the number go down.
+		rawQueue.OnDeadLetter = func(pluginKey, topic string, id int64, attempts int, reason string) {
+			log.Printf("[queue] gave up on message %d for %s/%s after %d attempts: %s",
+				id, pluginKey, topic, attempts, reason)
+		}
+		queue := hostsvc.NewPGQueue(rawQueue)
 		queue.StartMaintenance(context.Background(), 30*time.Second, 24*time.Hour)
 		hostDeps.Queue = queue
 		pluginQueue = queue
@@ -165,6 +174,12 @@ func main() {
 				return 0
 			}
 			return pluginQueue.Depth(pluginKey)
+		},
+		QueueDead: func(pluginKey string) int64 {
+			if pluginQueue == nil {
+				return 0
+			}
+			return pluginQueue.Dead(pluginKey)
 		},
 		ConfigSource: func(pluginKey string) map[string]string {
 			if pluginConfig == nil {

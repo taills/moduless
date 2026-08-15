@@ -53,6 +53,11 @@ type ManagerConfig struct {
 	// backlog was growing toward it. The first sign was the refusal.
 	QueueDepth func(pluginKey string) int64
 
+	// QueueDead reports how many messages a plugin has given up on. Separate
+	// from QueueDepth because they mean opposite things: a backlog drains, a
+	// graveyard does not.
+	QueueDead func(pluginKey string) int64
+
 	// Supervisor tunes crash recovery: restart backoff, and how many crashes
 	// within a window put a plugin into quarantine. The zero value uses
 	// DefaultSupervisorConfig.
@@ -104,6 +109,11 @@ type Status struct {
 
 	// QueueDepth is how many messages this plugin has waiting.
 	QueueDepth int64 `json:"queue_depth,omitempty"`
+
+	// QueueDead is how many the queue has given up on after exhausting their
+	// retries. Work that was accepted and will never be done, which is the
+	// one queue number that never fixes itself.
+	QueueDead int64 `json:"queue_dead,omitempty"`
 }
 
 // Manager owns installed packages and drives their lifecycle: enable, disable
@@ -347,6 +357,9 @@ func (m *Manager) List() []Status {
 		}
 		if m.cfg.QueueDepth != nil {
 			st.QueueDepth = m.cfg.QueueDepth(key)
+		}
+		if m.cfg.QueueDead != nil {
+			st.QueueDead = m.cfg.QueueDead(key)
 		}
 		out = append(out, st)
 	}

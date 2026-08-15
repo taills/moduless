@@ -26,6 +26,18 @@ var ErrDuplicateMessage = errors.New("duplicate message")
 type Queue struct {
 	db  *sql.DB
 	now func() time.Time
+
+	// OnDeadLetter fires when a message has used its last attempt and is
+	// parked rather than retried again.
+	//
+	// This is the moment work that was accepted will never be done, and
+	// nothing used to mark it. The plugin's handler had already returned an
+	// error and moved on; Core wrote 'dead' to a row and said nothing; and
+	// the depth the console shows counts pending and processing, so giving up
+	// on a backlog made the number go *down*. A plugin whose handler is
+	// permanently broken drained everything into 'dead' and read as one that
+	// had caught up.
+	OnDeadLetter func(ownerKey, topic string, id int64, attempts int, reason string)
 }
 
 func NewQueue(db *sql.DB) *Queue {
@@ -179,6 +191,8 @@ func (q *Queue) Nack(ctx context.Context, ownerKey string, id int64, reason stri
 	if retryAfter <= 0 {
 		retryAfter = 0
 	}
+	// RETURNING, so the caller learns which branch the CASE took. Reading it
+	// back with a second query would race the next delivery.
 	const query = `
 		UPDATE plugin_queue
 		SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'pending' END,
@@ -186,12 +200,53 @@ func (q *Queue) Nack(ctx context.Context, ownerKey string, id int64, reason stri
 		    locked_until = NULL,
 		    last_error = $4,
 		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND owner_key = $2 AND status = 'processing';`
+		WHERE id = $1 AND owner_key = $2 AND status = 'processing'
+		RETURNING status, topic, attempts;`
 
-	if _, err := q.db.ExecContext(ctx, query, id, ownerKey, q.now().Add(retryAfter), reason); err != nil {
+	var status, topic string
+	var attempts int
+	err := q.db.QueryRowContext(ctx, query, id, ownerKey, q.now().Add(retryAfter), reason).
+		Scan(&status, &topic, &attempts)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Not ours, or no longer processing — someone else's lease expired and
+		// was reclaimed. Not an error: the message is accounted for either way.
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("nack: %w", err)
 	}
+	if status == "dead" && q.OnDeadLetter != nil {
+		q.OnDeadLetter(ownerKey, topic, id, attempts, reason)
+	}
 	return nil
+}
+
+// DeadDepth counts the messages each plugin has given up on.
+//
+// Separate from PendingDepth rather than folded into it: they answer opposite
+// questions. Pending is work still to do and is what the ceiling is enforced
+// against; dead is work that will never be done and needs somebody to look at
+// it. Adding them would make a backlog and a graveyard indistinguishable.
+func (q *Queue) DeadDepth(ctx context.Context) (map[string]int64, error) {
+	rows, err := q.db.QueryContext(ctx,
+		`SELECT owner_key, count(*) FROM plugin_queue
+		  WHERE status = 'dead'
+		  GROUP BY owner_key`)
+	if err != nil {
+		return nil, fmt.Errorf("dead depth: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]int64{}
+	for rows.Next() {
+		var key string
+		var n int64
+		if err := rows.Scan(&key, &n); err != nil {
+			return nil, fmt.Errorf("scan dead depth: %w", err)
+		}
+		out[key] = n
+	}
+	return out, rows.Err()
 }
 
 // PendingDepth counts the messages waiting for each plugin.

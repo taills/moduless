@@ -341,6 +341,27 @@ resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 
 同理，对不存在的文件调 `DeleteFile` 或 `GenerateDownloadToken` 拿到的是 `NotFound` 而不是 `Internal`。`GetFileMetadata` 不同 —— 它问的是「存不存在」，所以返回 `Found: false` 而不是错误。另一个插件的文件与不存在的文件在这三个调用上完全一样，这是故意的：能确认某个 id 真实存在，正是探测想要的东西。
 
+### 队列放弃一条消息的时候
+
+handler 返回错误时 SDK 会 nack，Core 按 `max_attempts`（默认 5）重投；用完之后消息被标记为 **dead**，不再投递。这是对的 —— 一条毒消息无限重试比放弃更糟 —— 但要知道它意味着什么：**那条工作已经被接收，并且永远不会完成了**。
+
+对插件作者：handler 拿不到「这是最后一次尝试」的通知，只能自己看 `msg.Attempt` 和 `msg.MaxAttempts`。真正不能丢的东西，要在最后一次尝试时写到别处去（另一个集合、一条告警），而不是指望有人来捞。
+
+```go
+sdk.Queue.Consume(ctx, "summaries", func(ctx context.Context, m *sdk.QueueMessage) error {
+    if err := doWork(m); err != nil {
+        if m.Attempt >= m.MaxAttempts {
+            // 最后一次了。再返回错误这条消息就消失了。
+            recordFailure(ctx, m, err)
+        }
+        return err
+    }
+    return nil
+})
+```
+
+对运维：Core 现在会在放弃时记一行日志，控制台的插件列表也会显示「已放弃 N 条」。在此之前这件事完全没有出口 —— 而且更坏的是，控制台显示的队列积压只数 pending 和 processing，所以**一个 handler 永久损坏的插件把整个积压排空进 dead 之后，看起来就像刚追平了进度**。
+
 ### 并发下要重试的两种失败
 
 Core 用 gRPC 状态码回答，但插件不该为了判断一个错误去 import `google.golang.org/grpc`。SDK 因此提供哨兵，用 `errors.Is` 判断：

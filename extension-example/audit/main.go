@@ -5,10 +5,9 @@
 // 这是第三个示例，展示 log 阶段的 filter：它不提供路由给用户，也不拦截
 // 请求，只是在响应发出之后把发生过的事记下来。
 //
-// 它最初是一次实验的产物——由一个只被允许读 docs/plugin-development.md
-// 的作者写成，用来找出指南没讲清楚的地方。当时它写不过编译，而每一处
-// 失败都对应指南的一个缺口；那些缺口现在都补上了，这份代码也随之改成
-// 了正确的写法。
+// 它最初是一次实验的产物：由一个只被允许读 docs/plugin-development.md 的
+// 作者写成，用来找出指南没讲清楚的地方。它当时编译不过，而每一处失败都
+// 对应指南的一个缺口 —— 那些缺口后来都补上了，见 README.md。
 package main
 
 import (
@@ -50,8 +49,6 @@ func main() {
 		Handler:         mux,
 		OnConfigChanged: onConfigChanged,
 		Filters: map[sdk.Phase]sdk.FilterFunc{
-			// 指南只展示过 sdk.PhasePreRoute 和 sdk.PhasePreHandler，是照
-			// 同样的命名模式（Phase + 阶段名的驼峰形式）推出来的。
 			sdk.PhaseLog: recordWrite,
 		},
 		Jobs: map[string]sdk.JobFunc{
@@ -70,8 +67,12 @@ func main() {
 // 就能让审计停摆。
 func recordWrite(ctx context.Context, req *sdk.FilterRequest) (*sdk.FilterResult, error) {
 	entry := AuditEntry{
-		ID:   sdk.NewID(),
-		User: sdk.User(ctx).Name(), Method: req.Method, Path: req.Path, Status: req.ResponseStatus, At: time.Now().UTC().Format(time.RFC3339),
+		ID:     sdk.NewID(),
+		User:   sdk.User(ctx).Name(),
+		Method: req.Method,
+		Path:   req.Path,
+		Status: req.ResponseStatus,
+		At:     time.Now().UTC().Format(time.RFC3339),
 	}
 
 	if _, err := sdk.DB.Put(ctx, collection, entry.ID, entry); err != nil {
@@ -79,12 +80,13 @@ func recordWrite(ctx context.Context, req *sdk.FilterRequest) (*sdk.FilterResult
 		sdk.Log.Error(ctx, "audit: failed to record entry", "err", err.Error())
 	}
 
-	// Stop/Continue 还有意义吗？）。照其它阶段的签名要求，返回 Continue()。
+	// log 阶段的返回值会被忽略（响应早就发出去了），Continue 只是这个
+	// 签名下唯一说得通的答复。
 	return sdk.Continue(), nil
 }
 
-// onConfigChanged 在插件启动时和管理员每次改配置时都会被调用一次
-// （指南原文如此保证），所以只需要这一条代码路径。
+// onConfigChanged 在插件启动时被调用一次（带着管理员当前的配置），之后
+// 每次改动再调用一次 —— 所以配置只需要这一条代码路径。
 func onConfigChanged(cfg map[string]string) {
 	days := defaultRetentionDays
 
@@ -95,7 +97,8 @@ func onConfigChanged(cfg map[string]string) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			days = n
 		} else {
-			// 指南明确要求："无法解析的配置值应当回落到默认值，而不是关掉这项功能"
+			// 解析不了就用默认值，而不是把清理关掉：控制台上的一个笔误
+			// 不该变成"审计记录永远不过期"。
 			sdk.Log.Error(context.Background(), "audit: invalid retention_days, using default",
 				"value", v, "default", defaultRetentionDays)
 		}
@@ -112,8 +115,8 @@ func purgeExpired(ctx context.Context, job *sdk.Job) error {
 	days := retentionDays
 	cfgMu.RUnlock()
 
-	// 用 job.Scheduled 而不是 time.Now()，按指南的说法：这是这次运行
-	// "本该"发生的时刻，跟实际执行时间之间的漂移不应该影响清理的边界。
+	// 用 job.Scheduled 而不是 time.Now()：那是这次运行"本该"发生的时刻。
+	// 任务晚跑了十分钟不该让保留边界跟着挪十分钟。
 	cutoff := time.Unix(job.Scheduled, 0).UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 
 	// 分页查出来再逐条删，而不是塞进一个事务：事务有超时，而要删的行数

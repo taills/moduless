@@ -87,9 +87,13 @@ Three worked examples, each showing a different shape:
 
 | | |
 |---|---|
-| [`notes`](extension-example/notes) | a destination — own API, own table, own menu |
-| [`ratelimit`](extension-example/ratelimit) | a pure filter — no routes, no tables, no permissions at all, governs everyone else's traffic |
-| [`audit`](extension-example/audit) | a log-phase recorder, and a scheduled job that prunes what it wrote |
+| [`notes`](extension-example/notes) | a destination — own API, own table, own menu, own scheduled job |
+| [`ratelimit`](extension-example/ratelimit) | a gate — no routes, no tables, no permissions at all, and it governs everyone else's traffic |
+| [`audit`](extension-example/audit) | a recorder — writes down what happened after the response has gone |
+
+Each has a README explaining why it is built the way it is. The audit one is
+worth reading for a different reason: it was written by an agent allowed to
+read only the plugin guide, as a way of finding what the guide failed to say.
 
 ## Running
 

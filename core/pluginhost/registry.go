@@ -212,6 +212,12 @@ func NewRegistry() *Registry {
 
 // SetFilterDefaults overrides the timeout and body ceiling applied to filters
 // that do not specify their own.
+//
+// Core does not call this: the defaults were measured rather than guessed, and
+// there is no environment variable behind it. It exists for tests, and for
+// anyone embedding the registry who has measured something different on their
+// own hardware. Said plainly here because a setter nobody calls otherwise
+// reads as a knob an operator can reach, and this one is not.
 func (r *Registry) SetFilterDefaults(d pipeline.Defaults) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -4,6 +4,26 @@ import (
 	"fmt"
 )
 
+// Declarative document migrations.
+//
+// NOT CONNECTED. Core never calls ApplyMigration: there is no manifest field
+// to declare a migration in, and no version bookkeeping to decide when one
+// should run. It is written and tested, and it runs only from tests.
+//
+// The gap it was meant to fill is real. ReconcileSchema only adds — it creates
+// tables and indexes a manifest declares and never drops or rewrites anything
+// — so a plugin upgraded from a version that stored `name` to one that expects
+// `full_name` finds every existing document still carrying the old field, and
+// Core does nothing about it. Today that is the plugin author's problem, and
+// docs/plugin-development.md says so.
+//
+// Connecting this needs two decisions that have not been made: where a
+// migration is declared, and how Core knows which ones have already run. All
+// three actions here happen to be idempotent, so "run them all at every
+// launch" is correct but pays for itself on every restart of a large
+// collection. Left in place rather than deleted because the implementation is
+// the easy half and the design is the part still owed.
+
 // MigrationAction is a single declarative JSONB transformation.
 type MigrationAction struct {
 	Type       string // "rename_field", "drop_field", "set_default"

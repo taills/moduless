@@ -341,6 +341,17 @@ resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 
 同理，对不存在的文件调 `DeleteFile` 或 `GenerateDownloadToken` 拿到的是 `NotFound` 而不是 `Internal`。`GetFileMetadata` 不同 —— 它问的是「存不存在」，所以返回 `Found: false` 而不是错误。另一个插件的文件与不存在的文件在这三个调用上完全一样，这是故意的：能确认某个 id 真实存在，正是探测想要的东西。
 
+### 升级时的数据形状
+
+Core 建表、建索引，但**不会改写已有文档**。`database.collections` 是加法的：新集合会被创建，新索引会被创建，而一个从存 `name` 改成期望 `full_name` 的插件，升级后面对的是一整批仍然带着 `name` 的旧文档，Core 不会替你动它们。
+
+所以字段改名这类事目前是插件作者的责任。两种做法：
+
+- **读时兼容**：新版本同时认 `full_name` 和 `name`，写的时候只写 `full_name`。简单，但兼容代码会一直留着。
+- **启动时迁移**：在 `OnConfigChanged` 之外自己跑一次批量 `Query` + `Put`。要自己保证跑第二遍是安全的 —— 升级、重启、多副本都会让它不止跑一次。
+
+Core 里有一套声明式迁移（`rename_field` / `drop_field` / `set_default`）已经写好并测过，但**没有接线**：manifest 里没有地方声明它，Core 也没有记录哪些已经跑过。在它接上之前，上面两条是全部选项。
+
 ### 配置
 
 **先在 manifest 里声明你接受哪些配置项**，再在代码里读。不声明也能读到管理员随手填的键，但那样键名就成了你和运维之间的口头约定 —— 任何一边拼错，插件都会安静地用编译内的默认值跑下去，而控制台上显示着管理员以为生效了的值，两边都看不出问题。

@@ -20,10 +20,6 @@ type Client struct {
 	maxMsg       int
 }
 
-// HostBrokerID exposes the brokered stream id serving this instance's
-// HostServices, for diagnostics.
-func (c *Client) HostBrokerID() uint32 { return c.hostBrokerID }
-
 // Configure fills in the broker id and negotiated message ceiling so callers
 // never have to know they exist.
 func (c *Client) Configure(ctx context.Context, req *pb.ConfigureRequest) (*pb.ConfigureResponse, error) {

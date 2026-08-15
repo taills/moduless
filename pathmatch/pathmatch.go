@@ -209,6 +209,3 @@ func (s Set) Match(path string) bool {
 
 // Len reports how many patterns the set holds.
 func (s Set) Len() int { return len(s.patterns) }
-
-// Patterns returns the compiled patterns, for diagnostics.
-func (s Set) Patterns() []Pattern { return s.patterns }

@@ -45,6 +45,24 @@ type Files struct {
 	PublicBaseURL string
 }
 
+// Reasons a file operation fails, as sentinels.
+//
+// One check — checkOwnership — was being mapped to three different gRPC codes
+// by its three callers: NotFound from Delete, Internal from
+// GenerateDownloadToken, Internal from Metadata. The same condition reaching a
+// plugin as three different answers is a problem for the plugin (it cannot
+// branch on it) and for whoever runs Core (an ordinary missing file paged
+// somebody as a server fault).
+var (
+	// ErrFileNotFound covers a file that does not exist and one that belongs
+	// to another plugin. Deliberately the same: confirming that an id is real
+	// is the one thing worth learning from probing.
+	ErrFileNotFound = errors.New("file not found")
+
+	// ErrFileTooLarge is the upload ceiling. The caller's mistake, not Core's.
+	ErrFileTooLarge = errors.New("file exceeds the upload limit")
+)
+
 // DefaultMaxUploadBytes bounds a plugin-written file.
 const DefaultMaxUploadBytes = 64 << 20
 
@@ -91,7 +109,7 @@ func (f *Files) Put(ctx context.Context, pluginKey, filename, mimeType string, r
 		return "", 0, fmt.Errorf("read upload: %w", err)
 	}
 	if size > f.maxUpload() {
-		return "", 0, fmt.Errorf("file exceeds the %d byte limit", f.maxUpload())
+		return "", 0, fmt.Errorf("%w of %d bytes", ErrFileTooLarge, f.maxUpload())
 	}
 
 	fileID := uuid.NewString()
@@ -133,7 +151,7 @@ func (f *Files) Delete(ctx context.Context, pluginKey, fileID string) error {
 		return err
 	}
 	if _, err := f.q.GetFile(ctx, fileID); err != nil {
-		return fmt.Errorf("file not found")
+		return fmt.Errorf("%w: %s", ErrFileNotFound, fileID)
 	}
 	if f.conn == nil {
 		return errors.New("file storage is not configured")
@@ -192,15 +210,15 @@ func (f *Files) checkOwnership(ctx context.Context, pluginKey, fileID string) er
 	owner, err := f.q.GetFileOwner(ctx, fileID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("file %s not found", fileID)
+			return fmt.Errorf("%w: %s", ErrFileNotFound, fileID)
 		}
 		return fmt.Errorf("look up file owner: %w", err)
 	}
 	if owner != "" && owner != pluginKey {
-		// Deliberately the same message a missing file gets: telling a plugin
+		// Deliberately the same error a missing file gets: telling a plugin
 		// that an id exists but belongs to someone else confirms the id is
 		// real, which is the one thing worth learning from probing.
-		return fmt.Errorf("file %s not found", fileID)
+		return fmt.Errorf("%w: %s", ErrFileNotFound, fileID)
 	}
 	return nil
 }

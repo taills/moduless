@@ -3,6 +3,7 @@ package hostsvc
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"time"
 
@@ -52,7 +53,7 @@ func (s *Server) PutFile(stream pb.HostServices_PutFileServer) error {
 
 	fileID, size, err := s.deps.Files.Put(stream.Context(), s.key, filename, mimeType, &buf)
 	if err != nil {
-		return status.Errorf(codes.Internal, "store file: %v", err)
+		return fileErr(err)
 	}
 	return stream.SendAndClose(&pb.PutFileResponse{FileId: fileID, Size: size})
 }
@@ -65,9 +66,7 @@ func (s *Server) DeleteFile(ctx context.Context, req *pb.FileRequest) (*emptypb.
 		return nil, s.unavailable("file storage")
 	}
 	if err := s.deps.Files.Delete(ctx, s.key, req.GetFileId()); err != nil {
-		// A file belonging to another plugin reports as not-found rather than
-		// forbidden: confirming that an id exists is itself information.
-		return nil, status.Errorf(codes.NotFound, "%v", err)
+		return nil, fileErr(err)
 	}
 	return &emptypb.Empty{}, nil
 }
@@ -84,7 +83,7 @@ func (s *Server) GenerateDownloadToken(ctx context.Context, req *pb.DownloadToke
 		req.GetFileId(), req.GetUserId(),
 		time.Duration(req.GetExpirySeconds())*time.Second)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "issue download token: %v", err)
+		return nil, fileErr(err)
 	}
 	return &pb.DownloadTokenResponse{Url: url, ExpiresAtUnix: expiresAt.Unix()}, nil
 }
@@ -99,7 +98,7 @@ func (s *Server) GetFileMetadata(ctx context.Context, req *pb.FileRequest) (*pb.
 
 	meta, err := s.deps.Files.Metadata(ctx, s.key, req.GetFileId())
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "%v", err)
+		return nil, fileErr(err)
 	}
 	return &pb.FileMetadata{
 		Found:    meta.Found,
@@ -108,4 +107,26 @@ func (s *Server) GetFileMetadata(ctx context.Context, req *pb.FileRequest) (*pb.
 		Size:     meta.Size,
 		MimeType: meta.MimeType,
 	}, nil
+}
+
+// fileErr classifies a file failure into a gRPC code.
+//
+// One condition was reaching plugins as three different answers because each
+// caller mapped it itself: a missing file was NotFound from Delete and
+// Internal from the other two. A plugin cannot branch on that, and an
+// operator watching for Internal was being paged by an ordinary missing file.
+//
+// A file belonging to another plugin lands here as not-found, which is
+// deliberate — confirming an id is real is what probing is for.
+func fileErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrFileNotFound):
+		return status.Errorf(codes.NotFound, "%v", err)
+	case errors.Is(err, ErrFileTooLarge):
+		return status.Errorf(codes.InvalidArgument, "%v", err)
+	default:
+		return status.Errorf(codes.Internal, "%v", err)
+	}
 }

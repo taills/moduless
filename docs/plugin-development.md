@@ -337,6 +337,10 @@ resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 
 出站代理不只是匹配域名。它还会检查**实际拨号的 IP**：白名单上的域名可能解析到 127.0.0.1 或云元数据地址（169.254.169.254），无论是配置失误还是 DNS 重绑定攻击。同时不跟随重定向 —— 否则一个被允许的主机可以用 302 把你带去内网。
 
+出站失败会带上可区分的 gRPC 状态码，因为这四种情况的处理方式完全不同：域名不在 `egress_allow` 里是 `PermissionDenied`（永久的，要改 manifest 并重新审核）、超出速率是 `ResourceExhausted`（等一下就好）、URL 拼错是 `InvalidArgument`（你的 bug）、对端连不上是 `Unavailable`（可以重试）。在此之前它们全都是 `Unknown`，一个字符串，无从分支。
+
+同理，对不存在的文件调 `DeleteFile` 或 `GenerateDownloadToken` 拿到的是 `NotFound` 而不是 `Internal`。`GetFileMetadata` 不同 —— 它问的是「存不存在」，所以返回 `Found: false` 而不是错误。另一个插件的文件与不存在的文件在这三个调用上完全一样，这是故意的：能确认某个 id 真实存在，正是探测想要的东西。
+
 ### 配置
 
 **先在 manifest 里声明你接受哪些配置项**，再在代码里读。不声明也能读到管理员随手填的键，但那样键名就成了你和运维之间的口头约定 —— 任何一边拼错，插件都会安静地用编译内的默认值跑下去，而控制台上显示着管理员以为生效了的值，两边都看不出问题。

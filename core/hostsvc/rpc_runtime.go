@@ -2,6 +2,7 @@ package hostsvc
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -270,7 +271,7 @@ func (s *Server) Fetch(ctx context.Context, req *pb.FetchRequest) (*pb.FetchResp
 		TraceID: traceFrom(ctx, req.GetTraceId()),
 	})
 	if err != nil {
-		return nil, err
+		return nil, egressErr(err)
 	}
 
 	out := make(map[string]*pb.HeaderValues, len(resp.Headers))
@@ -282,4 +283,30 @@ func (s *Server) Fetch(ctx context.Context, req *pb.FetchRequest) (*pb.FetchResp
 		Headers:    out,
 		Body:       resp.Body,
 	}, nil
+}
+
+// egressErr classifies an outbound failure into a gRPC code.
+//
+// Fetch was the one capability that returned its backend error raw, so
+// grpc-go wrapped everything in codes.Unknown and a plugin could not tell a
+// permanent refusal from a rate limit from a remote server that was down.
+// Every other capability classifies; this brings the last one into line.
+func egressErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrEgressNotAllowed):
+		// Permanent: the manifest has to change and be approved again.
+		return status.Errorf(codes.PermissionDenied, "%v", err)
+	case errors.Is(err, ErrEgressRateLimited):
+		return status.Errorf(codes.ResourceExhausted, "%v", err)
+	case errors.Is(err, ErrEgressBadRequest):
+		return status.Errorf(codes.InvalidArgument, "%v", err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return status.Errorf(codes.DeadlineExceeded, "%v", err)
+	default:
+		// The remote host: unreachable, refused, TLS failure. Retryable in a
+		// way the three above are not.
+		return status.Errorf(codes.Unavailable, "%v", err)
+	}
 }

@@ -2,6 +2,7 @@ package hostsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -97,6 +98,29 @@ func (e *HTTPEgress) init() {
 	})
 }
 
+// Reasons an outbound request is refused, as sentinels rather than only as
+// prose.
+//
+// A plugin author meeting one of these needs to know which it was: a host that
+// is not on the allow-list is permanent and means editing the manifest and
+// getting it re-approved; a rate limit means waiting; a malformed URL is the
+// plugin's own bug. All three arrived as an opaque error, so the SDK could
+// only hand back a string and every failure looked equally retryable.
+var (
+	// ErrEgressNotAllowed covers both the allow-list and the address checks:
+	// a hostname that was never granted, and a granted hostname that resolves
+	// somewhere it must not reach. They are the same answer to the plugin —
+	// Core will not make this request — and telling them apart on the wire
+	// would describe the internal network to the caller.
+	ErrEgressNotAllowed = errors.New("outbound request refused")
+
+	// ErrEgressRateLimited means too many requests this minute. Retryable.
+	ErrEgressRateLimited = errors.New("outbound rate limit exceeded")
+
+	// ErrEgressBadRequest is a URL the plugin built wrongly.
+	ErrEgressBadRequest = errors.New("invalid outbound request")
+)
+
 // Fetch performs an allow-listed outbound request.
 func (e *HTTPEgress) Fetch(ctx context.Context, pluginKey string, req EgressRequest) (EgressResponse, error) {
 	e.init()
@@ -109,13 +133,14 @@ func (e *HTTPEgress) Fetch(ctx context.Context, pluginKey string, req EgressRequ
 
 	allowed := e.AllowFor(pluginKey)
 	if !hostAllowed(target.Hostname(), allowed) {
-		err := fmt.Errorf("host %q is not in this plugin's egress_allow list", target.Hostname())
+		err := fmt.Errorf("%w: host %q is not in this plugin's egress_allow list",
+			ErrEgressNotAllowed, target.Hostname())
 		e.audit(pluginKey, req.Method, req.URL, 0, err)
 		return EgressResponse{}, err
 	}
 
 	if !e.allowRate(pluginKey) {
-		err := fmt.Errorf("outbound request rate limit exceeded (%d/minute)", e.rateLimit())
+		err := fmt.Errorf("%w (%d/minute)", ErrEgressRateLimited, e.rateLimit())
 		e.audit(pluginKey, req.Method, req.URL, 0, err)
 		return EgressResponse{}, err
 	}
@@ -219,21 +244,21 @@ func (e *HTTPEgress) audit(pluginKey, method, url string, status int, err error)
 // parseTarget validates the URL shape before anything is dialled.
 func parseTarget(raw string) (*url.URL, error) {
 	if raw == "" {
-		return nil, fmt.Errorf("url is required")
+		return nil, fmt.Errorf("%w: url is required", ErrEgressBadRequest)
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("invalid url: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrEgressBadRequest, err)
 	}
 	switch u.Scheme {
 	case "http", "https":
 	default:
 		// file://, gopher:// and friends are how an SSRF turns into local file
 		// disclosure, so only the two schemes this is for are accepted.
-		return nil, fmt.Errorf("scheme %q is not allowed; use http or https", u.Scheme)
+		return nil, fmt.Errorf("%w: scheme %q is not allowed; use http or https", ErrEgressBadRequest, u.Scheme)
 	}
 	if u.Host == "" {
-		return nil, fmt.Errorf("url has no host")
+		return nil, fmt.Errorf("%w: url has no host", ErrEgressBadRequest)
 	}
 	return u, nil
 }
@@ -280,7 +305,7 @@ func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	var lastErr error
 	for _, ip := range ips {
 		if blocked, why := blockedIP(ip.IP); blocked {
-			lastErr = fmt.Errorf("refusing to connect to %s: %s", ip.IP, why)
+			lastErr = fmt.Errorf("%w: refusing to connect to %s: %s", ErrEgressNotAllowed, ip.IP, why)
 			continue
 		}
 		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.IP.String(), port))
@@ -290,7 +315,7 @@ func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 		lastErr = err
 	}
 	if lastErr == nil {
-		lastErr = fmt.Errorf("no usable address for %s", host)
+		lastErr = fmt.Errorf("%w: no usable address for %s", ErrEgressNotAllowed, host)
 	}
 	return nil, lastErr
 }

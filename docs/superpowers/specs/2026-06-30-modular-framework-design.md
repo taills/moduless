@@ -1,3 +1,12 @@
+> **历史文档 — 已被取代。**
+>
+> 本文描述的是最初的反向 gRPC 隧道架构：扩展作为独立进程主动拨号连接 Core，
+> 并有 Go / Python / Java 三套 SDK。该架构已被 HashiCorp go-plugin 子进程模型
+> 取代 —— Core 现在自己启动插件，因而具备热加载、热更新与请求生命周期 Filter。
+>
+> 当前设计见 [README](../../../README.zh-CN.md) 与
+> [插件开发指南](../../plugin-development.md)。此文保留仅作演进记录。
+
 # Moduless 跨语言模块化开发框架设计方案 (Multi-Language Modular Framework Spec)
 
 ## 1. 概述与设计理念

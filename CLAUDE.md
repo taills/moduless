@@ -80,6 +80,7 @@ TEST_S3_ENDPOINT='http://localhost:19000' go test ./tests/ -run File
 
 # Console
 cd core/frontend && npm install && npm run build   # or npm run dev
+cd core/frontend && npm test                       # vitest, no browser needed
 ```
 
 ## Running

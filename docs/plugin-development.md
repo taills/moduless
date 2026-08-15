@@ -220,8 +220,23 @@ next, err := sdk.DB.Where("notes").
 total, err := sdk.DB.Where("notes").Eq("status", "open").Count(ctx)
 sums, err := sdk.DB.Where("orders").Sum(ctx, "total", "region")
 
-// 事务（需要 db:tx）
+// 事务（需要 db:tx）。TxClient 的方法和非事务版本一一对应，
+// 签名也一样 —— 包括 Get 返回 version、以及 PutIfVersion。
 err := sdk.DB.Tx(ctx, 30*time.Second, func(tx *sdk.TxClient) error {
+    var stock Stock
+    found, version, err := tx.Get(ctx, "stock", sku, &stock)
+    if err != nil {
+        return err
+    }
+    if !found || stock.OnHand < qty {
+        return errNotEnough   // 从闭包返回的错误会原样传出 Tx，可以用 errors.Is 判断
+    }
+
+    stock.OnHand -= qty
+    // 事务内也要用乐观锁：见下面「并发下要重试的两种失败」
+    if _, err := tx.PutIfVersion(ctx, "stock", sku, stock, version); err != nil {
+        return err
+    }
     if _, err := tx.Put(ctx, "orders", orderID, order); err != nil {
         return err
     }
@@ -275,6 +290,16 @@ id, deduped, err := sdk.Queue.Publish(ctx, "emails", payload,
 )
 
 // 消费：返回 nil 即确认，返回 error 即重试
+//
+// Consume 和 Subscribe 一样是阻塞的 —— 它一直收到 ctx 取消或出错才返回，
+// 所以要自己起 goroutine，并且不要放在 sdk.Serve 之后（那行不会执行到）。
+// 放在 OnConfigChanged 里用 sync.Once 起，或者在 Serve 之前起。
+go func() {
+    if err := sdk.Queue.Consume(consumerCtx, "emails", handleEmail); err != nil {
+        sdk.Log.Error(consumerCtx, "email consumer stopped", "err", err)
+    }
+}()
+
 err := sdk.Queue.Consume(ctx, "emails", func(ctx context.Context, m *sdk.QueueMessage) error {
     var job EmailJob
     if err := m.Decode(&job); err != nil {
@@ -283,6 +308,8 @@ err := sdk.Queue.Consume(ctx, "emails", func(ctx context.Context, m *sdk.QueueMe
     return send(job)
 })
 ```
+
+`QueueMessage` 上有：`ID`（这次投递的消息 id，去重和记账用）、`Topic`、`Payload`（或者用 `Decode` 直接反序列化）、`Attempt` / `MaxAttempts`、以及 `ParentTraceID` —— 入队时那个请求的 trace，异步任务靠它追回触发它的东西。
 
 **投递语义是至少一次**。handler 干完活后、确认前崩溃，消息会再来一次 —— 所以 handler 必须幂等。反过来（投递即确认）会在插件崩溃时丢活儿，而那正是这套机制要应对的情况。
 
@@ -351,6 +378,31 @@ resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 
 这三种以前全都是 502。实测停用一个正在服务的插件：5801 个请求全部 502 —— 客户端会当成故障去重试，盯着 502 告警的人会被一次**主动的运维操作**叫醒。
 
+### 测试
+
+插件的 handler、事务逻辑、filter 判断都是普通 Go 函数，用普通的 `go test` 测就行 —— 不需要跑起 Core。把依赖 `sdk.DB` / `sdk.Queue` 的部分和纯逻辑分开，纯逻辑直接测。
+
+需要真的跑起来的部分（`sdk.Serve` 之后的握手、filter 被 Core 调用、跨插件的顺序），目前**没有可复用的测试工具**：本仓库的做法是在 `tests/` 里现场 `go build` 插件、由 Core 启动它、再发真实 HTTP 请求。第三方插件要做同样的事，现在得自己搭。这是一个已知的空缺。
+
+### 收尾：OnShutdown
+
+`Consume` 和 `Subscribe` 起的 goroutine 会一直跑到 ctx 被取消。插件被停用、升级或排空时，Core 会先调 `OnShutdown`，之后才杀进程：
+
+```go
+consumerCtx, stopConsumers := context.WithCancel(context.Background())
+
+sdk.Serve(sdk.Config{
+    Handler: mux,
+    OnShutdown: func(ctx context.Context) error {
+        // 先让长期 goroutine 停下来，再返回。返回之后 Core 才继续排空。
+        stopConsumers()
+        return nil
+    },
+})
+```
+
+不写它也不会出错 —— 进程终究会被杀掉 —— 但一条正在处理的队列消息会因此没有 ack 也没有 nack，要等租约超时（默认 30 秒）才会被重投。写了它，那条消息立刻回到队列。
+
 ### 用非 session 的方式鉴权
 
 `authenticate` 阶段的 filter 可以调用 `SetIdentity` 告诉 Core 调用者是谁 —— API key、JWT、mTLS、签名请求，任何 Core 自己不认识的凭据都走这条路。前提是插件声明了 `filter:authenticate`，否则 Core 会丢弃这个 mutation 并记一行日志。
@@ -368,6 +420,29 @@ resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 **一个必须知道的限制**：插件路由不能是公开的。第 4 步是无条件的，所以一个 `authorize` filter 返回 Continue 并不能放行匿名请求。没装 authenticate filter 的部署行为和以前完全一致。
 
 [`apikey` 示例](../extension-example/apikey)是这条路的完整写法。
+
+```go
+sdk.Serve(sdk.Config{
+    Filters: map[sdk.Phase]sdk.FilterFunc{
+        sdk.PhaseAuthenticate: func(ctx context.Context, req *sdk.FilterRequest) (*sdk.FilterResult, error) {
+            key := req.Header.Get("Authorization")
+            user, ok := resolve(ctx, key)
+            if !ok {
+                // 认不出来就让它匿名过去。拒绝是 authorize 阶段的事 ——
+                // 这个 filter 不知道哪些路由是公开的。
+                return sdk.Continue(), nil
+            }
+            return sdk.Mutate().SetIdentity(&sdk.UserContext{
+                UserID:   user.ID,
+                Username: user.Name,
+                Roles:    user.Roles,
+            }), nil
+        },
+    },
+})
+```
+
+`SetIdentity` 收的是 `*sdk.UserContext`，不是一个字符串 id —— 角色要一起给，因为下游的 `HasRole` 和 `authorize` 阶段读的就是它。`req.Identity` 也是同一个类型，且对 `nil` 安全。
 
 ### `sdk.Cache` 是一次 RPC，不是本地缓存
 
@@ -501,7 +576,11 @@ sdk.Log.Metric(ctx, "orders_created", 1, map[string]string{"region": region})
 
 **`menus` 里的 `roles` 不保护你的接口。** 它只决定这个菜单项在控制台上显示给谁 —— Core 在下发菜单树时过滤掉，仅此而已。任何人只要拼得出 URL，就能直接请求 `/api/plugins/<key>/...`，菜单上看不看得见毫无关系。
 
-接口的鉴权在你自己的 handler 里做：
+接口的鉴权在你自己的 handler 里做 —— 但先看清它的适用范围：
+
+**handler 里的检查只对能拿到 Core session 的调用者有意义。**没有 session 的请求根本到不了你的 handler：Core 在 authenticate 和 authorize 阶段之后、进 handler 之前会无条件 401（见下面「用非 session 的方式鉴权」）。所以 handler 里的 `HasRole` 判的是「这个已登录的人能不能做这件事」，而「这个人是谁」要么来自 Core 的 session，要么来自某个 authenticate 阶段的 filter。两件事，两个地方。
+
+
 
 ```go
 mux.HandleFunc("GET /entries", func(w http.ResponseWriter, r *http.Request) {
@@ -757,7 +836,11 @@ Core 是插件的父进程，这带来两个必须知道的行为：
 
 隔离是终态，需要管理员显式处理 —— 在控制台重新「启用」即清除隔离记录和崩溃计数，重新开始。
 
-对插件作者的含义：**启动阶段的失败要尽快、明确地失败**。`Configure` 返回 not ready 会让这次启用直接失败并保留旧版本，比启动后再崩溃干净得多。
+对插件作者的含义：**启动阶段的失败要尽快、明确地失败**。
+
+`Configure` 是 SDK 内部的握手，不是你要实现的钩子 —— `sdk.Config` 里没有这一项。你能控制的是启动时会不会 panic：SDK 在 `Configure` 里做的事失败了，这次启用会直接失败并保留旧版本，比启动后再崩溃干净得多。所以初始化里该炸的东西要在 `sdk.Serve` 之前或者第一次 `OnConfigChanged` 里炸掉，不要拖到第一个请求。
+
+`sdk.Config` 的全部字段就这些：`Handler`、`Filters`、`Jobs`、`OnConfigChanged`、`OnShutdown`、`MaxMessageBytes`。
 
 ---
 

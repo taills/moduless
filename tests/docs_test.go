@@ -149,6 +149,7 @@ var stdlibMethods = map[string]bool{
 	"String": true, "Bytes": true, "Copy": true, "Fields": true, "Cut": true,
 	"Wrap": true, "Done": true, "Err": true, "Value": true, "WithValue": true,
 	"Context": true, "FormatInt": true, "Fprintf": true, "Unix": true,
+	"WithCancel": true, "WithTimeout": true, "Once": true, "Do": true,
 }
 
 func methodsCalledInGoBlocks(guide string) []string {

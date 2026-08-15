@@ -17,6 +17,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -83,6 +84,20 @@ func (e *echoImpl) HandleHTTP(_ context.Context, req *pb.HttpRequest) (*pb.HttpR
 		// from Core stopping the plugin on purpose.
 		log.Print("echoplugin: exiting abruptly on request")
 		os.Exit(3)
+	case "/db":
+		// Exercises the reverse channel against the real document store: a
+		// write and a read back, both crossing the process boundary.
+		out, err := e.roundTripDocument(context.Background())
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
+		}
+		body = out
+	case "/queue":
+		out, err := e.roundTripQueue(context.Background())
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
+		}
+		body = out
 	}
 
 	return &pb.HttpResponse{
@@ -128,6 +143,65 @@ func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterR
 func (e *echoImpl) RunJob(_ context.Context, req *pb.JobRequest) (*pb.JobResponse, error) {
 	log.Printf("echoplugin: job %s trace=%s", req.GetJobName(), req.GetTraceId())
 	return &pb.JobResponse{Success: true}, nil
+}
+
+// roundTripDocument writes a document and reads it back through HostServices,
+// proving the reverse channel reaches the real store rather than a stub.
+func (e *echoImpl) roundTripDocument(ctx context.Context) ([]byte, error) {
+	e.mu.RLock()
+	host := e.host
+	e.mu.RUnlock()
+	if host == nil {
+		return nil, fmt.Errorf("host services not bound")
+	}
+
+	payload := []byte(`{"written_by":"echoplugin"}`)
+	put, err := host.Put(ctx, &pb.PutRequest{Collection: "notes", DocId: "e2e", Data: payload})
+	if err != nil {
+		return nil, fmt.Errorf("put: %w", err)
+	}
+
+	got, err := host.Get(ctx, &pb.GetRequest{Collection: "notes", DocId: "e2e"})
+	if err != nil {
+		return nil, fmt.Errorf("get: %w", err)
+	}
+	if !got.GetFound() {
+		return nil, fmt.Errorf("document was not found after writing it")
+	}
+	return fmt.Appendf(nil, "version=%d data=%s", put.GetVersion(), got.GetData()), nil
+}
+
+// roundTripQueue enqueues a message and consumes it back.
+func (e *echoImpl) roundTripQueue(ctx context.Context) ([]byte, error) {
+	e.mu.RLock()
+	host := e.host
+	e.mu.RUnlock()
+	if host == nil {
+		return nil, fmt.Errorf("host services not bound")
+	}
+
+	if _, err := host.Enqueue(ctx, &pb.EnqueueRequest{
+		Topic:   "e2e",
+		Payload: []byte("queued work"),
+	}); err != nil {
+		return nil, fmt.Errorf("enqueue: %w", err)
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	stream, err := host.Consume(cctx, &pb.ConsumeRequest{Topic: "e2e", Prefetch: 1})
+	if err != nil {
+		return nil, fmt.Errorf("consume: %w", err)
+	}
+	msg, err := stream.Recv()
+	if err != nil {
+		return nil, fmt.Errorf("receive: %w", err)
+	}
+	if _, err := host.Ack(ctx, &pb.AckRequest{MessageId: msg.GetMessageId()}); err != nil {
+		return nil, fmt.Errorf("ack: %w", err)
+	}
+	return fmt.Appendf(nil, "attempt=%d payload=%s", msg.GetAttempt(), msg.GetPayload()), nil
 }
 
 func (e *echoImpl) OnConfigChanged(_ context.Context, req *pb.ConfigChangeEvent) error {

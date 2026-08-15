@@ -15,6 +15,10 @@ type Event struct {
 type EventBus struct {
 	mu          sync.RWMutex
 	subscribers map[string][]chan Event
+
+	// onDrop, when set, is called for every event a subscriber was too slow
+	// to receive, so a silently lagging consumer becomes visible.
+	onDrop func(eventName string)
 }
 
 func NewEventBus() *EventBus {
@@ -53,8 +57,26 @@ func (b *EventBus) Publish(name string, data []byte) {
 		select {
 		case ch <- Event{Name: name, Data: data}:
 		default:
+			// Dropping is deliberate: a slow subscriber must not stall the
+			// publisher, and this bus is explicitly best-effort — anything
+			// that must not be lost belongs on the durable queue.
+			//
+			// Dropping *silently* is not. A subscriber quietly missing events
+			// looks identical to one receiving none, so the drop is reported
+			// where a hook is installed.
+			if b.onDrop != nil {
+				b.onDrop(name)
+			}
 		}
 	}
+}
+
+// OnDrop installs a callback invoked whenever an event is dropped because a
+// subscriber could not keep up.
+func (b *EventBus) OnDrop(fn func(eventName string)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.onDrop = fn
 }
 
 // SubscriberCount reports the number of live subscribers for a name (testing).

@@ -61,11 +61,22 @@ func main() {
 	// Capabilities Core exposes back to plugins. Cache and locks are
 	// in-process: Core is single-instance and every plugin replica is its
 	// child, so that is already correct for the only topology there is.
+	pluginConfig := hostsvc.NewStaticConfig()
 	hostDeps := hostsvc.Deps{
 		Cache:  hostsvc.NewMemoryCache(0),
 		Locks:  hostsvc.NewMemoryLocks(),
-		Config: hostsvc.NewStaticConfig(),
+		Config: pluginConfig,
+		Events: hostsvc.NewBusEvents(bus),
+		Obs:    hostsvc.NewLogObservability(env("PLUGIN_LOG_LEVEL", "info")),
 	}
+	hostsvc.SetLogger(func(format string, args ...any) {
+		log.Printf("[hostsvc] "+format, args...)
+	})
+	// A subscriber falling behind is best-effort by design, but it must not be
+	// invisible: anything that cannot be lost belongs on the durable queue.
+	bus.OnDrop(func(name string) {
+		log.Printf("[hostsvc] event %q dropped: a subscriber is not keeping up", name)
+	})
 
 	// Database-backed services (CMDS, files, audit, approval) are optional so Core
 	// can run a pure tunnel demo without PostgreSQL/RustFS.
@@ -78,6 +89,17 @@ func main() {
 		defer conn.Close()
 		queries = sqlc.New(conn)
 		cmds = db.NewCMDSManager(conn)
+
+		// Capabilities that need PostgreSQL. Without a database these stay nil
+		// and report Unavailable rather than failing obscurely.
+		txRegistry := db.NewTxRegistry()
+		txRegistry.StartReaper(time.Second)
+		defer txRegistry.Close()
+		hostDeps.Data = hostsvc.NewCMDSData(conn, cmds, txRegistry)
+
+		queue := hostsvc.NewPGQueue(db.NewQueue(conn))
+		queue.StartMaintenance(context.Background(), 30*time.Second, 24*time.Hour)
+		hostDeps.Queue = queue
 	} else {
 		log.Println("[core] DATABASE_URL not set; running tunnel + event bus only (open registration)")
 	}
@@ -170,6 +192,7 @@ func main() {
 		log.Println("[core] admin endpoints enabled (/api/system/users/*, /api/system/extensions/*)")
 
 		if rustfs := buildStorage(); rustfs != nil {
+			hostDeps.Files = hostsvc.NewFiles(conn, queries, rustfs)
 			fileHandler := gateway.NewFileHandler(rustfs, queries)
 			gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/files/upload" }, fileHandler.Upload)
 			gw.RegisterSystemRoute(func(p string) bool { return hasPrefix(p, "/api/system/files/download/") }, fileHandler.Download)
@@ -205,9 +228,32 @@ func main() {
 		// every plugin on each edit. It must stay off in production.
 		DevMode: os.Getenv("PLUGIN_DEV_MODE") == "1",
 	}, registry, func(pkg *pluginhost.Package) pluginpb.HostServicesServer {
+		// Create the collections the plugin declared before it starts, so its
+		// first write does not fail on a missing table. ReconcileSchema is
+		// idempotent, so a restart or upgrade simply re-checks them.
+		if data, ok := hostDeps.Data.(*hostsvc.CMDSData); ok {
+			if err := data.ProvisionSchema(pkg.Key(), collectionsOf(pkg)); err != nil {
+				log.Printf("[core] plugin %s: %v", pkg.Key(), err)
+			}
+		}
 		return hostsvc.New(pkg.Key(), pkg.Manifest.Permissions, hostDeps)
 	})
 	defer pluginManager.Close()
+
+	// Outbound HTTP reads its allow list from the plugin's own manifest, so
+	// enabling a new version picks up a changed list without a restart.
+	egress := hostsvc.NewHTTPEgress(func(key string) []string {
+		if pkg, ok := pluginManager.Package(key); ok {
+			return pkg.Manifest.EgressAllow
+		}
+		return nil
+	})
+	egress.OnRequest = func(pluginKey, method, url string, statusCode int, err error) {
+		if err != nil {
+			log.Printf("[hostsvc] egress refused: %s %s %s: %v", pluginKey, method, url, err)
+		}
+	}
+	hostDeps.Egress = egress
 
 	pluginManager.Scan()
 	if err := pluginManager.EnableAll(context.Background()); err != nil {
@@ -329,6 +375,20 @@ func buildStorage() *storage.RustFSClient {
 		return nil
 	}
 	return client
+}
+
+// collectionsOf converts a plugin's declared collections into the store's
+// schema type.
+func collectionsOf(pkg *pluginhost.Package) []db.CollectionSchema {
+	cols := make([]db.CollectionSchema, 0, len(pkg.Manifest.Database.Collections))
+	for _, c := range pkg.Manifest.Database.Collections {
+		idxs := make([]db.Index, 0, len(c.Indexes))
+		for _, idx := range c.Indexes {
+			idxs = append(idxs, db.Index{Fields: idx.Fields, Unique: idx.Unique})
+		}
+		cols = append(cols, db.CollectionSchema{Name: c.Name, Indexes: idxs})
+	}
+	return cols
 }
 
 func hasPrefix(s, prefix string) bool {

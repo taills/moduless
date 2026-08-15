@@ -1,0 +1,74 @@
+# 测试说明
+
+这个目录里的测试会 fork 真实的插件进程、连真实的 PostgreSQL 和对象存储。它们不是单元测试的补充，而是唯一能验证「跨进程边界之后行为是否还成立」的地方 —— 这套系统里最贵的几个 bug 都只在那条边界上出现。
+
+## 跑起来
+
+```bash
+go test ./...                                  # 不需要外部依赖的部分
+```
+
+需要基础设施的测试会 `t.Skip` 而不是失败。跑全量：
+
+```bash
+# PostgreSQL
+docker run -d --name moduless-test-db -p 15433:5432 \
+  -e POSTGRES_USER=moduless -e POSTGRES_PASSWORD=moduless \
+  -e POSTGRES_DB=moduless_test postgres:18-alpine
+
+# S3 兼容对象存储（bucket 由测试自己创建）
+docker run -d --name moduless-test-s3 -p 19000:9000 \
+  -e MINIO_ROOT_USER=moduless -e MINIO_ROOT_PASSWORD=moduless123 \
+  minio/minio:latest server /data
+
+TEST_DATABASE_URL='postgres://moduless:moduless@localhost:15433/moduless_test?sslmode=disable' \
+TEST_S3_ENDPOINT='http://localhost:19000' \
+  go test ./... -count=1
+```
+
+**还要在 Linux 上跑一遍。** 开发机是 macOS，而两处行为不同且都要紧：写入正在执行的二进制在 Linux 上是 `ETXTBSY`，`Pdeathsig` 只在 Linux 存在。
+
+```bash
+docker run --rm -v "$(pwd)":/src -w /src -v "$HOME/go/pkg/mod":/go/pkg/mod \
+  -e CGO_ENABLED=0 golang:1.25-alpine go test ./... -count=1
+```
+
+## 写测试时的一条规矩
+
+**断言理由，不要只断言结果。**
+
+这套件里反复出现同一种失败：测试通过了，但不是因为它声称的原因。
+
+- 一个重定向测试断言「内网服务器没被访问」—— 它确实没被访问，但因为第一跳就被环回地址检查拦了，重定向逻辑压根没执行
+- 一个元数据 SSRF 测试用了域名 —— 在非云环境里那只是 DNS 解析失败，五秒超时看起来和「被拒绝」一模一样
+- 一个部署测试断言「不是 200」—— 拿到的是 `PermissionDenied`，而它名字里说的是后端缺失
+- 最早一个叫 `TestE2EPermissionDenied` 的测试，调用了一个不需要任何权限的路径然后断言 200 —— 权限门开着还是关着它都通过
+
+共同点是只检查了结果。**一个因为错误理由而正确的系统，离不正确只差一次环境变更。** 所以：拒绝要断言拒绝的**理由**，成功要断言是**哪条路径**成功的。
+
+同理，单向测试不算测试。验证了「无权限的人看不到」，还要验证「有权限的人看得到」—— 否则一个把所有东西都拒绝的实现也能通过。
+
+## 变异测试
+
+判断「测试是否真的在守护某个保护」，最直接的办法是把那个保护弄坏，看有没有测试失败。没有测试失败的保护，就是没有被守护的保护。
+
+做法：在保护函数开头插一句 `if true { return <放行> } // MUTATION`，跑全套，记下失败的测试，然后还原。
+
+最近一次的结果：
+
+| 保护 | 失败的测试数 |
+|---|---|
+| 权限门（`hostsvc.require`） | 8 |
+| SSRF 地址守卫（`blockedIP`） | 4 |
+| 文件所有权（`checkOwnership`） | 3 |
+| 二进制校验（`SecureConfig`） | 2 |
+| 状态码归一化（`normalizeStatus`） | 2 |
+| 路径清理（`cleanSubPath`） | 1 |
+| 身份改写阶段门（`identityMutationAllowed`） | 1 |
+| 环境变量隔离（`SkipHostEnv`） | 1 |
+
+文件所有权那一行原本是 **1**，而且那唯一的测试需要数据库和 S3 —— 基础设施缺席时它会被 skip，保护就完全裸奔。补了删除和元数据两条路径后变成 3。
+
+只有 1 个测试守着的那几项值得留意，不过它们的测试都不依赖外部基础设施，不会被 skip。
+
+改动任何安全相关的代码后，值得对它做一次这个动作。

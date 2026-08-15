@@ -381,3 +381,73 @@ func TestFileIsolatedBetweenPlugins(t *testing.T) {
 		t.Error("a plugin read another plugin's file by presenting its id")
 	}
 }
+
+// Deleting is the destructive half of the same mistake: if holding an id is
+// enough to read a file, it is enough to destroy one.
+func TestFileDeleteIsIsolatedBetweenPlugins(t *testing.T) {
+	owner, coreURL := fileStack(t, "owner", []string{"files:write", "files:read"})
+	file := uploadVia(t, owner, "do not delete me")
+
+	other, _ := fileStack(t, "intruder", []string{"files:write", "files:read"})
+
+	resp, err := other.Client.HandleHTTP(context.Background(), &pb.HttpRequest{
+		Method: http.MethodGet, Path: "/file-delete", Query: file.id,
+	})
+	if err != nil {
+		t.Fatalf("calling the plugin: %v", err)
+	}
+	t.Logf("another plugin deleting: %d %s", resp.GetStatusCode(), resp.GetBody())
+
+	if resp.GetStatusCode() == 200 {
+		t.Error("a plugin deleted another plugin's file")
+	}
+
+	// The owner's file is still there and still downloadable.
+	download, err := http.Get(coreURL + file.url)
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	defer download.Body.Close()
+	body, _ := io.ReadAll(download.Body)
+	if download.StatusCode != 200 || !strings.Contains(string(body), "do not delete me") {
+		t.Errorf("the owner's file is gone after another plugin tried to delete it: %d %s",
+			download.StatusCode, body)
+	}
+}
+
+// Metadata leaks less than content but still leaks: a filename says what a
+// system does, and a size says how much of it there is.
+func TestFileMetadataIsIsolatedBetweenPlugins(t *testing.T) {
+	owner, _ := fileStack(t, "owner", []string{"files:write", "files:read"})
+	file := uploadVia(t, owner, "contents")
+
+	// The owner can read its own metadata, so a failure below is about
+	// ownership rather than the call not working at all.
+	ownMeta, err := owner.Client.HandleHTTP(context.Background(), &pb.HttpRequest{
+		Method: http.MethodGet, Path: "/file-meta", Query: file.id,
+	})
+	if err != nil {
+		t.Fatalf("calling the plugin: %v", err)
+	}
+	if got := string(ownMeta.GetBody()); !strings.Contains(got, "found=true") {
+		t.Fatalf("the owner cannot read its own file's metadata: %s", got)
+	}
+
+	other, _ := fileStack(t, "intruder", []string{"files:write", "files:read"})
+	otherMeta, err := other.Client.HandleHTTP(context.Background(), &pb.HttpRequest{
+		Method: http.MethodGet, Path: "/file-meta", Query: file.id,
+	})
+	if err != nil {
+		t.Fatalf("calling the plugin: %v", err)
+	}
+
+	got := string(otherMeta.GetBody())
+	t.Logf("another plugin reading metadata: %d %s", otherMeta.GetStatusCode(), got)
+
+	if strings.Contains(got, "found=true") {
+		t.Error("a plugin read another plugin's file metadata")
+	}
+	if strings.Contains(got, "report.txt") {
+		t.Error("the filename leaked to a plugin that does not own the file")
+	}
+}

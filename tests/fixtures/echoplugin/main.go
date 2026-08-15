@@ -176,6 +176,25 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 		}
 		body = out
 
+	case "/file-delete":
+		// Deletes a file id this plugin was given, which may belong to
+		// somebody else.
+		if _, err := e.hostClient().DeleteFile(context.Background(),
+			&pb.FileRequest{FileId: req.GetQuery()}); err != nil {
+			return &pb.HttpResponse{StatusCode: 403, Body: []byte(err.Error())}, nil
+		}
+		body = []byte("deleted")
+
+	case "/file-meta":
+		// Asks what Core knows about a file id, ditto.
+		meta, err := e.hostClient().GetFileMetadata(context.Background(),
+			&pb.FileRequest{FileId: req.GetQuery()})
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 403, Body: []byte(err.Error())}, nil
+		}
+		body = fmt.Appendf(nil, "found=%v filename=%s size=%d",
+			meta.GetFound(), meta.GetFilename(), meta.GetSize())
+
 	case "/file-token-for":
 		// Asks for a download link to a file id this plugin was given, which
 		// may belong to somebody else.

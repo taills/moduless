@@ -259,6 +259,15 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 		}
 		body = out
 
+	case "/queue-consume-crash":
+		// Consumes one message and dies without acknowledging it, the way a
+		// plugin killed mid-job would. The message must come back.
+		out, err := e.consumeThenCrash(context.Background())
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
+		}
+		return &pb.HttpResponse{StatusCode: 200, Body: out}, nil
+
 	case "/queue":
 		out, err := e.roundTripQueue(context.Background())
 		if err != nil {
@@ -471,6 +480,33 @@ func (e *echoImpl) roundTripCache(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("cache get: %w", err)
 	}
 	return fmt.Appendf(nil, "found=%v value=%s", got.GetFound(), got.GetValue()), nil
+}
+
+// consumeThenCrash receives one message and exits without acking it.
+func (e *echoImpl) consumeThenCrash(ctx context.Context) ([]byte, error) {
+	host := e.hostClient()
+
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	stream, err := host.Consume(cctx, &pb.ConsumeRequest{
+		Topic:                    "crashtest",
+		Prefetch:                 1,
+		VisibilityTimeoutSeconds: 2,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("consume: %w", err)
+	}
+	msg, err := stream.Recv()
+	if err != nil {
+		return nil, fmt.Errorf("receive: %w", err)
+	}
+
+	log.Printf("echoplugin: received message %d attempt %d, dying without ack",
+		msg.GetMessageId(), msg.GetAttempt())
+	// Die the way an OOM kill or a panic would: no ack, no shutdown, nothing.
+	os.Exit(5)
+	return nil, nil
 }
 
 // roundTripQueue enqueues a message and consumes it back.

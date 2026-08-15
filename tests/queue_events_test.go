@@ -416,3 +416,115 @@ func TestTransactionSpansMultipleCalls(t *testing.T) {
 		t.Errorf("%d row(s) committed, want both writes from the transaction", count)
 	}
 }
+
+// At-least-once delivery, which is the entire reason the durable queue exists.
+//
+// A plugin that receives a message and dies before acknowledging it must not
+// have consumed that work. Treating delivery as completion would lose the job
+// in exactly the situation the queue is there to survive.
+//
+// Note what this depends on. Claim only takes rows in 'pending', so a message
+// leased to a consumer that vanished stays in 'processing' until the
+// maintenance loop returns it. At-least-once is a property of that loop
+// running, not of the queue table on its own — Core starts it at a 30s
+// interval, which is also the worst-case redelivery delay on top of the
+// visibility timeout.
+func TestQueueRedeliversAfterConsumerCrash(t *testing.T) {
+	handle := requireDB(t)
+	queue := db.NewQueue(handle)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The fixture hard-codes this topic, so earlier runs leave rows behind and
+	// a later run would claim one of those instead — reporting attempt 1 for a
+	// message no consumer had ever crashed on.
+	if _, err := handle.ExecContext(ctx,
+		`DELETE FROM plugin_queue WHERE owner_key = 'crasher' AND topic = 'crashtest'`); err != nil {
+		t.Fatalf("clearing earlier runs: %v", err)
+	}
+
+	hostsvc.NewPGQueue(queue).StartMaintenance(ctx, 200*time.Millisecond, time.Hour)
+
+	if _, _, err := queue.Enqueue(ctx, "crasher", "crashtest",
+		[]byte("work that must survive"), db.EnqueueOptions{}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	// A plugin receives it and dies without acking.
+	inst, _ := queueStack(t, "crasher", []string{"queue"}, nil)
+	_, _ = inst.Client.HandleHTTP(ctx, &pb.HttpRequest{
+		Method: http.MethodGet, Path: "/queue-consume-crash",
+	})
+
+	deadline := time.Now().Add(15 * time.Second)
+	for !inst.ProcessExited() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !inst.ProcessExited() {
+		t.Fatal("the plugin did not die as the test intended")
+	}
+
+	var again []db.Message
+	var err error
+	deadline = time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		again, err = queue.Claim(ctx, "crasher", "crashtest", 10, 30*time.Second)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		if len(again) > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if len(again) != 1 {
+		t.Fatalf("the message was never redelivered after its consumer died; " +
+			"work handed to a plugin that crashed has been lost")
+	}
+	t.Logf("redelivered on attempt %d: %s", again[0].Attempt, again[0].Payload)
+
+	if string(again[0].Payload) != "work that must survive" {
+		t.Errorf("payload = %q", again[0].Payload)
+	}
+	if again[0].Attempt < 2 {
+		t.Errorf("attempt = %d on a redelivery, want it counted as a retry; without that "+
+			"a message that always crashes its consumer would never reach the dead letter",
+			again[0].Attempt)
+	}
+}
+
+// The other half: while a lease is still held, nobody else gets the message.
+// At-least-once must not become at-least-twice-simultaneously, or two workers
+// do the same job at once.
+func TestQueueDoesNotRedeliverWhileLeased(t *testing.T) {
+	handle := requireDB(t)
+	queue := db.NewQueue(handle)
+	ctx := context.Background()
+
+	// No maintenance loop here on purpose: this is about the lease itself.
+	if _, err := handle.ExecContext(ctx,
+		`DELETE FROM plugin_queue WHERE owner_key = 'leaseholder' AND topic = 'leased'`); err != nil {
+		t.Fatalf("clearing earlier runs: %v", err)
+	}
+	if _, _, err := queue.Enqueue(ctx, "leaseholder", "leased",
+		[]byte("one job"), db.EnqueueOptions{}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	first, err := queue.Claim(ctx, "leaseholder", "leased", 10, 30*time.Second)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+	if len(first) != 1 {
+		t.Fatalf("first claim got %d message(s)", len(first))
+	}
+
+	second, err := queue.Claim(ctx, "leaseholder", "leased", 10, 30*time.Second)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+	if len(second) != 0 {
+		t.Errorf("a leased message was handed to a second consumer; two workers would run the same job")
+	}
+}

@@ -77,9 +77,7 @@ cd moduless
 cd core/frontend && npm install && npm run build && cd ../..
 
 # 把示例插件构建到插件目录
-mkdir -p plugins/notes/bin
-CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/notes
-cp extension-example/notes/manifest.yaml plugins/notes/
+./scripts/build-examples.sh
 
 # 启动。不配 DATABASE_URL 时数据、队列、文件能力会报 Unavailable，其余照常工作
 PLUGIN_DIR=./plugins go run ./core
@@ -112,11 +110,21 @@ Core 确实会在自己这一侧强制这些：插件声明的权限集、文档
 ```bash
 go test ./... -race
 
-# 数据库相关测试在未设置时自动跳过
-TEST_DATABASE_URL='postgres://postgres:pass@localhost:5432/test?sslmode=disable' go test ./...
+# 需要数据库或对象存储的测试在未设置时自动跳过
+TEST_DATABASE_URL='postgres://...' TEST_S3_ENDPOINT='http://localhost:19000' go test ./...
+
+# 控制台
+cd core/frontend && npm test
+
+# 在 Linux 上跑一遍 —— 那才是它实际运行的地方。有两处行为与 macOS 不同且都要紧：
+# 写入正在执行的二进制会得到 ETXTBSY，以及 Pdeathsig 只在 Linux 存在。
+docker run --rm -v "$(pwd)":/src -w /src -e CGO_ENABLED=0 \
+  golang:1.25-alpine go test ./... -count=1
 ```
 
-端到端测试会 fork 真实的插件进程并通过真实 HTTP 驱动它们，其中包括持续加压下的热更新，以及一次故意制造的崩溃。
+端到端测试会 fork 真实的插件进程并通过真实 HTTP 驱动它们：持续加压下的热更新、故意制造的崩溃、一个跨越升级的请求、三个插件在同一个 Core 里相互作用，以及一次数据库重启。
+
+[`tests/README.md`](tests/README.md) 记录了这套测试是怎么保持诚实的 —— 包括对安全边界做变异测试，以及这个代码库反复重新学到的那条规矩：断言理由，而不只是结果。
 
 ## 许可
 

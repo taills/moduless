@@ -77,9 +77,7 @@ cd moduless
 cd core/frontend && npm install && npm run build && cd ../..
 
 # 把範例外掛建置到外掛目錄
-mkdir -p plugins/notes/bin
-CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/notes
-cp extension-example/notes/manifest.yaml plugins/notes/
+./scripts/build-examples.sh
 
 # 啟動。未設定 DATABASE_URL 時，資料、佇列與檔案能力會回報 Unavailable，其餘照常運作
 PLUGIN_DIR=./plugins go run ./core
@@ -112,11 +110,21 @@ Core 確實會在自己這一側強制以下各項：外掛宣告的權限集合
 ```bash
 go test ./... -race
 
-# 資料庫相關測試在未設定時會自動略過
-TEST_DATABASE_URL='postgres://postgres:pass@localhost:5432/test?sslmode=disable' go test ./...
+# 需要資料庫或物件儲存的測試在未設定時會自動略過
+TEST_DATABASE_URL='postgres://...' TEST_S3_ENDPOINT='http://localhost:19000' go test ./...
+
+# 主控台
+cd core/frontend && npm test
+
+# 在 Linux 上再跑一遍 —— 那才是它實際執行的地方。有兩處行為與 macOS 不同且都要緊：
+# 寫入正在執行的二進位檔會得到 ETXTBSY，以及 Pdeathsig 只在 Linux 存在。
+docker run --rm -v "$(pwd)":/src -w /src -e CGO_ENABLED=0 \
+  golang:1.25-alpine go test ./... -count=1
 ```
 
-端對端測試會 fork 真實的外掛行程並以真實 HTTP 驅動它們，其中包含持續加壓下的熱更新，以及一次刻意製造的當機。
+端對端測試會 fork 真實的外掛行程並以真實 HTTP 驅動它們：持續加壓下的熱更新、刻意製造的當機、一個橫跨升級的請求、三個外掛在同一個 Core 裡相互作用，以及一次資料庫重啟。
+
+[`tests/README.md`](tests/README.md) 記錄了這套測試如何保持誠實 —— 包含對安全邊界做變異測試，以及這個程式庫反覆重新學到的那條規矩：斷言理由，而不只是結果。
 
 ## 授權
 

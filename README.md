@@ -82,7 +82,14 @@ carries the request's trace id automatically, so a slow query is attributable
 to the request that caused it.
 
 Full guide: [docs/plugin-development.md](docs/plugin-development.md).
-Working example: [`extension-example/notes`](extension-example/notes).
+
+Three worked examples, each showing a different shape:
+
+| | |
+|---|---|
+| [`notes`](extension-example/notes) | a destination — own API, own table, own menu |
+| [`ratelimit`](extension-example/ratelimit) | a pure filter — no routes, no tables, no permissions at all, governs everyone else's traffic |
+| [`audit`](extension-example/audit) | a log-phase recorder, and a scheduled job that prunes what it wrote |
 
 ## Running
 
@@ -93,10 +100,8 @@ cd moduless
 # Build the console once
 cd core/frontend && npm install && npm run build && cd ../..
 
-# Build the example plugin into the plugin directory
-mkdir -p plugins/notes/bin
-CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/notes
-cp extension-example/notes/manifest.yaml plugins/notes/
+# Build the example plugins into the plugin directory
+./scripts/build-examples.sh
 
 # Run. Without DATABASE_URL the data, queue and file capabilities report
 # Unavailable and everything else still works.
@@ -144,12 +149,27 @@ code belongs behind a container boundary.
 ```bash
 go test ./... -race
 
-# Database-backed tests skip without this
-TEST_DATABASE_URL='postgres://postgres:pass@localhost:5432/test?sslmode=disable' go test ./...
+# Tests needing a database or object storage skip without these
+TEST_DATABASE_URL='postgres://...' TEST_S3_ENDPOINT='http://localhost:19000' go test ./...
+
+# The console
+cd core/frontend && npm test
+
+# On Linux, which is what this ships on. Some behaviour differs from macOS in
+# ways that matter here: writing to a running executable fails with ETXTBSY,
+# and Pdeathsig exists at all.
+docker run --rm -v "$(pwd)":/src -w /src -e CGO_ENABLED=0 \
+  golang:1.25-alpine go test ./... -count=1
 ```
 
 The end-to-end suite forks real plugin processes and drives them over real
-HTTP, including a hot upgrade under continuous load and a deliberate crash.
+HTTP: a hot upgrade under continuous load, a deliberate crash, a request that
+spans an upgrade, three plugins interacting in one Core, and a database that
+goes away and comes back.
+
+See [`tests/README.md`](tests/README.md) for how the suite is kept honest —
+including mutation-testing the security boundaries, and the rule this codebase
+kept relearning: assert the reason, not just the outcome.
 
 ## License
 

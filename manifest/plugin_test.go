@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -318,4 +319,115 @@ egress_allow:
 	if err := m.Validate(); err == nil {
 		t.Error("Validate accepted jobs without the cron permission")
 	}
+}
+
+// Limits on what a manifest may declare.
+//
+// Plugins are trusted, so these are not about malice. They are about a mistake
+// — a generated manifest, a loop that ran too long — producing an error at
+// install time rather than a Core that is mysteriously slow, a database with a
+// thousand unexpected tables, or a menu no browser can render.
+func TestDeclarationLimits(t *testing.T) {
+	base := func() *Manifest {
+		return &Manifest{
+			Key:         "p",
+			Version:     "1.0.0",
+			Runtime:     Runtime{Entrypoint: "bin/p"},
+			Permissions: []string{PermDB, PermCron},
+		}
+	}
+
+	t.Run("filters", func(t *testing.T) {
+		m := base()
+		for i := range MaxFilters + 1 {
+			m.Filters = append(m.Filters, FilterDecl{
+				Name:  fmt.Sprintf("f%d", i),
+				Phase: PhasePreRoute,
+				Match: FilterMatch{Paths: []string{"/**"}},
+			})
+		}
+		if err := m.Validate(); err == nil {
+			t.Errorf("%d filters were accepted", len(m.Filters))
+		}
+
+		m.Filters = m.Filters[:MaxFilters]
+		if err := m.Validate(); err != nil {
+			t.Errorf("exactly the limit was rejected: %v", err)
+		}
+	})
+
+	t.Run("collections", func(t *testing.T) {
+		m := base()
+		for i := range MaxCollections + 1 {
+			m.Database.Collections = append(m.Database.Collections,
+				Collection{Name: fmt.Sprintf("c%d", i)})
+		}
+		if err := m.Validate(); err == nil {
+			t.Error("a plugin was allowed to ask Core for more tables than the limit")
+		}
+	})
+
+	t.Run("jobs", func(t *testing.T) {
+		m := base()
+		for i := range MaxJobs + 1 {
+			m.Jobs = append(m.Jobs, JobDecl{Name: fmt.Sprintf("j%d", i), Cron: "0 3 * * *"})
+		}
+		if err := m.Validate(); err == nil {
+			t.Error("more jobs than the limit were accepted")
+		}
+	})
+
+	t.Run("config keys", func(t *testing.T) {
+		m := base()
+		for i := range MaxConfigKeys + 1 {
+			m.Config = append(m.Config, ConfigDecl{Key: fmt.Sprintf("k%d", i)})
+		}
+		if err := m.Validate(); err == nil {
+			t.Error("more config keys than the limit were accepted")
+		}
+	})
+
+	t.Run("menu depth", func(t *testing.T) {
+		// Build a chain one level deeper than allowed.
+		leaf := MenuItem{Path: "/deep", Title: "leaf"}
+		node := leaf
+		for i := range MaxMenuDepth {
+			node = MenuItem{
+				Path:     fmt.Sprintf("/level%d", i),
+				Title:    "n",
+				Children: []MenuItem{node},
+			}
+		}
+
+		m := base()
+		m.Menus = []MenuItem{node}
+		if err := m.Validate(); err == nil {
+			t.Errorf("a menu nested deeper than %d levels was accepted", MaxMenuDepth)
+		}
+	})
+
+	t.Run("menu breadth", func(t *testing.T) {
+		m := base()
+		for i := range MaxMenuNodes + 1 {
+			m.Menus = append(m.Menus, MenuItem{Path: fmt.Sprintf("/n%d", i), Title: "n"})
+		}
+		if err := m.Validate(); err == nil {
+			t.Errorf("more than %d menu nodes were accepted; the whole tree is sent to every browser", MaxMenuNodes)
+		}
+	})
+
+	t.Run("an ordinary manifest is unaffected", func(t *testing.T) {
+		m := base()
+		m.Filters = []FilterDecl{{Name: "f", Phase: PhaseLog, Match: FilterMatch{Paths: []string{"/**"}}}}
+		m.Database.Collections = []Collection{{Name: "notes"}}
+		m.Jobs = []JobDecl{{Name: "nightly", Cron: "17 3 * * *"}}
+		m.Config = []ConfigDecl{{Key: "retention_days", Default: "30"}}
+		m.Menus = []MenuItem{{
+			Path: "/notes", Title: "Notes",
+			Children: []MenuItem{{Path: "/notes/archive", Title: "Archive"}},
+		}}
+		if err := m.Validate(); err != nil {
+			t.Errorf("a realistic manifest was rejected: %v", err)
+		}
+	})
 }

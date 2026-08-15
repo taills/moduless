@@ -170,6 +170,26 @@ func (m *Manifest) HasPermission(perm string) bool {
 // It is deliberately strict: an unrecognised permission or phase is a hard
 // error, because the alternative is a plugin that quietly does not do what its
 // author intended.
+// Declaration limits.
+//
+// Plugins are trusted, so these are not defences against malice. They are
+// defences against a mistake — a generated manifest, a copy-paste loop, a
+// template gone wrong — becoming a mystery instead of an error. Each is at
+// least an order of magnitude above any sensible use: a plugin with sixty-four
+// filters is already paying sixty-four cross-process calls per request, and
+// one declaring sixty-four collections is asking Core for sixty-four tables.
+//
+// The other reason is review. A manifest is what an operator reads before
+// approving a plugin, and a six-megabyte one cannot be read at all.
+const (
+	MaxFilters     = 64
+	MaxCollections = 64
+	MaxJobs        = 64
+	MaxConfigKeys  = 128
+	MaxMenuDepth   = 8
+	MaxMenuNodes   = 256
+)
+
 func (m *Manifest) Validate() error {
 	if m.Key == "" {
 		return fmt.Errorf("manifest: key is required")
@@ -250,6 +270,26 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("manifest: runtime.replicas must not be negative")
 	}
 
+	if len(m.Filters) > MaxFilters {
+		return fmt.Errorf("manifest: %d filters declared, at most %d are allowed; "+
+			"every one of them is a cross-process call on each matching request",
+			len(m.Filters), MaxFilters)
+	}
+	if n := len(m.Database.Collections); n > MaxCollections {
+		return fmt.Errorf("manifest: %d collections declared, at most %d are allowed; "+
+			"Core provisions a table for each", n, MaxCollections)
+	}
+	if len(m.Jobs) > MaxJobs {
+		return fmt.Errorf("manifest: %d jobs declared, at most %d are allowed", len(m.Jobs), MaxJobs)
+	}
+	if len(m.Config) > MaxConfigKeys {
+		return fmt.Errorf("manifest: %d config keys declared, at most %d are allowed; "+
+			"the console renders a form from these", len(m.Config), MaxConfigKeys)
+	}
+	if err := checkMenuSize(m.Menus); err != nil {
+		return err
+	}
+
 	seenConfig := map[string]struct{}{}
 	for _, c := range m.Config {
 		if c.Key == "" {
@@ -269,6 +309,31 @@ func (m *Manifest) Validate() error {
 		}
 	}
 	return nil
+}
+
+// checkMenuSize bounds the menu tree in both directions.
+//
+// Depth matters because the console renders it recursively and a human has to
+// navigate it; breadth matters because the whole tree is sent to every browser
+// on every refresh.
+func checkMenuSize(nodes []MenuItem) error {
+	total := 0
+	var walk func([]MenuItem, int) error
+	walk = func(nodes []MenuItem, depth int) error {
+		if depth > MaxMenuDepth {
+			return fmt.Errorf("manifest: menu nesting is deeper than %d levels", MaxMenuDepth)
+		}
+		for _, n := range nodes {
+			if total++; total > MaxMenuNodes {
+				return fmt.Errorf("manifest: more than %d menu nodes declared", MaxMenuNodes)
+			}
+			if err := walk(n.Children, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(nodes, 1)
 }
 
 // ReplicaCount returns how many processes to run, defaulting to one.

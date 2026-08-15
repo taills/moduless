@@ -1,8 +1,10 @@
 package manifest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -180,5 +182,29 @@ func TestMergeConfigWithoutDeclarations(t *testing.T) {
 	set := map[string]string{"whatever": "1"}
 	if got := m.MergeConfig(set); got["whatever"] != "1" || len(got) != 1 {
 		t.Errorf("MergeConfig altered an undeclared config: %v", got)
+	}
+}
+
+// A manifest is a declaration, not a payload. One that is enormous is a
+// mistake — a generator that looped, something written to the wrong path — and
+// refusing it before parsing beats reading megabytes into memory and building
+// an object graph out of them.
+func TestLoadRejectsAnEnormousManifest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+
+	var b strings.Builder
+	b.WriteString("key: p\nversion: 1.0.0\nruntime:\n  entrypoint: bin/p\nmenus:\n")
+	for i := 0; b.Len() < MaxManifestBytes+1024; i++ {
+		fmt.Fprintf(&b, "  - path: /n%d\n    title: %s\n", i, strings.Repeat("x", 200))
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Errorf("a %d byte manifest was accepted", b.Len())
+	} else {
+		t.Logf("refused: %v", err)
 	}
 }

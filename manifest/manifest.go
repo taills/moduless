@@ -159,7 +159,20 @@ type Index struct {
 //
 // Call Validate afterwards for the full check; Load only covers what parsing
 // itself can establish.
+// MaxManifestBytes bounds the declaration file.
+//
+// A real manifest is a few kilobytes. This is generous enough that no honest
+// one approaches it, and low enough that a file which does — a generator that
+// looped, a log accidentally written to the wrong path — is refused before it
+// is parsed rather than read into memory and turned into an object graph.
+const MaxManifestBytes = 1 << 20
+
 func Load(path string) (*Manifest, error) {
+	if info, err := os.Stat(path); err == nil && info.Size() > MaxManifestBytes {
+		return nil, fmt.Errorf("manifest %s is %d bytes, over the %d byte limit; "+
+			"a manifest is a declaration, not data", path, info.Size(), MaxManifestBytes)
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read manifest %s: %w", path, err)

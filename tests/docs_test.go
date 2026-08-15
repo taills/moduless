@@ -3,6 +3,7 @@ package tests
 import (
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -261,4 +262,159 @@ func manifestYAMLTags(t *testing.T) map[string]bool {
 		}
 	}
 	return out
+}
+
+// A struct the guide shows is the struct the SDK declares.
+//
+// The guide gained a list of QueueMessage's field names — names only, no types
+// — and the next author to read it assumed ID was a string. It is an int64,
+// and that was three compile errors from one sentence. A prose field list
+// invites a type guess; showing the declaration does not.
+//
+// So this checks the declarations the guide shows against the real ones: every
+// field the guide lists must exist on that type with that type. It does not
+// require the guide to show every field — a doc may reasonably show the
+// interesting half — only that what it does show is true.
+func TestGuideStructsMatchTheSDK(t *testing.T) {
+	guide, err := os.ReadFile(filepath.Join("..", "docs", "plugin-development.md"))
+	if err != nil {
+		t.Fatalf("reading the guide: %v", err)
+	}
+
+	real := sdkStructFields(t)
+	shown := structsInGoBlocks(t, string(guide))
+	if len(shown) == 0 {
+		t.Skip("the guide shows no struct declarations")
+	}
+
+	checked := 0
+	for name, fields := range shown {
+		actual, ok := real[name]
+		if !ok {
+			t.Errorf("the guide declares a type %q the SDK does not have", name)
+			continue
+		}
+		for field, typ := range fields {
+			got, ok := actual[field]
+			if !ok {
+				t.Errorf("%s.%s is in the guide and not in the SDK", name, field)
+				continue
+			}
+			checked++
+			if got != typ {
+				t.Errorf("%s.%s is %s in the guide and %s in the SDK; an author who "+
+					"believes the guide gets a compile error, or worse a conversion "+
+					"that happens to work", name, field, typ, got)
+			}
+		}
+	}
+	t.Logf("checked %d field(s) across %d struct(s) shown in the guide", checked, len(shown))
+}
+
+// sdkStructFields maps each exported SDK struct to field name -> type text.
+func sdkStructFields(t *testing.T) map[string]map[string]string {
+	t.Helper()
+
+	out := map[string]map[string]string{}
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, filepath.Join("..", "sdk", "plugin"),
+		func(fi os.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0)
+	if err != nil {
+		t.Fatalf("parsing the SDK: %v", err)
+	}
+
+	for _, pkg := range pkgs {
+		for _, file := range pkg.Files {
+			ast.Inspect(file, func(n ast.Node) bool {
+				ts, ok := n.(*ast.TypeSpec)
+				if !ok || !ts.Name.IsExported() {
+					return true
+				}
+				st, ok := ts.Type.(*ast.StructType)
+				if !ok {
+					return true
+				}
+				fields := map[string]string{}
+				for _, f := range st.Fields.List {
+					typ := typeText(fset, f.Type)
+					for _, id := range f.Names {
+						fields[id.Name] = typ
+					}
+				}
+				out[ts.Name.Name] = fields
+				return true
+			})
+		}
+	}
+	return out
+}
+
+// structsInGoBlocks parses `type X struct { ... }` out of the guide's Go fences.
+func structsInGoBlocks(t *testing.T, guide string) map[string]map[string]string {
+	t.Helper()
+
+	out := map[string]map[string]string{}
+	inGo := false
+	var block []string
+	flush := func() {
+		if len(block) == 0 {
+			return
+		}
+		src := "package p\n" + strings.Join(block, "\n")
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, "guide.go", src, 0)
+		if err != nil {
+			// Most blocks are fragments and will not parse. Only complete
+			// declarations are checkable, which is the point.
+			block = nil
+			return
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			ts, ok := n.(*ast.TypeSpec)
+			if !ok {
+				return true
+			}
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				return true
+			}
+			fields := map[string]string{}
+			for _, f := range st.Fields.List {
+				typ := typeText(fset, f.Type)
+				for _, id := range f.Names {
+					fields[id.Name] = typ
+				}
+			}
+			out[ts.Name.Name] = fields
+			return true
+		})
+		block = nil
+	}
+
+	for _, line := range strings.Split(guide, "\n") {
+		if strings.HasPrefix(line, "```go") {
+			inGo, block = true, nil
+			continue
+		}
+		if strings.HasPrefix(line, "```") {
+			if inGo {
+				flush()
+			}
+			inGo = false
+			continue
+		}
+		if inGo {
+			block = append(block, line)
+		}
+	}
+	return out
+}
+
+// typeText renders a type expression back to source.
+func typeText(fset *token.FileSet, expr ast.Expr) string {
+	var b strings.Builder
+	if err := printer.Fprint(&b, fset, expr); err != nil {
+		return "?"
+	}
+	return b.String()
 }

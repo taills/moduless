@@ -309,7 +309,18 @@ err := sdk.Queue.Consume(ctx, "emails", func(ctx context.Context, m *sdk.QueueMe
 })
 ```
 
-`QueueMessage` 上有：`ID`（这次投递的消息 id，去重和记账用）、`Topic`、`Payload`（或者用 `Decode` 直接反序列化）、`Attempt` / `MaxAttempts`、以及 `ParentTraceID` —— 入队时那个请求的 trace，异步任务靠它追回触发它的东西。
+handler 收到的 `*sdk.QueueMessage` 长这样 —— 给出类型而不是名字列表，因为**一份散文式的字段清单只会招来类型猜测**：一位只读文档的作者据此把 `ID` 当成了字符串，三处编译错误。
+
+```go
+type QueueMessage struct {
+    ID            int64    // 这次投递的消息 id，去重和记账用
+    Topic         string
+    Payload       []byte   // 或者用 m.Decode(&dest) 直接反序列化
+    Attempt       int      // 这是第几次投递，从 1 开始
+    MaxAttempts   int
+    ParentTraceID string   // 入队时那个请求的 trace
+}
+```
 
 **投递语义是至少一次**。handler 干完活后、确认前崩溃，消息会再来一次 —— 所以 handler 必须幂等。反过来（投递即确认）会在插件崩溃时丢活儿，而那正是这套机制要应对的情况。
 

@@ -330,6 +330,7 @@ func TestExampleManifestsAreValid(t *testing.T) {
 		{"notes", "notes", "../extension-example/notes"},
 		{"audit", "audit", "../extension-example/audit"},
 		{"inventory", "inventory", "../extension-example/inventory"},
+		{"apikey", "apikey", "../extension-example/apikey"},
 	}
 
 	root := t.TempDir()
@@ -361,6 +362,7 @@ func TestExamplesStart(t *testing.T) {
 		{"notes", "notes", "../extension-example/notes"},
 		{"inventory", "inventory", "../extension-example/inventory"},
 		{"audit", "audit", "../extension-example/audit"},
+		{"apikey", "apikey", "../extension-example/apikey"},
 	} {
 		t.Run(ex.key, func(t *testing.T) {
 			root := t.TempDir()

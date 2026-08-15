@@ -1,0 +1,68 @@
+key: apikey
+display_name: API 密钥
+version: 1.0.0
+
+runtime:
+  entrypoint: bin/plugin
+  replicas: 1
+
+# filter:authenticate is the one permission on this list that changes what
+# other plugins see. Without it Core discards any set_identity this plugin
+# returns — and logs that it tried — so an operator approving this manifest is
+# approving "this plugin decides who the caller is", not merely "this plugin
+# reads a header".
+permissions:
+  - db
+  - cache
+  - filter:authenticate
+
+database:
+  collections:
+    - name: keys
+      indexes:
+        - fields: [user_id]
+        - fields: [created]
+
+filters:
+  # Runs on every request in the system, which is why the lookup is cached.
+  - name: authenticate
+    phase: authenticate
+    order: 10
+    # A broken authenticator must refuse requests, not wave them through
+    # unauthenticated. This is the setting that makes that true; the default
+    # is fail-open, which is right for filters that observe and wrong here.
+    fail_closed: true
+    timeout_ms: 50
+    match:
+      paths: ["/**"]
+
+  - name: authorize
+    phase: authorize
+    order: 10
+    fail_closed: true
+    timeout_ms: 50
+    match:
+      paths: ["/**"]
+
+config:
+  - key: cache_ttl
+    label: 密钥缓存时长
+    description: 撤销一个密钥后，其他副本上最长还能用多久
+    type: duration
+    default: 60s
+  - key: local_ttl
+    label: 进程内缓存时长
+    description: 每个副本自己缓存多久；越短撤销越快生效，越长每请求越便宜
+    type: duration
+    default: 5s
+  - key: protected_prefixes
+    label: 需要密钥的路径前缀
+    description: 逗号分隔；这些前缀下的请求必须带有效密钥
+    type: string
+    default: /api/plugins/notes/
+
+menus:
+  - path: /apikey
+    title: API 密钥
+    icon: key
+    roles: [admin]

@@ -3,6 +3,7 @@ package pluginhost
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -284,4 +285,76 @@ func TestSupervisorRetriesFailedRelaunch(t *testing.T) {
 	if got := attempts.Load(); got < 2 {
 		t.Errorf("relaunch attempted %d time(s), want at least 2", got)
 	}
+}
+
+// A plugin an admin disabled mid-restart must not end up quarantined.
+//
+// Disable clears `enabled` before it removes the plugin from the registry, so
+// a recovery that wakes from its backoff inside that window still sees the
+// plugin registered and tries to relaunch it. relaunch refuses — the plugin is
+// no longer enabled — and the supervisor used to treat that refusal as another
+// failed restart: it retried with a longer backoff, and each attempt counted
+// toward the crash threshold. Enough of them and a plugin somebody switched
+// off deliberately is reported as one Core gave up on after repeated crashes,
+// which is both wrong and only clearable by an explicit re-enable.
+func TestSupervisorDoesNotQuarantineADisabledPlugin(t *testing.T) {
+	reg := NewRegistry()
+	inst, _, proc := readyInstance("p", 1)
+	reg.Install("p", inst)
+
+	var attempts atomic.Int32
+	sup := NewSupervisor(reg, func(context.Context, string) (*Instance, error) {
+		attempts.Add(1)
+		// What Manager.relaunch returns once an admin has disabled the plugin.
+		return nil, fmt.Errorf("%w: p", ErrPluginDisabled)
+	}, fastSupervisorConfig())
+	defer sup.Stop()
+
+	sup.Watch(context.Background(), inst)
+	proc.Kill()
+
+	waitFor(t, 2*time.Second, "the supervisor to attempt a restart",
+		func() bool { return attempts.Load() >= 1 })
+
+	// Long enough for several more backoff rounds, had it been retrying.
+	time.Sleep(200 * time.Millisecond)
+
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("the supervisor tried %d times to restart a plugin that was disabled; "+
+			"each retry counts toward the crash threshold", got)
+	}
+	if quarantined(sup, "p") {
+		t.Error("a plugin an admin disabled was quarantined as if it had been crashing")
+	}
+}
+
+// The other direction: a restart that fails for a real reason still escalates.
+// A supervisor that treated every failure as "disabled" would give up on a
+// plugin that is genuinely broken, and it would pass the test above.
+func TestSupervisorStillQuarantinesOnRealRestartFailures(t *testing.T) {
+	reg := NewRegistry()
+	inst, _, proc := readyInstance("p", 1)
+	reg.Install("p", inst)
+
+	var attempts atomic.Int32
+	sup := NewSupervisor(reg, func(context.Context, string) (*Instance, error) {
+		attempts.Add(1)
+		return nil, errors.New("exec format error")
+	}, fastSupervisorConfig())
+	defer sup.Stop()
+
+	sup.Watch(context.Background(), inst)
+	proc.Kill()
+
+	waitFor(t, 3*time.Second, "the plugin to be quarantined",
+		func() bool { return quarantined(sup, "p") })
+
+	if got := attempts.Load(); got < 2 {
+		t.Errorf("only %d restart attempt(s) before quarantine; a real failure should be retried", got)
+	}
+}
+
+func quarantined(s *Supervisor, key string) bool {
+	_, ok := s.QuarantinedSince(key)
+	return ok
 }

@@ -459,7 +459,7 @@ func (m *Manager) relaunch(ctx context.Context, key string) (*Instance, error) {
 	m.mu.Unlock()
 
 	if !ok || !on {
-		return nil, fmt.Errorf("plugin %s is no longer enabled", key)
+		return nil, fmt.Errorf("%w: %s", ErrPluginDisabled, key)
 	}
 	return m.launchOne(ctx, pkg, 0)
 }

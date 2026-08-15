@@ -2,10 +2,22 @@ package pluginhost
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sync"
 	"time"
 )
+
+// ErrPluginDisabled means a restart was abandoned because an admin turned the
+// plugin off, not because it failed.
+//
+// The distinction has to be a sentinel rather than a log line: a failed
+// restart is retried with a longer backoff and each attempt counts toward the
+// crash threshold, so treating "an admin disabled this" as a failure would
+// let a plugin somebody deliberately switched off end up quarantined — a state
+// the console presents as "Core gave up after repeated crashes" and which
+// needs an explicit re-enable to leave.
+var ErrPluginDisabled = errors.New("plugin is no longer enabled")
 
 // RelaunchFunc starts a fresh instance of a plugin. The supervisor injects it
 // rather than calling Launch directly, so restart policy can be tested without
@@ -177,12 +189,21 @@ func (s *Supervisor) recover(ctx context.Context, key string) {
 
 	// An admin may have disabled the plugin while we were backing off, in
 	// which case bringing it back would silently override their action.
+	//
+	// This is a cheap early-out, not the decision. Disable removes the plugin
+	// from `enabled` before it removes it from the registry, so between those
+	// two there is a moment when this check still says yes. relaunch is the
+	// authority, and the sentinel below is what makes the two agree.
 	if !s.registry.Current().Has(key) {
 		logf("plugin %s: no longer registered, abandoning restart", key)
 		return
 	}
 
 	inst, err := s.relaunch(ctx, key)
+	if errors.Is(err, ErrPluginDisabled) {
+		logf("plugin %s: disabled while restarting, abandoning", key)
+		return
+	}
 	if err != nil {
 		logf("plugin %s: restart failed: %v", key, err)
 		s.recover(ctx, key)

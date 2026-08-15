@@ -30,9 +30,9 @@ type Manifest struct {
 	// Secret is the credential Core issues when an admin approves this extension.
 	// The SDK persists it here (see SaveSecret) and replays it on every reconnect.
 	//
-	// Deprecated: only the reverse-tunnel extension model uses this. Plugins
-	// launched as subprocesses are trusted through package signing and the
-	// parent/child relationship instead, and never carry a secret.
+	// Deprecated: only the reverse-tunnel extension model uses this. A plugin
+	// launched as a subprocess needs no credential — Core started it, so its
+	// identity is the parent/child relationship itself.
 	Secret string `yaml:"secret"`
 
 	// --- plugin model (go-plugin subprocesses) ---
@@ -40,13 +40,13 @@ type Manifest struct {
 	// Runtime tells Core how to launch the plugin process.
 	Runtime Runtime `yaml:"runtime"`
 
-	// Permissions lists the Host capabilities the plugin requests. Core denies
-	// any HostServices call outside this set, so a plugin gets exactly what its
-	// author declared and an admin approved — nothing more.
+	// Permissions lists the Host capabilities the plugin requests.
+	//
+	// Core enforces this on its own side of the connection, so a plugin cannot
+	// reach a capability it did not declare. Its main value, though, is that it
+	// is the review checklist: an operator approving a plugin can see at a
+	// glance that it wants the queue and outbound HTTP but not files.
 	Permissions []string `yaml:"permissions"`
-
-	// Resources are per-process cgroup limits.
-	Resources Resources `yaml:"resources"`
 
 	// Filters subscribes the plugin to request lifecycle phases.
 	Filters []FilterDecl `yaml:"filters"`

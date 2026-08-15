@@ -22,15 +22,6 @@ type Runtime struct {
 	Replicas int `yaml:"replicas"`
 }
 
-// Resources are the cgroup limits applied to each plugin process. Zero means
-// "no limit". These are best-effort: Core logs a warning and continues when
-// the deployment does not give it cgroup v2 delegation.
-type Resources struct {
-	MemoryMB  int `yaml:"memory_mb"`
-	CPUMillis int `yaml:"cpu_millis"`
-	MaxPIDs   int `yaml:"max_pids"`
-}
-
 // Permission names. Core rejects any permission it does not recognise at
 // install time rather than ignoring it, so a typo fails loudly instead of
 // silently leaving a plugin without the access it expects.

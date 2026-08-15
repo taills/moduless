@@ -15,8 +15,9 @@ runtime:
   # More than one process spreads traffic by smooth weighted round-robin.
   replicas: 1
 
-# Core denies any capability not listed here, naming what is missing, so a
-# plugin gets exactly what its author declared and an admin approved.
+# Core enforces this list on its own side, so an undeclared capability fails
+# immediately. Just as importantly, it is what an operator reads when deciding
+# whether to approve this plugin.
 permissions:
   - db
   - queue

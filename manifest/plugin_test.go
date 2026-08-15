@@ -258,10 +258,6 @@ permissions:
   - db
   - queue
   - http:egress
-resources:
-  memory_mb: 256
-  cpu_millis: 500
-  max_pids: 128
 filters:
   - name: rate-limit
     phase: pre_route
@@ -300,9 +296,6 @@ egress_allow:
 	}
 	if !m.HasPermission(PermQueue) || !m.HasPermission(PermHTTPEgress) {
 		t.Errorf("permissions = %v", m.Permissions)
-	}
-	if m.Resources.MemoryMB != 256 || m.Resources.MaxPIDs != 128 {
-		t.Errorf("resources = %+v", m.Resources)
 	}
 	if len(m.Filters) != 2 {
 		t.Fatalf("parsed %d filters, want 2", len(m.Filters))

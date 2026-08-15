@@ -50,11 +50,15 @@ type LaunchSpec struct {
 	// MaxMessageBytes overrides pluginapi.DefaultMaxMessageBytes.
 	MaxMessageBytes int
 
-	// Env is the complete environment for the child process. It is not merged
-	// with Core's own environment: SkipHostEnv is set, because go-plugin
-	// otherwise forwards everything Core has — including DATABASE_URL,
-	// ADMIN_PASSWORD and the object-store credentials — to what may be a
-	// third-party binary.
+	// Env is the complete environment for the child process, not a merge with
+	// Core's own: SkipHostEnv is set, because go-plugin otherwise forwards
+	// everything Core has.
+	//
+	// This is not about withholding secrets from code that is already trusted.
+	// It is about the architecture: a plugin that can read DATABASE_URL can
+	// connect to PostgreSQL directly, and then Core no longer owns schema,
+	// migrations or isolation. Making the variable absent keeps the document
+	// store the only path, rather than merely the recommended one.
 	Env []string
 
 	// Stdout and Stderr capture the child's streams. Note that go-plugin
@@ -66,10 +70,10 @@ type LaunchSpec struct {
 	// ConfigureTimeout bounds the initial Configure call.
 	ConfigureTimeout time.Duration
 
-	// DevMode relaxes isolation for local development. It currently skips
-	// Pdeathsig, because air restarts Core on every rebuild and killing every
-	// plugin along with it makes the edit loop painful. Never set it in
-	// production: without Pdeathsig a crashed Core leaves orphaned plugins.
+	// DevMode skips Pdeathsig, because air restarts Core on every rebuild and
+	// taking every plugin down with it makes the edit loop painful. Leave it
+	// off in production: without Pdeathsig a crashed Core leaves orphaned
+	// plugin processes behind.
 	DevMode bool
 }
 
@@ -93,7 +97,7 @@ func Launch(ctx context.Context, spec LaunchSpec) (inst *Instance, err error) {
 
 	cmd := exec.Command(spec.BinaryPath)
 	cmd.Env = spec.Env
-	applySandbox(cmd, spec) // no-op outside Linux; see sandbox_*.go
+	applyProcessAttrs(cmd, spec) // no-op outside Linux; see process_*.go
 
 	cfg := &goplugin.ClientConfig{
 		HandshakeConfig: pluginapi.Handshake,

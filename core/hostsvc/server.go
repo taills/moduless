@@ -82,6 +82,11 @@ func (s *Server) PluginKey() string { return s.key }
 
 // require rejects a call the plugin was not granted.
 //
+// The check runs here, inside Core, so a plugin cannot reach past it. What it
+// buys is not protection from hostile code — plugins are reviewed and run with
+// Core's own privileges — but that a plugin doing something its manifest never
+// declared fails immediately and visibly instead of quietly working.
+//
 // PermissionDenied rather than Unimplemented is deliberate: it tells the
 // plugin author their manifest is missing a declaration, instead of suggesting
 // Core does not support the feature.

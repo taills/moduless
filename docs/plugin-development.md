@@ -79,7 +79,7 @@ runtime:
   entrypoint: bin/plugin      # 包内相对路径
   replicas: 1                 # >1 时按平滑加权轮询分流
 
-# Core 拒绝任何未声明的能力调用，并在错误里指明缺哪一项
+# Core 在自己这一侧强制这份清单；同时它也是审核者批准插件时看的东西
 permissions:
   - db                        # 文档存储
   - db:tx                     # 事务（比单条语句更重的授权，单独声明）
@@ -92,11 +92,6 @@ permissions:
   - files:write               # 写入/删除文件
   - http:egress               # 出站 HTTP
   - filter:authenticate       # 允许 filter 改写调用者身份
-
-resources:                    # cgroup 限制（Linux，best-effort）
-  memory_mb: 256
-  cpu_millis: 500
-  max_pids: 128
 
 database:
   collections:                # 插件启动前由 Core 建好
@@ -284,7 +279,14 @@ sdk.Serve(sdk.Config{
 
 ### 身份改写
 
-`SetIdentity` 只在插件持有 `filter:authenticate` 权限、**且**处于 authenticate/authorize 阶段时生效。两道门缺一不可：没有权限的话任何插件都能把自己提权成 admin；没有阶段限制的话一个 log 阶段的 filter 能在鉴权跑完之后回头改写调用者。
+`SetIdentity` 只在插件持有 `filter:authenticate` 权限、**且**处于 authenticate/authorize 阶段时生效。
+
+这两道门不是用来防恶意插件的（插件本就受信任），而是把「谁负责认证」这件事钉死：
+
+- **权限门**让「这个插件会改写调用者身份」成为 manifest 里一句显式声明，审核时看得见，而不是藏在某个 filter 的代码里
+- **阶段门**防的是顺序错误 —— 一个 log 阶段的 filter 改写身份时，鉴权早就跑完了，改了也只会让日志和实际放行的决策对不上
+
+不满足条件时改写会被忽略并记一条日志，而不是静默丢弃。
 
 ### 成本
 
@@ -315,19 +317,58 @@ sdk.Log.Info(ctx, "订单已创建", "order_id", id)
 
 ---
 
-## 安全模型
+## 信任模型
 
-给第三方插件的信任边界：
+插件的定位和 IIS 的 ISAPI Filter 一样：它运行在宿主进程的权限之下，能力边界靠**安装前的审核**建立，而不是靠沙箱。
 
-- **进程隔离**：插件是独立进程，崩溃不影响 Core，也不影响其他插件
-- **二进制校验**：安装时记录 SHA-256，启动前重新校验，篡改一个字节即拒绝启动
-- **能力最小化**：未在 manifest 声明的能力一律 PermissionDenied
-- **数据隔离**：文档、缓存、队列、文件都按插件 key 命名空间隔离，用相同的 key 也读不到别人的
-- **无网络**：插件没有直接网络访问，出站必须经 Core 白名单代理
-- **无环境变量继承**：Core 的 `DATABASE_URL`、`ADMIN_PASSWORD`、对象存储密钥都不会传给插件
-- **Linux 加固**：低权限 uid、`Pdeathsig`（Core 死则插件死）、cgroup 资源限制
+插件由 Core 作为子进程启动，与 Core **同用户、同文件系统权限**。这意味着：
 
-插件与 Core 同容器运行，所以这是纵深防御而非强隔离边界。真正不可信的代码应当配合容器层的 seccomp / gVisor。
+- 它能读到 Core 这个用户能读的任何文件
+- 它能占用 CPU 和内存，Core 不做配额限制
+- 它进程崩溃不会拖垮 Core，但它可以做任何该用户能做的事
+
+**所以插件必须先审核再安装。** 这是整套模型的前提，就像你不会往 IIS 里装一个来路不明的 filter。
+
+### 哪些是真正强制的
+
+以下检查跑在 **Core 进程内**，插件在连接的另一端，绕不过去：
+
+| 机制 | 效果 |
+|---|---|
+| `permissions` 声明 | 未声明的 Host 能力调用直接 PermissionDenied |
+| 数据命名空间 | 文档、缓存、队列、文件都按插件 key 隔离，用相同 key 也读不到别人的 |
+| 事务归属 | 拿着别的插件的 `tx_id` 无法写入 |
+| 出站白名单 | 只能访问 `egress_allow` 的域名，且拒绝解析到内网/元数据地址的目标 |
+| SHA-256 校验 | 安装后二进制被改动一个字节即拒绝启动 |
+| 环境隔离 | 插件读不到 `DATABASE_URL` 等，因而无法绕过 Core 直连数据库 |
+
+最后一条不是防"偷密钥"——插件本来就是受信任的——而是防**架构漂移**：一旦插件能直连 PostgreSQL，Core 就不再拥有 schema、迁移和隔离的控制权，文档存储从"唯一路径"退化成"建议路径"。
+
+### 哪些不是边界
+
+- 文件系统：插件能读同用户可读的一切
+- 资源：没有 cgroup 配额，一个死循环的插件会吃满 CPU
+- 系统调用：没有 seccomp 限制
+
+如果你确实要跑不受信任的代码，那属于容器层的问题（gVisor、独立容器、seccomp profile），不在这套插件模型的职责内。
+
+### permissions 的真正价值
+
+既然插件受信任，为什么还要声明权限？
+
+两个理由，都跟"防恶意"无关：
+
+1. **它是审核清单。** 你在批准一个插件时，一眼能看到它要队列和出站 HTTP，但不要文件写入。这比读代码快得多。
+2. **它防误用。** 插件调了一个它本不该用的能力时会立刻失败，而不是悄悄改了数据 —— 这类 bug 在受信任的代码里同样会发生。
+
+---
+
+## 进程生命周期
+
+Core 是插件的父进程，这带来两个必须知道的行为：
+
+- **Linux 上设置了 `Pdeathsig`**：Core 崩溃时内核会杀掉插件。否则会留下孤儿进程占着套接字和内存，下次 Core 启动会撞上它们。
+- **macOS 上没有这个机制**：本地开发时如果硬杀 Core，插件进程会活下来。看到端口被占时先检查有没有残留进程。
 
 ---
 
@@ -343,7 +384,7 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   http://localhost/api/system/plugins/notes/upgrade
 ```
 
-`PLUGIN_DEV_MODE=1` 会跳过 `Pdeathsig`，这样 air 重编译 Core 时不会连带冷启动所有插件。**生产环境绝不要开** —— 没有 `Pdeathsig`，Core 崩溃会留下孤儿进程。
+`PLUGIN_DEV_MODE=1` 会跳过 `Pdeathsig`，这样 air 重编译 Core 时不会连带冷启动所有插件。生产环境不要开 —— 没有 `Pdeathsig`，Core 崩溃会留下孤儿进程。
 
 ### 环境变量
 
@@ -352,4 +393,4 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 | `PLUGIN_DIR` | `./plugins` | 插件包目录 |
 | `PLUGIN_DATA_DIR` | 空 | 每插件私有可写目录的根 |
 | `PLUGIN_LOG_LEVEL` | `warn` | 插件日志级别 |
-| `PLUGIN_DEV_MODE` | 关 | 放宽隔离，仅开发用 |
+| `PLUGIN_DEV_MODE` | 关 | 跳过 Pdeathsig，仅开发用 |

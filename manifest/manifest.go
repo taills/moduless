@@ -29,7 +29,34 @@ type Manifest struct {
 	UISlots  []Slot     `yaml:"ui_slots"`
 	// Secret is the credential Core issues when an admin approves this extension.
 	// The SDK persists it here (see SaveSecret) and replays it on every reconnect.
+	//
+	// Deprecated: only the reverse-tunnel extension model uses this. Plugins
+	// launched as subprocesses are trusted through package signing and the
+	// parent/child relationship instead, and never carry a secret.
 	Secret string `yaml:"secret"`
+
+	// --- plugin model (go-plugin subprocesses) ---
+
+	// Runtime tells Core how to launch the plugin process.
+	Runtime Runtime `yaml:"runtime"`
+
+	// Permissions lists the Host capabilities the plugin requests. Core denies
+	// any HostServices call outside this set, so a plugin gets exactly what its
+	// author declared and an admin approved — nothing more.
+	Permissions []string `yaml:"permissions"`
+
+	// Resources are per-process cgroup limits.
+	Resources Resources `yaml:"resources"`
+
+	// Filters subscribes the plugin to request lifecycle phases.
+	Filters []FilterDecl `yaml:"filters"`
+
+	// Jobs are cron schedules Core runs on the plugin's behalf.
+	Jobs []JobDecl `yaml:"jobs"`
+
+	// EgressAllow is the hostname allow-list for outbound HTTP made through
+	// Core's proxy. Plugins have no direct network access.
+	EgressAllow []string `yaml:"egress_allow"`
 }
 
 type Menu struct {

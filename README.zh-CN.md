@@ -65,7 +65,7 @@ func main() {
 `sdk.Serve` 接收标准 `http.Handler`，所以任何路由库和中间件都能直接用。插件能触达的一切 —— 文档存储、队列、缓存、锁、文件、出站 HTTP —— 都经过 Core，且每次调用都自动带上请求的 trace id，因此一次慢查询能归因到引发它的那个请求。
 
 完整指南：[docs/plugin-development.md](docs/plugin-development.md)。
-可运行示例：[`extension-example/plugin`](extension-example/plugin)。
+可运行示例：[`extension-example/notes`](extension-example/notes)。
 
 ## 运行
 
@@ -78,8 +78,8 @@ cd core/frontend && npm install && npm run build && cd ../..
 
 # 把示例插件构建到插件目录
 mkdir -p plugins/notes/bin
-CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/plugin
-cp extension-example/plugin/manifest.yaml plugins/notes/
+CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/notes
+cp extension-example/notes/manifest.yaml plugins/notes/
 
 # 启动。不配 DATABASE_URL 时数据、队列、文件能力会报 Unavailable，其余照常工作
 PLUGIN_DIR=./plugins go run ./core

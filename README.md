@@ -82,7 +82,7 @@ carries the request's trace id automatically, so a slow query is attributable
 to the request that caused it.
 
 Full guide: [docs/plugin-development.md](docs/plugin-development.md).
-Working example: [`extension-example/plugin`](extension-example/plugin).
+Working example: [`extension-example/notes`](extension-example/notes).
 
 ## Running
 
@@ -95,8 +95,8 @@ cd core/frontend && npm install && npm run build && cd ../..
 
 # Build the example plugin into the plugin directory
 mkdir -p plugins/notes/bin
-CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/plugin
-cp extension-example/plugin/manifest.yaml plugins/notes/
+CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/notes
+cp extension-example/notes/manifest.yaml plugins/notes/
 
 # Run. Without DATABASE_URL the data, queue and file capabilities report
 # Unavailable and everything else still works.

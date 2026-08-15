@@ -38,7 +38,8 @@ core/
   auth/ event/ storage/ middleware/
   frontend/      the console (Vue 3 + qiankun)
 sdk/plugin/      what plugin authors write against
-extension-example/plugin/   a complete example plugin
+extension-example/notes/     a complete example plugin
+extension-example/ratelimit/ a pure-filter example plugin
 tests/           end-to-end tests that fork real plugin processes
 ```
 

@@ -325,11 +325,9 @@ func TestExampleRateLimitConfigPushToStoppedPlugin(t *testing.T) {
 // test-only edits. An example that does not load is worse than no example: it
 // is the first thing a new plugin author copies.
 func TestExampleManifestsAreValid(t *testing.T) {
-	// The notes example lives in a directory named "plugin" but declares the
-	// key "notes", and package directories must be named for their key.
 	examples := []struct{ dir, key, source string }{
 		{"ratelimit", "ratelimit", "../extension-example/ratelimit"},
-		{"notes", "notes", "../extension-example/plugin"},
+		{"notes", "notes", "../extension-example/notes"},
 	}
 
 	root := t.TempDir()
@@ -358,7 +356,7 @@ func TestExampleManifestsAreValid(t *testing.T) {
 func TestExamplesStart(t *testing.T) {
 	for _, ex := range []struct{ dir, key, source string }{
 		{"ratelimit", "ratelimit", "../extension-example/ratelimit"},
-		{"notes", "notes", "../extension-example/plugin"},
+		{"notes", "notes", "../extension-example/notes"},
 	} {
 		t.Run(ex.key, func(t *testing.T) {
 			root := t.TempDir()

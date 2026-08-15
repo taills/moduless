@@ -5,8 +5,8 @@
 //
 // Build it and drop it in Core's plugin directory:
 //
-//	CGO_ENABLED=0 go build -o notes/bin/plugin ./extension-example/plugin
-//	cp extension-example/plugin/manifest.yaml notes/
+//	CGO_ENABLED=0 go build -o notes/bin/plugin ./extension-example/notes
+//	cp extension-example/notes/manifest.yaml notes/
 //	PLUGIN_DIR=$(pwd) go run ./core
 package main
 

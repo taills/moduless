@@ -65,7 +65,7 @@ func main() {
 `sdk.Serve` 接收標準的 `http.Handler`，因此任何路由套件與中介層都能直接使用。外掛能觸及的一切 —— 文件儲存、佇列、快取、鎖、檔案、對外 HTTP —— 都經過 Core，而且每次呼叫都會自動帶上該請求的 trace id，因此一次慢查詢能追溯到引發它的那個請求。
 
 完整指南：[docs/plugin-development.md](docs/plugin-development.md)。
-可執行範例：[`extension-example/plugin`](extension-example/plugin)。
+可執行範例：[`extension-example/notes`](extension-example/notes)。
 
 ## 執行
 
@@ -78,8 +78,8 @@ cd core/frontend && npm install && npm run build && cd ../..
 
 # 把範例外掛建置到外掛目錄
 mkdir -p plugins/notes/bin
-CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/plugin
-cp extension-example/plugin/manifest.yaml plugins/notes/
+CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./extension-example/notes
+cp extension-example/notes/manifest.yaml plugins/notes/
 
 # 啟動。未設定 DATABASE_URL 時，資料、佇列與檔案能力會回報 Unavailable，其餘照常運作
 PLUGIN_DIR=./plugins go run ./core

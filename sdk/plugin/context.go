@@ -309,3 +309,83 @@ func (r *FilterResult) toProto() *pb.FilterResponse {
 		return &pb.FilterResponse{Action: pb.FilterResponse_ACTION_CONTINUE}
 	}
 }
+
+// --- testing ----------------------------------------------------------------
+
+// Action is what a filter decided.
+type Action string
+
+const (
+	ActionContinue     Action = "continue"
+	ActionStop         Action = "stop"
+	ActionMutate       Action = "mutate"
+	ActionUnrecognised Action = "unrecognised"
+)
+
+// FilterDecision is a FilterResult opened up, for a test to assert on.
+//
+// A filter is an ordinary function — a plugin author can call theirs directly —
+// but until this they could not check what it returned: every field of
+// FilterResult is unexported and there were no accessors, so the one thing a
+// filter test needs to do was the one thing it could not. Reading the fields
+// back through a struct rather than through eight accessors keeps the builder's
+// method names free: RewritePath is already a setter.
+type FilterDecision struct {
+	Action Action
+
+	// Set when the filter stopped the request.
+	Status int
+	Body   []byte
+	Header http.Header
+
+	// Set when the filter mutated it.
+	Identity       *UserContext
+	Path           string
+	SetRequest     http.Header
+	RemoveRequest  []string
+	SetResponse    http.Header
+	RemoveResponse []string
+	Values         map[string]string
+}
+
+// Inspect reports what this result says, for tests.
+func (r *FilterResult) Inspect() FilterDecision {
+	if r == nil {
+		return FilterDecision{Action: ActionUnrecognised}
+	}
+	d := FilterDecision{
+		Status:         r.status,
+		Body:           r.body,
+		Header:         r.stopHdr,
+		Identity:       r.identity,
+		Path:           r.rewritePath,
+		SetRequest:     r.setReqHeaders,
+		RemoveRequest:  r.removeReqHeaders,
+		SetResponse:    r.setRespHeaders,
+		RemoveResponse: r.removeRespHdrs,
+		Values:         r.values,
+	}
+	switch r.action {
+	case pb.FilterResponse_ACTION_CONTINUE:
+		d.Action = ActionContinue
+	case pb.FilterResponse_ACTION_SHORT_CIRCUIT:
+		d.Action = ActionStop
+	case pb.FilterResponse_ACTION_MUTATE:
+		d.Action = ActionMutate
+	default:
+		d.Action = ActionUnrecognised
+	}
+	return d
+}
+
+// WithUser returns a context carrying an authenticated caller, so a handler
+// that reads sdk.User(ctx) can be tested without a live Core.
+//
+// Core builds this context itself from the identity it passes with each
+// request. A plugin author writing a test for the authorization pattern this
+// SDK documents — `if !sdk.User(r.Context()).HasRole("admin")` — had no way to
+// produce a request that satisfies it, so the check most worth testing was
+// untestable.
+func WithUser(ctx context.Context, u *UserContext) context.Context {
+	return context.WithValue(ctx, userKey, u)
+}

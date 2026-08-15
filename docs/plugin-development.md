@@ -380,9 +380,38 @@ resp, err := sdk.HTTP.Get(ctx, "https://api.example.com/rates")
 
 ### 测试
 
-插件的 handler、事务逻辑、filter 判断都是普通 Go 函数，用普通的 `go test` 测就行 —— 不需要跑起 Core。把依赖 `sdk.DB` / `sdk.Queue` 的部分和纯逻辑分开，纯逻辑直接测。
+插件的 handler、事务逻辑、filter 判断都是普通 Go 函数，用普通的 `go test` 测，不需要跑起 Core。
 
-需要真的跑起来的部分（`sdk.Serve` 之后的握手、filter 被 Core 调用、跨插件的顺序），目前**没有可复用的测试工具**：本仓库的做法是在 `tests/` 里现场 `go build` 插件、由 Core 启动它、再发真实 HTTP 请求。第三方插件要做同样的事，现在得自己搭。这是一个已知的空缺。
+**测 filter**：直接调用它，用 `Inspect()` 看它决定了什么。
+
+```go
+res, err := myAuthFilter(ctx, &sdk.FilterRequest{
+    Phase:  sdk.PhaseAuthenticate,
+    Method: "GET",
+    Path:   "/api/plugins/notes/items",
+    Header: http.Header{},   // 没带凭据
+})
+
+got := res.Inspect()
+if got.Action != sdk.ActionStop || got.Status != 401 {
+    t.Errorf("匿名请求没有被拒绝：%+v", got)
+}
+```
+
+`Inspect()` 返回的 `FilterDecision` 里有全部内容：`Action`（`ActionContinue` / `ActionStop` / `ActionMutate`）、短路时的 `Status` / `Body` / `Header`、mutate 时的 `Identity` / `Path` / `SetRequest` / `Values`。
+
+**测 handler 的鉴权**：用 `sdk.WithUser` 造一个带调用者的 context。
+
+```go
+req := httptest.NewRequest("POST", "/keys", nil)
+req = req.WithContext(sdk.WithUser(req.Context(), &sdk.UserContext{
+    UserID: "1", Username: "root", Roles: []string{"admin"},
+}))
+```
+
+传 `nil` 就是匿名请求 —— **这个用例一定要测**：`sdk.User(ctx)` 会返回 `nil`，而插件里的 panic 不是 500 而是进程死亡。
+
+**还没有的**：一个能替 `sdk.DB` / `sdk.Queue` / `sdk.Cache` 的内存实现。碰到这些能力的代码，目前只能靠把它和纯逻辑分开来测，或者照本仓库 `tests/` 的做法 —— 现场编译插件、由 Core 启动、发真实请求。这是一个已知的空缺。
 
 ### 收尾：OnShutdown
 

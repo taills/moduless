@@ -150,6 +150,7 @@ var stdlibMethods = map[string]bool{
 	"Wrap": true, "Done": true, "Err": true, "Value": true, "WithValue": true,
 	"Context": true, "FormatInt": true, "Fprintf": true, "Unix": true,
 	"WithCancel": true, "WithTimeout": true, "Once": true, "Do": true,
+	"NewRequest": true, "WithContext": true, "NewRecorder": true, "ServeHTTP": true,
 }
 
 func methodsCalledInGoBlocks(guide string) []string {

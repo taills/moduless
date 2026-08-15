@@ -22,6 +22,18 @@ vendor/
 /moduless
 /core-bin
 
+# Anything `go build ./some/dir` drops here. The list above names the packages
+# that exist today; this catches the throwaway ones — a scratch package built
+# to check whether something compiles produces a binary named after it, and
+# that is how .docauthor reached the repository one round after the list was
+# written. The real backstop is TestNoBuildOutputIsTracked, which does not
+# depend on anyone predicting the name.
+/.*
+!/.gitignore
+!/.github
+!/.air.toml
+!/.dockerignore
+
 # Python
 __pycache__/
 *.py[cod]

@@ -114,6 +114,18 @@ func ScanPackages(root string) (packages []*Package, failures map[string]error) 
 			continue
 		}
 		dir := filepath.Join(root, e.Name())
+
+		// A directory with no manifest is not a failed plugin, it is not a
+		// plugin. Reporting it as broken fills the console with things an
+		// operator cannot act on — the per-plugin data directory when
+		// PLUGIN_DATA_DIR sits inside PLUGIN_DIR, an unpacking leftover, a
+		// version-control directory. A directory that does have a manifest is
+		// claiming to be a plugin, and anything wrong with it from there on is
+		// a genuine failure worth showing.
+		if _, err := os.Stat(filepath.Join(dir, ManifestFilename)); err != nil {
+			continue
+		}
+
 		pkg, err := LoadPackage(dir)
 		if err != nil {
 			failures[e.Name()] = err

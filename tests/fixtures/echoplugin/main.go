@@ -94,6 +94,16 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
 		}
 		body = out
+	case "/cache":
+		// Uses a capability that requires a declared permission, so tests can
+		// prove Core refuses it on its own side rather than trusting the
+		// plugin's SDK to police itself.
+		out, err := e.roundTripCache(context.Background())
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 403, Body: []byte(err.Error())}, nil
+		}
+		body = out
+
 	case "/queue":
 		out, err := e.roundTripQueue(context.Background())
 		if err != nil {
@@ -205,6 +215,30 @@ func (e *echoImpl) roundTripDocument(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("document was not found after writing it")
 	}
 	return fmt.Appendf(nil, "version=%d data=%s", put.GetVersion(), got.GetData()), nil
+}
+
+// roundTripCache writes and reads a cache entry, which needs the "cache"
+// permission. Whether that permission was granted is Core's decision, made on
+// Core's side of the connection.
+func (e *echoImpl) roundTripCache(ctx context.Context) ([]byte, error) {
+	e.mu.RLock()
+	host := e.host
+	e.mu.RUnlock()
+	if host == nil {
+		return nil, fmt.Errorf("host services not bound")
+	}
+
+	if _, err := host.CacheSet(ctx, &pb.CacheSetRequest{
+		Key:   "probe",
+		Value: []byte("cached"),
+	}); err != nil {
+		return nil, fmt.Errorf("cache set: %w", err)
+	}
+	got, err := host.CacheGet(ctx, &pb.CacheGetRequest{Key: "probe"})
+	if err != nil {
+		return nil, fmt.Errorf("cache get: %w", err)
+	}
+	return fmt.Appendf(nil, "found=%v value=%s", got.GetFound(), got.GetValue()), nil
 }
 
 // roundTripQueue enqueues a message and consumes it back.

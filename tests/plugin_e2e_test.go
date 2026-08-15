@@ -391,11 +391,64 @@ func TestE2ECrashIsRecovered(t *testing.T) {
 }
 
 // TestE2EPermissionDenied proves the permission gate holds across the process
-// boundary: the plugin asks Core for something it was not granted and is told
-// no by Core, not by its own SDK.
+// boundary: the plugin asks Core for a capability it was not granted and is
+// refused by Core, not by its own SDK.
+//
+// This is the whole basis for accepting third-party plugins. If the check
+// happened in the SDK, a plugin author would only need to not use the SDK.
 func TestE2EPermissionDenied(t *testing.T) {
-	// The fixture calls GetConfig during Configure, which needs no permission,
-	// so it starts successfully with an empty grant set.
+	inst := launchPlugin(t, "hello", "1.0.0", nil) // no permissions granted
+
+	resp, err := inst.Client.HandleHTTP(context.Background(), &pb.HttpRequest{
+		Method: "GET",
+		Path:   "/cache",
+	})
+	if err != nil {
+		t.Fatalf("HandleHTTP: %v", err)
+	}
+
+	body := string(resp.GetBody())
+	t.Logf("ungranted capability: status %d, %s", resp.GetStatusCode(), body)
+
+	if resp.GetStatusCode() == 200 {
+		t.Fatal("a plugin used a capability it never declared")
+	}
+	// The refusal must name what is missing and how to ask for it. A bare
+	// PermissionDenied leaves a plugin author guessing at which of several
+	// capabilities a call needed.
+	if !strings.Contains(body, "cache") {
+		t.Errorf("the refusal does not name the missing permission: %q", body)
+	}
+	if !strings.Contains(body, "manifest.yaml") {
+		t.Errorf("the refusal does not say how to request it: %q", body)
+	}
+}
+
+// The other half: a declared permission is honoured. Without this, a gate that
+// refused everything would pass the test above.
+func TestE2EPermissionGranted(t *testing.T) {
+	inst := launchPlugin(t, "hello", "1.0.0", []string{"cache"})
+
+	resp, err := inst.Client.HandleHTTP(context.Background(), &pb.HttpRequest{
+		Method: "GET",
+		Path:   "/cache",
+	})
+	if err != nil {
+		t.Fatalf("HandleHTTP: %v", err)
+	}
+	if resp.GetStatusCode() != 200 {
+		t.Fatalf("a granted capability was refused: status %d, %s",
+			resp.GetStatusCode(), resp.GetBody())
+	}
+	if got := string(resp.GetBody()); !strings.Contains(got, "found=true") {
+		t.Errorf("cache round trip returned %q, want the value back", got)
+	}
+}
+
+// Starting with no permissions at all must still work. A plugin that only
+// serves HTTP needs nothing from Core, and refusing to start it would make the
+// permission model punitive rather than descriptive.
+func TestE2EZeroPermissionPluginServes(t *testing.T) {
 	inst := launchPlugin(t, "hello", "1.0.0", nil)
 
 	resp, err := inst.Client.HandleHTTP(context.Background(), &pb.HttpRequest{

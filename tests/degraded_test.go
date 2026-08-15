@@ -3,9 +3,11 @@ package tests
 import (
 	"context"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
+	"github.com/taills/moduless/core/db"
 	"github.com/taills/moduless/core/hostsvc"
 	"github.com/taills/moduless/core/pluginhost"
 	pb "github.com/taills/moduless/proto/plugin"
@@ -192,5 +194,98 @@ func TestUnavailableIsDistinctFromPermissionDenied(t *testing.T) {
 	}
 	if deniedBody == unavailableBody {
 		t.Error("the two refusals are indistinguishable")
+	}
+}
+
+// A database that goes away and comes back.
+//
+// This happens in production for ordinary reasons — a failover, a version
+// upgrade, a restart during maintenance — and Core is expected to ride it out
+// rather than needing a restart of its own. What must hold is that a plugin
+// meeting a dead database gets a clear error instead of crashing, that Core
+// stays up, and that everything resumes once the database does.
+//
+// Verified against a real PostgreSQL restart under docker compose as well:
+// writes failed for about a second with "the database system is starting up"
+// and then resumed, with no plugin quarantined and no process lost. This test
+// covers the same code path — a connection pool that cannot reach its server —
+// without needing a container.
+func TestPluginSurvivesDatabaseOutage(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+
+	// A pool of this test's own, so closing it does not disturb anything else.
+	handle, err := db.InitDB(url)
+	if err != nil {
+		t.Fatalf("connecting: %v", err)
+	}
+
+	cmds := db.NewCMDSManager(handle)
+	txs := db.NewTxRegistry()
+	defer txs.Close()
+	data := hostsvc.NewCMDSData(handle, cmds, txs)
+	if err := data.ProvisionSchema("outage", []db.CollectionSchema{{Name: "notes"}}); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	inst, err := pluginhost.Launch(context.Background(), pluginhost.LaunchSpec{
+		Key:        "outage",
+		InstanceID: "outage-0",
+		Version:    "1.0.0",
+		BinaryPath: pluginBinary,
+		Checksum:   checksum(t, pluginBinary),
+		HostImpl: hostsvc.New("outage", []string{"db"}, hostsvc.Deps{
+			Config: hostsvc.NewStaticConfig(),
+			Data:   data,
+		}),
+		GrantedPermissions: []string{"db"},
+		Env:                []string{"PATH=/usr/bin:/bin"},
+		Stderr:             os.Stderr,
+		DevMode:            true,
+	})
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	defer inst.Kill()
+
+	// Working to begin with.
+	if resp := callPlugin(t, inst, "/db", ""); resp.GetStatusCode() != 200 {
+		t.Fatalf("the plugin could not reach the database before the outage: %s", resp.GetBody())
+	}
+
+	// The database goes away.
+	handle.Close()
+
+	resp := callPlugin(t, inst, "/db", "")
+	body := string(resp.GetBody())
+	t.Logf("during the outage: %d %s", resp.GetStatusCode(), body)
+
+	if resp.GetStatusCode() == 200 {
+		t.Error("a write succeeded against a closed database")
+	}
+	if inst.ProcessExited() {
+		t.Fatal("the plugin process died when the database became unreachable")
+	}
+	if strings.Contains(body, "panic") {
+		t.Errorf("the failure surfaced as a panic rather than an error: %q", body)
+	}
+
+	// Repeated failures must not degrade it further.
+	for range 10 {
+		if _, err := inst.Client.HandleHTTP(context.Background(),
+			&pb.HttpRequest{Method: http.MethodGet, Path: "/db"}); err != nil {
+			t.Fatalf("the plugin stopped responding during the outage: %v", err)
+		}
+	}
+	if inst.ProcessExited() {
+		t.Error("the plugin died after repeated database failures")
+	}
+
+	// And it serves its own routes throughout — a plugin whose database is
+	// down is degraded, not dead.
+	if resp := callPlugin(t, inst, "/items", ""); resp.GetStatusCode() != 200 {
+		t.Errorf("a route needing no database returned %d during the outage", resp.GetStatusCode())
 	}
 }

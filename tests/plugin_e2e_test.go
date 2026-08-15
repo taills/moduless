@@ -120,8 +120,15 @@ func newGateway(reg *pluginhost.Registry) *httptest.Server {
 // can observe Core giving up rather than the client doing so first.
 func newGatewayWithTimeout(reg *pluginhost.Registry, backendTimeout time.Duration) *httptest.Server {
 	h := &gateway.PluginHandler{
-		Registry:       reg,
-		Runner:         &pipeline.Runner{},
+		Registry: reg,
+		// Filter failures are reported rather than swallowed. A fail-open
+		// filter that is quietly broken looks exactly like one that is passing
+		// everything, which is as unhelpful in a test as it is in production.
+		Runner: &pipeline.Runner{
+			OnFilterError: func(f *pipeline.Filter, err error) {
+				fmt.Fprintf(os.Stderr, "[filter] %s failed: %v\n", f.Label(), err)
+			},
+		},
 		BackendTimeout: backendTimeout,
 		// Auth is nil, so identity resolution is skipped and the pipeline runs
 		// without a session store. Authentication itself is covered by the

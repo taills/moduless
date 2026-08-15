@@ -35,6 +35,20 @@ func (p *plugin) Configure(_ context.Context, req *pb.ConfigureRequest) (*pb.Con
 	p.granted = req.GetGrantedPermissions()
 	p.config = req.GetConfig()
 	p.mu.Unlock()
+
+	// Deliver the initial settings through the same callback as every later
+	// change, so a plugin has one place that applies configuration instead of
+	// two that must be kept in agreement.
+	//
+	// This matters more than it looks. Configuration does not exist until Core
+	// sends it, which is after main() has already called Serve — so the obvious
+	// thing an author writes, reading the config before starting, silently gets
+	// an empty map and the plugin runs on its compiled-in defaults while the
+	// console displays the admin's values. Routing the first delivery through
+	// the callback removes the opportunity to write that bug.
+	if p.cfg.OnConfigChanged != nil {
+		p.cfg.OnConfigChanged(GetConfig())
+	}
 	return &pb.ConfigureResponse{Ready: true}, nil
 }
 
@@ -45,7 +59,13 @@ func Key() string { return current.get().key }
 // filesystem should be treated as read-only.
 func DataDir() string { return current.get().dataDir }
 
-// Config returns the admin-managed settings for this plugin.
+// GetConfig returns the admin-managed settings for this plugin.
+//
+// It is empty until Core has configured the plugin, which happens after Serve
+// is called and before the first request arrives. Reading it from main() —
+// before Serve — therefore always yields an empty map. Use Config.
+// OnConfigChanged instead, which fires once with the initial settings and again
+// on every change.
 func GetConfig() map[string]string {
 	p := current.get()
 	p.mu.RLock()

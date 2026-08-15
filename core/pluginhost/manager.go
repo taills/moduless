@@ -35,6 +35,15 @@ type ManagerConfig struct {
 	MaxMessageBytes int
 	LogLevel        string
 
+	// ConfigSource supplies a plugin's admin-managed settings at launch. Nil
+	// means every plugin starts with an empty config.
+	//
+	// The manager reads settings but does not own them: whoever persists a
+	// change calls SetConfig afterwards to push it out. Keeping storage on the
+	// caller's side is what lets the same manager run against the database in
+	// production and against a map in tests.
+	ConfigSource func(pluginKey string) map[string]string
+
 	// DevMode relaxes process isolation for local development. Never in
 	// production: see the sandbox notes.
 	DevMode bool
@@ -295,6 +304,40 @@ func (m *Manager) Package(key string) (*Package, bool) {
 	return pkg, ok
 }
 
+// SetConfig delivers settings to every running replica of a plugin.
+//
+// The caller persists the change first; this only pushes it. Delivery is
+// best-effort per replica and the first failure is returned after all of them
+// have been tried, because a replica that missed an update is a stale replica,
+// not a reason to leave the others stale too. Every replica picks the new
+// settings up at its next launch regardless, since ConfigSource is read there.
+//
+// A plugin that is not running is not an error: there is nobody to tell.
+func (m *Manager) SetConfig(ctx context.Context, key string, cfg map[string]string) error {
+	replicas := m.registry.Current().Replicas(key)
+
+	var firstErr error
+	for _, inst := range replicas {
+		if err := inst.Client.OnConfigChanged(ctx, &pb.ConfigChangeEvent{Config: cfg}); err != nil {
+			logf("plugin %s: pushing config to %s: %v", key, inst.InstanceID, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("push config to %s: %w", inst.InstanceID, err)
+			}
+		}
+	}
+	if len(replicas) > 0 && firstErr == nil {
+		logf("plugin %s: config pushed to %d replica(s)", key, len(replicas))
+	}
+	return firstErr
+}
+
+func (m *Manager) configFor(key string) map[string]string {
+	if m.cfg.ConfigSource == nil {
+		return nil
+	}
+	return m.cfg.ConfigSource(key)
+}
+
 // launchAll starts every replica a package asks for, killing any that already
 // started if a later one fails. A half-started plugin must never be published.
 func (m *Manager) launchAll(ctx context.Context, pkg *Package) ([]*Instance, error) {
@@ -328,6 +371,7 @@ func (m *Manager) launchOne(ctx context.Context, pkg *Package, index int) (*Inst
 		BinaryPath:         pkg.BinaryPath,
 		HostImpl:           m.hostFor(pkg),
 		GrantedPermissions: pkg.Manifest.Permissions,
+		Config:             m.configFor(pkg.Key()),
 		DataDir:            dataDir,
 		LogLevel:           m.cfg.LogLevel,
 		MaxMessageBytes:    m.cfg.MaxMessageBytes,

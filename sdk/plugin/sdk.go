@@ -71,8 +71,16 @@ type Config struct {
 	// Jobs maps the job names declared in manifest.yaml to their handlers.
 	Jobs map[string]JobFunc
 
-	// OnConfigChanged receives admin config edits. It is called on a
-	// background goroutine, so it must not assume request scope.
+	// OnConfigChanged receives this plugin's settings: once at start-up with
+	// whatever an admin has configured, and again on every later change.
+	//
+	// Configuration arrives from Core after Serve is called, so reading it in
+	// main() would always see an empty map. This callback is the only place a
+	// plugin should apply settings; a plugin that reconfigures live here can be
+	// retuned during an incident without being restarted.
+	//
+	// Later calls arrive on a background goroutine, so it must not assume
+	// request scope and must be safe against concurrent requests.
 	OnConfigChanged func(config map[string]string)
 
 	// OnShutdown runs when Core asks the plugin to drain. In-flight requests

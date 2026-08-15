@@ -1,0 +1,52 @@
+# A rate-limiting plugin.
+#
+# This is the IIS-filter shape in its purest form: the plugin owns no routes,
+# no tables and no menus. It exists only to sit in front of everyone else's
+# traffic — including Core's own routes and other plugins' APIs — and decide
+# whether each request may proceed.
+#
+# Note what the permission list says: nothing. An operator reviewing this
+# plugin can see at a glance that it cannot touch the database, the queue, the
+# filesystem or the network. The one thing it does needs no capability at all.
+
+key: ratelimit
+display_name: 限流
+version: 1.0.0
+
+runtime:
+  entrypoint: bin/ratelimit
+  # Deliberately one replica. The bucket state lives in the process, so two
+  # replicas would each allow the full rate and the effective limit would
+  # double. A distributed limiter would keep its counters in the host cache
+  # instead — see README.md in this directory.
+  replicas: 1
+
+# No capabilities. sdk.Log needs none: log aggregation is infrastructure, not
+# a privilege.
+permissions: []
+
+filters:
+  - name: token-bucket
+    phase: pre_route
+    # Lowest order in the system, so a request that will be rejected is
+    # rejected before any other plugin spends work on it.
+    order: 1
+    match:
+      paths: ["/**"]
+      methods: ["*"]
+    # A limiter must be fast or it becomes the bottleneck it was meant to
+    # prevent. 20ms is generous for an in-memory bucket; exceeding it means
+    # something is wrong with the plugin, not with the request.
+    timeout_ms: 20
+    # Fail open, on purpose. A rate limiter protects against load, and a
+    # limiter outage is not itself a security event — refusing all traffic
+    # because the limiter died converts a minor failure into a total one.
+    #
+    # A WAF or an authorization filter would set fail_closed: true here, and
+    # accept that its own outage becomes an outage for the site.
+    fail_closed: false
+
+# No menus: this is a plugin for other plugins, not for users. Its only route
+# is a small read-only status endpoint at /api/plugins/ratelimit/stats, which
+# the filter exempts from itself — a site under attack must not lose the page
+# that explains why.

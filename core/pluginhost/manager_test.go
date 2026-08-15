@@ -309,9 +309,21 @@ func TestManagerUpgradeRollsBackOnFailure(t *testing.T) {
 	}
 	before, _ := reg.Current().Pick("alpha")
 
-	// Corrupt the package the way a bad upload would.
-	if err := os.WriteFile(filepath.Join(root, "alpha", "bin", "plugin"), []byte("not a binary"), 0o755); err != nil {
-		t.Fatalf("corrupt binary: %v", err)
+	// Replace the package with a broken one, the way a bad upload would.
+	//
+	// Unlink first rather than writing over the file. Linux refuses to open a
+	// running executable for writing (ETXTBSY) and the old version is still
+	// serving at this point, so overwriting is both impossible there and
+	// corrupting where it is permitted — which is exactly why deployment is
+	// documented as `mv`, never `cp`. Replacing the inode leaves the running
+	// process on the old one and puts the new bytes in place for the next
+	// exec.
+	binary := filepath.Join(root, "alpha", "bin", "plugin")
+	if err := os.Remove(binary); err != nil {
+		t.Fatalf("unlink the running binary: %v", err)
+	}
+	if err := os.WriteFile(binary, []byte("not a binary"), 0o755); err != nil {
+		t.Fatalf("write the replacement: %v", err)
 	}
 
 	if err := mgr.Upgrade(ctx, "alpha"); err == nil {

@@ -57,7 +57,13 @@ go build ./...
 go test ./... -race
 go vet ./... && gofmt -l .
 
-# Database-backed tests skip unless this points at a PostgreSQL instance
+# Run the suite on Linux, which the target actually is. Some behaviour differs
+# from macOS in ways that matter here — writing to a running executable fails
+# with ETXTBSY, and Pdeathsig only exists at all — so a green run on the
+# development machine is not the same as a green run in production.
+docker run --rm -v "$(pwd)":/src -w /src -v "$HOME/go/pkg/mod":/go/pkg/mod \
+  -e CGO_ENABLED=0 golang:1.25-alpine go test ./... -count=1
+
 # Database-backed tests skip unless this points at a PostgreSQL instance.
 # A throwaway one, on a port that will not collide with anything already running:
 #   docker run -d --name moduless-test-db -p 15433:5432 \

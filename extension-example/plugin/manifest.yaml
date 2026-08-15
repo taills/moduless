@@ -1,0 +1,76 @@
+# Example plugin manifest.
+#
+# Everything a plugin can declare is here. Core reads this before starting the
+# process, so a mistake is caught while an admin is looking at the result
+# rather than at the first request.
+
+key: notes
+display_name: 笔记
+version: 1.0.0
+
+runtime:
+  # Must be a statically linked binary: build with CGO_ENABLED=0, or it will
+  # fail to exec inside the musl-based runtime image.
+  entrypoint: bin/plugin
+  # More than one process spreads traffic by smooth weighted round-robin.
+  replicas: 1
+
+# Core denies any capability not listed here, naming what is missing, so a
+# plugin gets exactly what its author declared and an admin approved.
+permissions:
+  - db
+  - queue
+  - events
+  - cron
+
+# Collections are created before the plugin starts, so its first write does not
+# meet a missing table.
+database:
+  collections:
+    - name: notes
+      indexes:
+        - fields: [author]
+        - fields: [created]
+
+# Menu entries appear in the console when the plugin is enabled and disappear
+# when it is disabled — no reload needed.
+menus:
+  - path: /notes
+    title: 笔记
+    icon: file-text
+    order: 20
+
+filters:
+  # pre_route sees every request, including ones Core serves itself. That reach
+  # is what makes filters useful for rate limiting or auditing, and why the
+  # path list matters.
+  - name: rate-limit
+    phase: pre_route
+    order: 10
+    match:
+      paths: ["/api/**"]
+      methods: ["*"]
+    timeout_ms: 50
+    # Default is fail-open: if this plugin is down, requests still flow. Set
+    # fail_closed for anything enforcing a security decision, or an outage here
+    # silently becomes a bypass.
+    fail_closed: false
+
+  # log runs after the response has been flushed, so it cannot slow anything
+  # down and its result is ignored.
+  - name: access-log
+    phase: log
+    order: 100
+    match:
+      paths: ["/api/plugins/notes/**"]
+
+jobs:
+  - name: nightly-summary
+    # Core owns the schedule, so the job stops when the plugin is disabled and
+    # only one replica runs each occurrence.
+    cron: "17 3 * * *"
+
+# Outbound HTTP is denied unless a host is listed here, and even then Core
+# refuses addresses that resolve to private or link-local ranges.
+# egress_allow:
+#   - api.example.com

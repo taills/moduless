@@ -17,14 +17,16 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/taills/moduless/manifest"
+	"github.com/taills/moduless/pluginapi"
 	pb "github.com/taills/moduless/proto/plugin"
 )
 
 // TraceMetadataKey is the gRPC metadata key carrying the trace id on calls a
 // plugin makes back into Core. The SDK sets it automatically from the context
 // of whatever request or job is running, so a slow query can be attributed to
-// the request that caused it.
-const TraceMetadataKey = "x-moduless-trace-id"
+// the request that caused it. Defined in pluginapi so both sides share one
+// definition.
+const TraceMetadataKey = pluginapi.TraceMetadataKey
 
 // permSet is the granted permission set, resolved once at construction.
 type permSet map[string]struct{}

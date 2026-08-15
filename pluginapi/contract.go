@@ -16,6 +16,12 @@ const (
 	// binary serves exactly one implementation, so there is only ever one.
 	DispenseName = "moduless"
 
+	// TraceMetadataKey carries the trace id on calls a plugin makes back into
+	// Core. It lives here rather than in either side's own package because
+	// both must agree on it exactly, and a drift would silently break
+	// correlation rather than fail loudly.
+	TraceMetadataKey = "x-moduless-trace-id"
+
 	// DefaultMaxMessageBytes raises gRPC's 4 MiB default. go-plugin does not
 	// override it, and the default surfaces as an opaque ResourceExhausted
 	// rather than a usable error, so both sides set this explicitly.

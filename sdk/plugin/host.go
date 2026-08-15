@@ -1,0 +1,699 @@
+package sdk
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	pb "github.com/taills/moduless/proto/plugin"
+)
+
+// Every call below attaches the ambient trace id automatically, so work a
+// plugin does on Core's behalf stays attributable to the request that caused
+// it without the author threading anything through.
+
+// --- Documents --------------------------------------------------------------
+
+// DBClient is the Core-managed document store. Collections are declared in
+// manifest.yaml and provisioned before the plugin starts; a plugin never
+// connects to PostgreSQL itself.
+type DBClient struct{ c pb.HostServicesClient }
+
+// Put writes a document, encoding value as JSON. It returns the new version.
+func (d *DBClient) Put(ctx context.Context, collection, id string, value any) (int64, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return 0, fmt.Errorf("encode document: %w", err)
+	}
+	resp, err := d.c.Put(outgoing(ctx), &pb.PutRequest{Collection: collection, DocId: id, Data: data})
+	if err != nil {
+		return 0, err
+	}
+	return resp.GetVersion(), nil
+}
+
+// PutIfVersion writes only when the stored version still matches, which is how
+// two replicas update the same document without silently overwriting each
+// other. A mismatch returns an error whose gRPC code is FailedPrecondition:
+// re-read and retry.
+func (d *DBClient) PutIfVersion(ctx context.Context, collection, id string, value any, expected int64) (int64, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return 0, fmt.Errorf("encode document: %w", err)
+	}
+	resp, err := d.c.Put(outgoing(ctx), &pb.PutRequest{
+		Collection: collection, DocId: id, Data: data, ExpectedVersion: expected,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return resp.GetVersion(), nil
+}
+
+// Get decodes a document into dest. It reports false when the document does
+// not exist, which is not an error.
+func (d *DBClient) Get(ctx context.Context, collection, id string, dest any) (found bool, version int64, err error) {
+	resp, err := d.c.Get(outgoing(ctx), &pb.GetRequest{Collection: collection, DocId: id})
+	if err != nil {
+		return false, 0, err
+	}
+	if !resp.GetFound() {
+		return false, 0, nil
+	}
+	if dest != nil {
+		if err := json.Unmarshal(resp.GetData(), dest); err != nil {
+			return true, resp.GetVersion(), fmt.Errorf("decode document: %w", err)
+		}
+	}
+	return true, resp.GetVersion(), nil
+}
+
+// Delete removes a document.
+func (d *DBClient) Delete(ctx context.Context, collection, id string) (bool, error) {
+	resp, err := d.c.Delete(outgoing(ctx), &pb.DeleteRequest{Collection: collection, DocId: id})
+	if err != nil {
+		return false, err
+	}
+	return resp.GetSuccess(), nil
+}
+
+// Where builds a query. Use it rather than assembling filters by hand:
+//
+//	var orders []Order
+//	next, err := sdk.DB.Where("orders").
+//		Eq("status", "open").
+//		Gt("total", "100").
+//		SortDesc("created_at").
+//		Limit(50).
+//		All(ctx, &orders)
+func (d *DBClient) Where(collection string) *Query {
+	return &Query{c: d.c, collection: collection}
+}
+
+// Query is a fluent read. Pagination is keyset-based, so paging deep into a
+// collection stays as fast as the first page and rows shifting underneath do
+// not cause duplicates or gaps.
+type Query struct {
+	c          pb.HostServicesClient
+	collection string
+	filters    []*pb.Filter
+	sort       []*pb.Sort
+	limit      int32
+	cursor     string
+	err        error
+}
+
+func (q *Query) add(field string, op pb.Operator, values ...string) *Query {
+	q.filters = append(q.filters, &pb.Filter{Field: field, Op: op, Values: values})
+	return q
+}
+
+func (q *Query) Eq(field, value string) *Query  { return q.add(field, pb.Operator_OP_EQ, value) }
+func (q *Query) Ne(field, value string) *Query  { return q.add(field, pb.Operator_OP_NE, value) }
+func (q *Query) Gt(field, value string) *Query  { return q.add(field, pb.Operator_OP_GT, value) }
+func (q *Query) Gte(field, value string) *Query { return q.add(field, pb.Operator_OP_GTE, value) }
+func (q *Query) Lt(field, value string) *Query  { return q.add(field, pb.Operator_OP_LT, value) }
+func (q *Query) Lte(field, value string) *Query { return q.add(field, pb.Operator_OP_LTE, value) }
+func (q *Query) Like(field, pattern string) *Query {
+	return q.add(field, pb.Operator_OP_LIKE, pattern)
+}
+func (q *Query) In(field string, values ...string) *Query {
+	return q.add(field, pb.Operator_OP_IN, values...)
+}
+func (q *Query) Between(field, low, high string) *Query {
+	return q.add(field, pb.Operator_OP_BETWEEN, low, high)
+}
+func (q *Query) IsNull(field string) *Query    { return q.add(field, pb.Operator_OP_IS_NULL) }
+func (q *Query) IsNotNull(field string) *Query { return q.add(field, pb.Operator_OP_IS_NOT_NULL) }
+
+// Sort orders ascending. Every sort field must share a direction when paging
+// with a cursor.
+func (q *Query) Sort(field string) *Query {
+	q.sort = append(q.sort, &pb.Sort{Field: field})
+	return q
+}
+
+// SortDesc orders descending.
+func (q *Query) SortDesc(field string) *Query {
+	q.sort = append(q.sort, &pb.Sort{Field: field, Descending: true})
+	return q
+}
+
+func (q *Query) Limit(n int) *Query         { q.limit = int32(n); return q }
+func (q *Query) After(cursor string) *Query { q.cursor = cursor; return q }
+
+// All decodes the page into dest, which must be a pointer to a slice, and
+// returns the cursor for the next page (empty when there is none).
+func (q *Query) All(ctx context.Context, dest any) (nextCursor string, err error) {
+	if q.err != nil {
+		return "", q.err
+	}
+	resp, err := q.c.Query(outgoing(ctx), &pb.QueryRequest{
+		Collection: q.collection,
+		Filters:    q.filters,
+		Sort:       q.sort,
+		Limit:      q.limit,
+		Cursor:     q.cursor,
+	})
+	if err != nil {
+		return "", err
+	}
+	if dest != nil {
+		if err := decodeDocuments(resp.GetDocuments(), dest); err != nil {
+			return "", err
+		}
+	}
+	return resp.GetNextCursor(), nil
+}
+
+// Count returns how many documents match, without transferring them.
+func (q *Query) Count(ctx context.Context) (int64, error) {
+	resp, err := q.c.Aggregate(outgoing(ctx), &pb.AggregateRequest{
+		Collection: q.collection,
+		Filters:    q.filters,
+		Func:       pb.AggregateFunc_AGG_COUNT,
+	})
+	if err != nil {
+		return 0, err
+	}
+	if len(resp.GetBuckets()) == 0 {
+		return 0, nil
+	}
+	return int64(resp.GetBuckets()[0].GetValue()), nil
+}
+
+// Sum totals a field, optionally grouped. With no group the result has one
+// entry keyed by the empty string.
+func (q *Query) Sum(ctx context.Context, field string, groupBy ...string) (map[string]float64, error) {
+	return q.aggregate(ctx, pb.AggregateFunc_AGG_SUM, field, groupBy)
+}
+
+// Avg, Min and Max mirror Sum.
+func (q *Query) Avg(ctx context.Context, field string, groupBy ...string) (map[string]float64, error) {
+	return q.aggregate(ctx, pb.AggregateFunc_AGG_AVG, field, groupBy)
+}
+func (q *Query) Min(ctx context.Context, field string, groupBy ...string) (map[string]float64, error) {
+	return q.aggregate(ctx, pb.AggregateFunc_AGG_MIN, field, groupBy)
+}
+func (q *Query) Max(ctx context.Context, field string, groupBy ...string) (map[string]float64, error) {
+	return q.aggregate(ctx, pb.AggregateFunc_AGG_MAX, field, groupBy)
+}
+
+func (q *Query) aggregate(ctx context.Context, fn pb.AggregateFunc, field string, groupBy []string) (map[string]float64, error) {
+	resp, err := q.c.Aggregate(outgoing(ctx), &pb.AggregateRequest{
+		Collection: q.collection,
+		Filters:    q.filters,
+		Func:       fn,
+		Field:      field,
+		GroupBy:    groupBy,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]float64, len(resp.GetBuckets()))
+	for _, b := range resp.GetBuckets() {
+		key := ""
+		if len(groupBy) > 0 {
+			key = b.GetKeys()[groupBy[0]]
+		}
+		out[key] = b.GetValue()
+	}
+	return out, nil
+}
+
+func decodeDocuments(docs [][]byte, dest any) error {
+	// The documents are already JSON; assembling an array avoids reflecting
+	// over dest to discover its element type.
+	buf := make([]byte, 0, 64)
+	buf = append(buf, '[')
+	for i, d := range docs {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = append(buf, d...)
+	}
+	buf = append(buf, ']')
+
+	if err := json.Unmarshal(buf, dest); err != nil {
+		return fmt.Errorf("decode documents: %w", err)
+	}
+	return nil
+}
+
+// Tx runs fn inside a transaction, committing on success and rolling back on
+// error or panic. Requires the "db:tx" permission.
+//
+// A transaction holds a database connection for as long as it is open, and
+// Core rolls it back once its timeout passes, so keep the work inside short.
+func (d *DBClient) Tx(ctx context.Context, timeout time.Duration, fn func(tx *TxClient) error) error {
+	resp, err := d.c.BeginTx(outgoing(ctx), &pb.BeginTxRequest{
+		TimeoutSeconds: int32(timeout / time.Second),
+	})
+	if err != nil {
+		return err
+	}
+	tx := &TxClient{c: d.c, id: resp.GetTxId()}
+
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = d.c.RollbackTx(outgoing(ctx), &pb.TxRequest{TxId: tx.id})
+		}
+	}()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if _, err := d.c.CommitTx(outgoing(ctx), &pb.TxRequest{TxId: tx.id}); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+// TxClient is the document store inside a transaction.
+type TxClient struct {
+	c  pb.HostServicesClient
+	id string
+}
+
+func (t *TxClient) Put(ctx context.Context, collection, id string, value any) (int64, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return 0, fmt.Errorf("encode document: %w", err)
+	}
+	resp, err := t.c.Put(outgoing(ctx), &pb.PutRequest{
+		Collection: collection, DocId: id, Data: data, TxId: t.id,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return resp.GetVersion(), nil
+}
+
+func (t *TxClient) Get(ctx context.Context, collection, id string, dest any) (bool, error) {
+	resp, err := t.c.Get(outgoing(ctx), &pb.GetRequest{Collection: collection, DocId: id, TxId: t.id})
+	if err != nil {
+		return false, err
+	}
+	if !resp.GetFound() {
+		return false, nil
+	}
+	if dest != nil {
+		return true, json.Unmarshal(resp.GetData(), dest)
+	}
+	return true, nil
+}
+
+func (t *TxClient) Delete(ctx context.Context, collection, id string) error {
+	_, err := t.c.Delete(outgoing(ctx), &pb.DeleteRequest{Collection: collection, DocId: id, TxId: t.id})
+	return err
+}
+
+// --- Queue ------------------------------------------------------------------
+
+// QueueClient is the durable queue. Delivery is at-least-once: a handler that
+// completes and then crashes before acknowledging will see its message again,
+// so handlers must be idempotent.
+type QueueClient struct{ c pb.HostServicesClient }
+
+// EnqueueOption tunes a publish.
+type EnqueueOption func(*pb.EnqueueRequest)
+
+// WithDelay holds a message back before it becomes deliverable.
+func WithDelay(d time.Duration) EnqueueOption {
+	return func(r *pb.EnqueueRequest) { r.DelaySeconds = int32(d / time.Second) }
+}
+
+// WithDedupKey suppresses a duplicate while an identical message is still in
+// flight. The key frees up once that message completes.
+func WithDedupKey(key string) EnqueueOption {
+	return func(r *pb.EnqueueRequest) { r.DedupKey = key }
+}
+
+// WithPriority raises a message above others on the same topic.
+func WithPriority(p int) EnqueueOption {
+	return func(r *pb.EnqueueRequest) { r.Priority = int32(p) }
+}
+
+// WithMaxAttempts overrides how many times a message is retried before it is
+// parked as dead.
+func WithMaxAttempts(n int) EnqueueOption {
+	return func(r *pb.EnqueueRequest) { r.MaxAttempts = int32(n) }
+}
+
+// Publish adds a message, encoding payload as JSON.
+func (q *QueueClient) Publish(ctx context.Context, topic string, payload any, opts ...EnqueueOption) (id int64, deduplicated bool, err error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return 0, false, fmt.Errorf("encode payload: %w", err)
+	}
+	req := &pb.EnqueueRequest{Topic: topic, Payload: data}
+	for _, opt := range opts {
+		opt(req)
+	}
+	resp, err := q.c.Enqueue(outgoing(ctx), req)
+	if err != nil {
+		return 0, false, err
+	}
+	return resp.GetMessageId(), resp.GetDeduplicated(), nil
+}
+
+// QueueMessage is one delivery.
+type QueueMessage struct {
+	ID          int64
+	Topic       string
+	Payload     []byte
+	Attempt     int
+	MaxAttempts int
+	// ParentTraceID is the request that enqueued this work, which is how an
+	// async job stays traceable back to what triggered it.
+	ParentTraceID string
+}
+
+// Decode unmarshals the payload.
+func (m *QueueMessage) Decode(dest any) error { return json.Unmarshal(m.Payload, dest) }
+
+// Consume processes messages until ctx is cancelled.
+//
+// A handler returning nil acknowledges the message; returning an error sends
+// it back for retry, and it is dead-lettered once its attempts run out.
+func (q *QueueClient) Consume(ctx context.Context, topic string, handler func(context.Context, *QueueMessage) error) error {
+	stream, err := q.c.Consume(outgoing(ctx), &pb.ConsumeRequest{Topic: topic, Prefetch: 1})
+	if err != nil {
+		return err
+	}
+
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil // the caller stopped consuming
+			}
+			return err
+		}
+
+		m := &QueueMessage{
+			ID:            msg.GetMessageId(),
+			Topic:         msg.GetTopic(),
+			Payload:       msg.GetPayload(),
+			Attempt:       int(msg.GetAttempt()),
+			MaxAttempts:   int(msg.GetMaxAttempts()),
+			ParentTraceID: msg.GetParentTraceId(),
+		}
+
+		// The delivery gets its own trace, linked to the request that enqueued
+		// the work, so anything the handler does is attributable to both.
+		msgCtx := withTrace(ctx, msg.GetTraceId())
+		if err := handler(msgCtx, m); err != nil {
+			_, _ = q.c.Nack(outgoing(msgCtx), &pb.NackRequest{MessageId: m.ID, Error: err.Error()})
+			continue
+		}
+		if _, err := q.c.Ack(outgoing(msgCtx), &pb.AckRequest{MessageId: m.ID}); err != nil {
+			return err
+		}
+	}
+}
+
+// --- Cache and locks --------------------------------------------------------
+
+type CacheClient struct{ c pb.HostServicesClient }
+
+func (c *CacheClient) Get(ctx context.Context, key string, dest any) (bool, error) {
+	resp, err := c.c.CacheGet(outgoing(ctx), &pb.CacheGetRequest{Key: key})
+	if err != nil || !resp.GetFound() {
+		return false, err
+	}
+	if dest != nil {
+		return true, json.Unmarshal(resp.GetValue(), dest)
+	}
+	return true, nil
+}
+
+func (c *CacheClient) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("encode value: %w", err)
+	}
+	_, err = c.c.CacheSet(outgoing(ctx), &pb.CacheSetRequest{
+		Key: key, Value: data, TtlSeconds: int32(ttl / time.Second),
+	})
+	return err
+}
+
+func (c *CacheClient) Delete(ctx context.Context, key string) error {
+	_, err := c.c.CacheDelete(outgoing(ctx), &pb.CacheDeleteRequest{Key: key})
+	return err
+}
+
+// LockClient coordinates work across a plugin's replicas.
+type LockClient struct{ c pb.HostServicesClient }
+
+// Lease is a held lock. Release it when the work is done; if the process dies
+// first the lease simply expires, so a crash cannot deadlock the system.
+type Lease struct {
+	c       pb.HostServicesClient
+	name    string
+	id      string
+	Expires time.Time
+}
+
+// Acquire takes a lock, waiting up to wait for it to become free. It reports
+// false when the lock is held by someone else.
+func (l *LockClient) Acquire(ctx context.Context, name string, ttl, wait time.Duration) (*Lease, bool, error) {
+	resp, err := l.c.AcquireLock(outgoing(ctx), &pb.AcquireLockRequest{
+		Name:        name,
+		TtlSeconds:  int32(ttl / time.Second),
+		WaitSeconds: int32(wait / time.Second),
+	})
+	if err != nil || !resp.GetAcquired() {
+		return nil, false, err
+	}
+	return &Lease{
+		c: l.c, name: name, id: resp.GetLeaseId(),
+		Expires: time.Unix(resp.GetExpiresAtUnix(), 0),
+	}, true, nil
+}
+
+// Renew extends the lease. It reports false when the lease was lost, which
+// means another holder may already be doing this work — stop rather than
+// continue.
+func (le *Lease) Renew(ctx context.Context, ttl time.Duration) (bool, error) {
+	resp, err := le.c.RenewLock(outgoing(ctx), &pb.LeaseRequest{
+		Name: le.name, LeaseId: le.id, TtlSeconds: int32(ttl / time.Second),
+	})
+	if err != nil {
+		return false, err
+	}
+	le.Expires = time.Unix(resp.GetExpiresAtUnix(), 0)
+	return resp.GetAcquired(), nil
+}
+
+// Release frees the lock.
+func (le *Lease) Release(ctx context.Context) error {
+	_, err := le.c.ReleaseLock(outgoing(ctx), &pb.LeaseRequest{Name: le.name, LeaseId: le.id})
+	return err
+}
+
+// --- Files ------------------------------------------------------------------
+
+type FilesClient struct{ c pb.HostServicesClient }
+
+// Put stores a file and returns its id.
+func (f *FilesClient) Put(ctx context.Context, filename, mimeType string, r io.Reader) (string, int64, error) {
+	stream, err := f.c.PutFile(outgoing(ctx))
+	if err != nil {
+		return "", 0, err
+	}
+
+	buf := make([]byte, 256<<10)
+	first := true
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			chunk := &pb.PutFileChunk{Data: buf[:n]}
+			if first {
+				chunk.Filename = filename
+				chunk.MimeType = mimeType
+				first = false
+			}
+			if err := stream.Send(chunk); err != nil {
+				return "", 0, err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return "", 0, readErr
+		}
+	}
+	if first {
+		// Empty file: metadata still has to reach Core.
+		if err := stream.Send(&pb.PutFileChunk{Filename: filename, MimeType: mimeType}); err != nil {
+			return "", 0, err
+		}
+	}
+
+	resp, err := stream.CloseAndRecv()
+	if err != nil {
+		return "", 0, err
+	}
+	return resp.GetFileId(), resp.GetSize(), nil
+}
+
+// DownloadURL mints a short-lived URL the browser can fetch directly, so file
+// bytes never pass back through the plugin.
+func (f *FilesClient) DownloadURL(ctx context.Context, fileID, userID string, expiry time.Duration) (string, time.Time, error) {
+	resp, err := f.c.GenerateDownloadToken(outgoing(ctx), &pb.DownloadTokenRequest{
+		FileId: fileID, UserId: userID, ExpirySeconds: int32(expiry / time.Second),
+	})
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return resp.GetUrl(), time.Unix(resp.GetExpiresAtUnix(), 0), nil
+}
+
+// Delete removes a file this plugin created.
+func (f *FilesClient) Delete(ctx context.Context, fileID string) error {
+	_, err := f.c.DeleteFile(outgoing(ctx), &pb.FileRequest{FileId: fileID})
+	return err
+}
+
+// --- Events -----------------------------------------------------------------
+
+// EventClient is a best-effort broadcast. A subscriber that cannot keep up
+// misses events; anything that must not be lost belongs on the queue.
+type EventClient struct{ c pb.HostServicesClient }
+
+func (e *EventClient) Publish(ctx context.Context, name string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode event: %w", err)
+	}
+	_, err = e.c.Publish(outgoing(ctx), &pb.PublishRequest{EventName: name, Data: data})
+	return err
+}
+
+// Subscribe delivers events until ctx is cancelled. Use "otherplugin:event" to
+// hear from another plugin, or a bare name for this plugin's own events.
+func (e *EventClient) Subscribe(ctx context.Context, name string, handler func(context.Context, []byte)) error {
+	stream, err := e.c.Subscribe(outgoing(ctx), &pb.SubscribeRequest{EventName: name})
+	if err != nil {
+		return err
+	}
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		handler(withTrace(ctx, ev.GetTraceId()), ev.GetData())
+	}
+}
+
+// --- Outbound HTTP ----------------------------------------------------------
+
+// HTTPClient makes outbound requests through Core, which enforces the
+// egress_allow list from the manifest. A plugin has no other network access.
+type HTTPClient struct{ c pb.HostServicesClient }
+
+// Do performs a request. The body of the response is fully read.
+func (h *HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
+	var body []byte
+	if req.Body != nil {
+		var err error
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		req.Body.Close()
+	}
+
+	headers := make(map[string]*pb.HeaderValues, len(req.Header))
+	for k, vs := range req.Header {
+		headers[k] = &pb.HeaderValues{Values: vs}
+	}
+
+	resp, err := h.c.Fetch(outgoing(ctx), &pb.FetchRequest{
+		Method:  req.Method,
+		Url:     req.URL.String(),
+		Headers: headers,
+		Body:    body,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := &http.Response{
+		StatusCode: int(resp.GetStatusCode()),
+		Header:     headersFrom(resp.GetHeaders()),
+		Body:       io.NopCloser(bytes.NewReader(resp.GetBody())),
+		Request:    req,
+	}
+	return out, nil
+}
+
+// Get is a convenience wrapper.
+func (h *HTTPClient) Get(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return h.Do(ctx, req)
+}
+
+// --- Logging ----------------------------------------------------------------
+
+// Logger sends structured records to Core, where they are interleaved with
+// Core's own log and tagged with the trace id.
+//
+// Use this rather than fmt.Println: anything written to stdout corrupts the
+// startup handshake.
+type Logger struct{ c pb.HostServicesClient }
+
+func (l *Logger) Debug(ctx context.Context, msg string, fields ...string) {
+	l.log(ctx, pb.LogLevel_LOG_DEBUG, msg, fields)
+}
+func (l *Logger) Info(ctx context.Context, msg string, fields ...string) {
+	l.log(ctx, pb.LogLevel_LOG_INFO, msg, fields)
+}
+func (l *Logger) Warn(ctx context.Context, msg string, fields ...string) {
+	l.log(ctx, pb.LogLevel_LOG_WARN, msg, fields)
+}
+func (l *Logger) Error(ctx context.Context, msg string, fields ...string) {
+	l.log(ctx, pb.LogLevel_LOG_ERROR, msg, fields)
+}
+
+// log accepts fields as alternating key/value pairs.
+func (l *Logger) log(ctx context.Context, level pb.LogLevel, msg string, fields []string) {
+	stream, err := l.c.Log(outgoing(ctx))
+	if err != nil {
+		return
+	}
+	kv := make(map[string]string, len(fields)/2)
+	for i := 0; i+1 < len(fields); i += 2 {
+		kv[fields[i]] = fields[i+1]
+	}
+	_ = stream.Send(&pb.LogRecord{
+		Level:              level,
+		Message:            msg,
+		Fields:             kv,
+		TraceId:            TraceID(ctx),
+		TimestampUnixNanos: time.Now().UnixNano(),
+	})
+	_, _ = stream.CloseAndRecv()
+}
+
+// Metric records a measurement.
+func (l *Logger) Metric(ctx context.Context, name string, value float64, labels map[string]string) {
+	_, _ = l.c.RecordMetric(outgoing(ctx), &pb.MetricRequest{
+		Name: name, Kind: pb.MetricKind_METRIC_COUNTER, Value: value, Labels: labels,
+	})
+}

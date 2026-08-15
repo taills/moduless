@@ -3,6 +3,7 @@ package gateway
 import (
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -17,10 +18,30 @@ const maxUploadBytes = 100 << 20
 type FileHandler struct {
 	Storage *storage.RustFSClient
 	Queries *sqlc.Queries
+
+	// Auth resolves who is uploading. Nil records every upload as anonymous,
+	// which is what a Core without a session store can honestly say.
+	Auth UserResolver
 }
 
 func NewFileHandler(s *storage.RustFSClient, q *sqlc.Queries) *FileHandler {
 	return &FileHandler{Storage: s, Queries: q}
+}
+
+// uploader reports who is making this request.
+//
+// Resolved from the session, not from a header. This used to read X-User-Id,
+// which nothing in Core ever set and any client could send — so the recorded
+// uploader of every file was whatever the uploader chose to call themselves.
+func (h *FileHandler) uploader(r *http.Request) string {
+	if h.Auth == nil {
+		return "anonymous"
+	}
+	user, ok := h.Auth.Resolve(SessionToken(r))
+	if !ok {
+		return "anonymous"
+	}
+	return strconv.Itoa(int(user.ID))
 }
 
 func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
@@ -38,10 +59,7 @@ func (h *FileHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	fileID := uuid.New().String()
-	uploaderID := r.Header.Get("X-User-Id")
-	if uploaderID == "" {
-		uploaderID = "anonymous"
-	}
+	uploaderID := h.uploader(r)
 
 	mime := header.Header.Get("Content-Type")
 	if mime == "" {

@@ -16,19 +16,52 @@ type AuditRecorder interface {
 	InsertAuditLog(ctx context.Context, arg sqlc.InsertAuditLogParams) error
 }
 
-// AuditLogger records state-modifying operations against extension APIs.
-// In production the set of audited paths is driven by each extension's
-// manifest `is_audit` declarations; by default every POST/PUT/DELETE/PATCH on
-// an extension API is recorded so developers write zero audit code.
-func AuditLogger(recorder AuditRecorder) func(http.Handler) http.Handler {
+// AuditOptions is what the middleware needs from the rest of Core.
+//
+// Both fields are supplied by the caller rather than known here, and that is
+// deliberate. This middleware previously carried its own copy of the API
+// prefix as a string literal; when the route was renamed from /api/extensions/
+// to /api/plugins/, the literal stayed behind and auditing silently stopped
+// happening — every request still went through the middleware, and none of
+// them matched. Its test kept passing because it used the dead prefix too.
+type AuditOptions struct {
+	// Prefix is the API root whose writes are audited. It must come from
+	// whoever owns the route, so there is one definition rather than two that
+	// can drift.
+	Prefix string
+
+	// Identify resolves the authenticated caller from a request.
+	//
+	// It exists because the caller's identity has to be established the same
+	// way the rest of Core establishes it — against the session store. This
+	// middleware used to read an X-User-Id header, which nothing set and any
+	// client could send, so the user recorded against an audited action was
+	// whoever the client claimed to be. An audit log that records an
+	// attacker's chosen name is worse than none: it is evidence that is wrong.
+	//
+	// Nil means nothing is authenticated and every entry is anonymous.
+	Identify func(r *http.Request) string
+}
+
+// AuditLogger records state-modifying operations against the plugin API.
+//
+// Panics on an empty Prefix rather than auditing everything or nothing: this
+// is called once at start-up, and a misconfiguration that shows up as a
+// permanently empty audit table is the failure this middleware has already had
+// once.
+func AuditLogger(recorder AuditRecorder, opts AuditOptions) func(http.Handler) http.Handler {
+	if opts.Prefix == "" {
+		panic("middleware: AuditLogger needs the API prefix it should audit")
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			next.ServeHTTP(w, r)
 
-			if !strings.HasPrefix(r.URL.Path, "/api/extensions/") {
+			if !strings.HasPrefix(r.URL.Path, opts.Prefix) {
 				return
 			}
-			parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/api/extensions/"), "/", 2)
+			parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, opts.Prefix), "/", 2)
 			if len(parts) < 2 {
 				return
 			}
@@ -40,9 +73,11 @@ func AuditLogger(recorder AuditRecorder) func(http.Handler) http.Handler {
 				return
 			}
 
-			userID := r.Header.Get("X-User-Id")
-			if userID == "" {
-				userID = "anonymous"
+			userID := "anonymous"
+			if opts.Identify != nil {
+				if id := opts.Identify(r); id != "" {
+					userID = id
+				}
 			}
 
 			// Persist asynchronously so auditing never blocks the response.
@@ -62,6 +97,12 @@ func AuditLogger(recorder AuditRecorder) func(http.Handler) http.Handler {
 	}
 }
 
+// clientIP reports where the request came from.
+//
+// X-Forwarded-For is honoured, which means it is only as trustworthy as the
+// proxy in front of Core: a client talking to Core directly can put anything
+// there. Deployments that audit for accountability must terminate at a proxy
+// that overwrites the header rather than appending to it.
 func clientIP(r *http.Request) string {
 	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 		if i := strings.IndexByte(fwd, ','); i >= 0 {

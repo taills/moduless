@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -128,6 +129,7 @@ func main() {
 		if rustfs := buildStorage(); rustfs != nil {
 			hostDeps.Files = hostsvc.NewFiles(conn, queries, rustfs)
 			fileHandler := gateway.NewFileHandler(rustfs, queries)
+			fileHandler.Auth = authStore
 			gw.RegisterSystemRoute(func(p string) bool { return p == "/api/system/files/upload" }, fileHandler.Upload)
 			gw.RegisterSystemRoute(func(p string) bool { return hasPrefix(p, "/api/system/files/download/") }, fileHandler.Download)
 			log.Println("[core] file upload/download enabled")
@@ -286,7 +288,23 @@ func main() {
 
 	var httpHandler http.Handler = pluginGateway.Middleware(gw)
 	if queries != nil {
-		httpHandler = middleware.AuditLogger(queries)(httpHandler)
+		httpHandler = middleware.AuditLogger(queries, middleware.AuditOptions{
+			// The prefix comes from whoever owns the route. Keeping a second
+			// copy here is how auditing silently stopped working once already.
+			Prefix: gateway.PluginAPIPrefix,
+			// Identity is resolved the same way every other handler resolves
+			// it. Anything a client can put in a header is a name it chose.
+			Identify: func(r *http.Request) string {
+				if adminAuth == nil {
+					return ""
+				}
+				user, ok := adminAuth.Resolve(gateway.SessionToken(r))
+				if !ok {
+					return ""
+				}
+				return strconv.Itoa(int(user.ID))
+			},
+		})(httpHandler)
 	}
 
 	httpSrv := &http.Server{Addr: httpAddr, Handler: httpHandler}

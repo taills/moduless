@@ -1,9 +1,13 @@
 package tests
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/taills/moduless/core/auth"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -450,4 +454,122 @@ func TestFileMetadataIsIsolatedBetweenPlugins(t *testing.T) {
 	if strings.Contains(got, "report.txt") {
 		t.Error("the filename leaked to a plugin that does not own the file")
 	}
+}
+
+// Who a file says uploaded it.
+//
+// The browser upload endpoint read X-User-Id straight off the request. Nothing
+// in Core ever set that header, so it was whatever the client typed: every
+// file's recorded uploader was chosen by whoever uploaded it. It looks like an
+// attribution field and is not one — which is worse than an empty column,
+// because someone will use it to answer "who put this here".
+func TestUploadRecordsTheSessionUserNotAHeader(t *testing.T) {
+	store, _ := requireS3(t)
+	handle := requireDB(t)
+
+	h := gateway.NewFileHandler(store, sqlc.New(handle))
+	h.Auth = fixedUser{id: 7}
+
+	srv := httptest.NewServer(http.HandlerFunc(h.Upload))
+	defer srv.Close()
+
+	id := postFile(t, srv.URL, "hello", map[string]string{
+		// What an attacker sends. Under the old code this became the answer to
+		// "who uploaded this file".
+		"X-User-Id": "1",
+	})
+
+	var uploader string
+	if err := handle.QueryRow(
+		`SELECT uploader_id FROM system_files WHERE id = $1`, id).Scan(&uploader); err != nil {
+		t.Fatalf("reading the row back: %v", err)
+	}
+	if uploader == "1" {
+		t.Fatal("the uploader recorded is the one the client put in a header")
+	}
+	if uploader != "7" {
+		t.Errorf("uploader = %q, want the session's user 7", uploader)
+	}
+}
+
+// With no session store, an upload is anonymous rather than attributed to
+// whoever asked to be. Core running without authentication is a supported
+// shape, and "we do not know" is the honest record.
+func TestUploadWithoutAuthIsAnonymous(t *testing.T) {
+	store, _ := requireS3(t)
+	handle := requireDB(t)
+
+	h := gateway.NewFileHandler(store, sqlc.New(handle)) // no Auth
+	srv := httptest.NewServer(http.HandlerFunc(h.Upload))
+	defer srv.Close()
+
+	id := postFile(t, srv.URL, "hello", map[string]string{"X-User-Id": "1"})
+
+	var uploader string
+	if err := handle.QueryRow(
+		`SELECT uploader_id FROM system_files WHERE id = $1`, id).Scan(&uploader); err != nil {
+		t.Fatalf("reading the row back: %v", err)
+	}
+	if uploader != "anonymous" {
+		t.Errorf("uploader = %q, want anonymous", uploader)
+	}
+}
+
+// fixedUser is a UserResolver that always resolves to the same person.
+type fixedUser struct{ id int32 }
+
+func (f fixedUser) Resolve(string) (auth.User, bool) {
+	return auth.User{ID: f.id, Username: "someone", Role: "admin"}, true
+}
+
+// postFile uploads one small file and returns the id Core assigned it.
+func postFile(t *testing.T, url, content string, headers map[string]string) string {
+	t.Helper()
+
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	part, err := w.CreateFormFile("file", "note.txt")
+	if err != nil {
+		t.Fatalf("building the form: %v", err)
+	}
+	if _, err := part.Write([]byte(content)); err != nil {
+		t.Fatalf("writing the part: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing the form: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, url, &body)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("uploading: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("upload returned %d: %s", resp.StatusCode, raw)
+	}
+
+	var out struct {
+		FileID string `json:"file_id"`
+		ID     string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("upload reply is not JSON: %s", raw)
+	}
+	if out.FileID != "" {
+		return out.FileID
+	}
+	if out.ID == "" {
+		t.Fatalf("upload reply carries no file id: %s", raw)
+	}
+	return out.ID
 }

@@ -105,7 +105,18 @@ func (r *TxRegistry) Begin(ctx context.Context, db *sql.DB, pluginKey string, ti
 		timeout = MaxTxTimeout
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
+	// The transaction deliberately outlives the call that opened it: a plugin
+	// begins one in one RPC, writes in several more, and commits in a last
+	// one. Binding it to this request's context would have database/sql roll
+	// it back the moment BeginTx returns — gRPC cancels a unary call's context
+	// as soon as the handler does — so every later operation would fail with
+	// "transaction has already been committed or rolled back" and the whole
+	// cross-RPC transaction feature would be inoperable.
+	//
+	// What bounds it instead is this registry: expiresAt below, enforced by
+	// Lookup and by the reaper. That is the intended lifetime control, and it
+	// works whether the plugin commits, crashes or simply forgets.
+	tx, err := db.BeginTx(context.WithoutCancel(ctx), nil)
 	if err != nil {
 		return "", fmt.Errorf("begin transaction: %w", err)
 	}

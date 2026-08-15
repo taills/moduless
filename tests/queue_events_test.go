@@ -276,3 +276,143 @@ func TestEventsRequirePermission(t *testing.T) {
 		t.Errorf("the refusal does not name the missing permission: %q", body)
 	}
 }
+
+// A plugin that dies with a transaction open must not pin a database
+// connection for ever. Core holds the real transaction on the plugin's behalf,
+// so nothing about the dead process will release it — only Core's own expiry
+// will.
+func TestTransactionSurvivesPluginDeath(t *testing.T) {
+	handle := requireDB(t)
+
+	cmds := db.NewCMDSManager(handle)
+	txs := db.NewTxRegistry()
+	defer txs.Close()
+
+	data := hostsvc.NewCMDSData(handle, cmds, txs)
+	if err := data.ProvisionSchema("txcrash", []db.CollectionSchema{{Name: "notes"}}); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if _, err := handle.Exec("TRUNCATE ext_txcrash_notes"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	cfg := hostsvc.NewStaticConfig()
+	inst, err := pluginhost.Launch(context.Background(), pluginhost.LaunchSpec{
+		Key:        "txcrash",
+		InstanceID: "txcrash-0",
+		Version:    "1.0.0",
+		BinaryPath: pluginBinary,
+		Checksum:   checksum(t, pluginBinary),
+		HostImpl: hostsvc.New("txcrash", []string{"db", "db:tx"}, hostsvc.Deps{
+			Config: cfg,
+			Data:   data,
+		}),
+		GrantedPermissions: []string{"db", "db:tx"},
+		Env:                []string{"PATH=/usr/bin:/bin"},
+		Stderr:             os.Stderr,
+		DevMode:            true,
+	})
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	defer inst.Kill()
+
+	// The plugin opens a transaction, writes, and exits without committing.
+	// The call itself fails because the process goes away mid-RPC, which is
+	// the point.
+	resp, err := inst.Client.HandleHTTP(context.Background(), &pb.HttpRequest{
+		Method: http.MethodGet, Path: "/tx-then-crash",
+	})
+	if err == nil && resp.GetStatusCode() != 0 {
+		t.Logf("plugin answered instead of dying: %d %s", resp.GetStatusCode(), resp.GetBody())
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for !inst.ProcessExited() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !inst.ProcessExited() {
+		t.Fatal("the plugin did not die as the test intended")
+	}
+
+	// Wait past the transaction's own timeout, then reap.
+	time.Sleep(2500 * time.Millisecond)
+	reaped := txs.ReapExpired()
+	t.Logf("reaped %d abandoned transaction(s)", reaped)
+	if reaped == 0 {
+		t.Error("no transaction was reaped; the dead plugin's transaction is still holding a connection")
+	}
+
+	// The uncommitted write must not be visible: an abandoned transaction is
+	// rolled back, not silently committed.
+	var count int
+	if err := handle.QueryRow(`SELECT count(*) FROM ext_txcrash_notes`).Scan(&count); err != nil {
+		t.Fatalf("counting rows: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("%d row(s) written inside an abandoned transaction survived; it was committed rather than rolled back", count)
+	}
+
+	// And the pool is healthy afterwards.
+	if err := handle.Ping(); err != nil {
+		t.Errorf("the database is unusable after reaping: %v", err)
+	}
+}
+
+// The ordinary path the crash test found by accident: a transaction spanning
+// several RPCs. Begin in one call, write in two more, commit in a fourth.
+//
+// This is what a plugin's sdk.DB.Tx does underneath, and it was completely
+// inoperable — the transaction was bound to the context of the call that
+// opened it, and gRPC cancels that as soon as the handler returns, so
+// database/sql rolled it back before the plugin could use it. Nothing below
+// this level noticed, because a unit test calling Begin with
+// context.Background() has no cancellation to trip over.
+func TestTransactionSpansMultipleCalls(t *testing.T) {
+	handle := requireDB(t)
+
+	cmds := db.NewCMDSManager(handle)
+	txs := db.NewTxRegistry()
+	defer txs.Close()
+
+	data := hostsvc.NewCMDSData(handle, cmds, txs)
+	if err := data.ProvisionSchema("txspan", []db.CollectionSchema{{Name: "notes"}}); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if _, err := handle.Exec("TRUNCATE ext_txspan_notes"); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	inst, err := pluginhost.Launch(context.Background(), pluginhost.LaunchSpec{
+		Key:        "txspan",
+		InstanceID: "txspan-0",
+		Version:    "1.0.0",
+		BinaryPath: pluginBinary,
+		Checksum:   checksum(t, pluginBinary),
+		HostImpl: hostsvc.New("txspan", []string{"db", "db:tx"}, hostsvc.Deps{
+			Config: hostsvc.NewStaticConfig(),
+			Data:   data,
+		}),
+		GrantedPermissions: []string{"db", "db:tx"},
+		Env:                []string{"PATH=/usr/bin:/bin"},
+		Stderr:             os.Stderr,
+		DevMode:            true,
+	})
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	defer inst.Kill()
+
+	resp := callPlugin(t, inst, "/tx-commit", "")
+	if resp.GetStatusCode() != 200 {
+		t.Fatalf("a transaction across several calls failed: %s", resp.GetBody())
+	}
+
+	var count int
+	if err := handle.QueryRow(`SELECT count(*) FROM ext_txspan_notes`).Scan(&count); err != nil {
+		t.Fatalf("counting rows: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("%d row(s) committed, want both writes from the transaction", count)
+	}
+}

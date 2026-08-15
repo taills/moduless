@@ -137,6 +137,36 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
 		}
 		body = out
+	case "/tx-commit":
+		// A transaction spanning several RPCs: begin, write, commit. Each of
+		// these is a separate call, which is the whole point — the transaction
+		// must outlive the call that opened it.
+		out, err := e.transact(context.Background())
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
+		}
+		body = out
+
+	case "/tx-then-crash":
+		// Opens a transaction, writes inside it, and dies without committing.
+		// Core has to notice and roll back: a database connection pinned by a
+		// process that no longer exists is never coming back on its own.
+		host := e.hostClient()
+		tx, err := host.BeginTx(context.Background(), &pb.BeginTxRequest{TimeoutSeconds: 2})
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
+		}
+		if _, err := host.Put(context.Background(), &pb.PutRequest{
+			Collection: "notes",
+			DocId:      "uncommitted",
+			Data:       []byte(`{"written":"inside an abandoned transaction"}`),
+			TxId:       tx.GetTxId(),
+		}); err != nil {
+			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
+		}
+		log.Print("echoplugin: dying with a transaction open")
+		os.Exit(4)
+
 	case "/publish":
 		// Broadcast an event other plugins can hear.
 		if _, err := e.hostClient().Publish(context.Background(), &pb.PublishRequest{
@@ -274,6 +304,30 @@ func (e *echoImpl) roundTripDocument(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("document was not found after writing it")
 	}
 	return fmt.Appendf(nil, "version=%d data=%s", put.GetVersion(), got.GetData()), nil
+}
+
+// transact writes two documents inside one transaction and commits it.
+func (e *echoImpl) transact(ctx context.Context) ([]byte, error) {
+	host := e.hostClient()
+
+	tx, err := host.BeginTx(ctx, &pb.BeginTxRequest{TimeoutSeconds: 30})
+	if err != nil {
+		return nil, fmt.Errorf("begin: %w", err)
+	}
+	for _, id := range []string{"tx-one", "tx-two"} {
+		if _, err := host.Put(ctx, &pb.PutRequest{
+			Collection: "notes",
+			DocId:      id,
+			Data:       []byte(`{"in":"transaction"}`),
+			TxId:       tx.GetTxId(),
+		}); err != nil {
+			return nil, fmt.Errorf("put %s: %w", id, err)
+		}
+	}
+	if _, err := host.CommitTx(ctx, &pb.TxRequest{TxId: tx.GetTxId()}); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	return []byte("committed"), nil
 }
 
 // roundTripCache writes and reads a cache entry, which needs the "cache"

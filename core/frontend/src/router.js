@@ -5,7 +5,6 @@ import Login from "./views/Login.vue";
 import Home from "./views/Home.vue";
 import AppView from "./views/AppView.vue";
 import Users from "./views/Users.vue";
-import Extensions from "./views/Extensions.vue";
 import Plugins from "./views/Plugins.vue";
 
 const router = createRouter({
@@ -27,7 +26,6 @@ const router = createRouter({
         },
         { path: "system/plugins", name: "plugins", component: Plugins },
         { path: "system/users", name: "users", component: Users },
-        { path: "system/extensions", name: "extensions", component: Extensions },
       ],
     },
   ],

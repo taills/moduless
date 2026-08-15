@@ -59,7 +59,6 @@ async function logout() {
         <template v-if="isAdmin">
           <div class="nav-label">系统管理</div>
           <router-link class="nav-item" to="/system/plugins" :class="{ active: route.path === '/system/plugins' }">插件管理</router-link>
-          <router-link class="nav-item" to="/system/extensions" :class="{ active: route.path === '/system/extensions' }">扩展管理</router-link>
           <router-link class="nav-item" to="/system/users" :class="{ active: route.path === '/system/users' }">用户管理</router-link>
         </template>
       </nav>

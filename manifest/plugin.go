@@ -233,6 +233,11 @@ func (m *Manifest) Validate() error {
 		if j.Cron == "" {
 			return fmt.Errorf("manifest: job %q is missing a cron expression", j.Name)
 		}
+		// Parsed at install time so a bad expression is a rejected package
+		// rather than a job that silently never runs.
+		if _, err := ParseSchedule(j.Cron); err != nil {
+			return fmt.Errorf("manifest: job %q: %w", j.Name, err)
+		}
 	}
 	if len(m.Jobs) > 0 && !m.HasPermission(PermCron) {
 		return fmt.Errorf("manifest: jobs are declared but the %q permission is not requested", PermCron)

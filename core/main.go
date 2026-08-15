@@ -172,6 +172,21 @@ func main() {
 	if err := pluginManager.EnableAll(context.Background()); err != nil {
 		log.Printf("[core] some plugins failed to start: %v", err)
 	}
+
+	// Cron jobs declared in manifests. Core owns the schedule rather than each
+	// plugin running its own timer: that is what makes a job stop when its
+	// plugin is disabled, and run once rather than once per replica.
+	scheduler := pluginhost.NewScheduler(registry, pluginManager)
+	scheduler.OnJobResult = func(pluginKey, jobName string, err error) {
+		if err != nil {
+			// A nightly job that has been failing for a week is invisible
+			// unless something says so: nobody is watching at 03:17.
+			log.Printf("[core] plugin %s job %s failed: %v", pluginKey, jobName, err)
+		}
+	}
+	scheduler.Start(context.Background())
+	defer scheduler.Stop()
+
 	for _, st := range pluginManager.List() {
 		if st.LoadError != "" {
 			log.Printf("[core] plugin %s not loaded: %s", st.Key, st.LoadError)

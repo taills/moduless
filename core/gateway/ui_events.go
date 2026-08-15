@@ -57,11 +57,17 @@ func (b *UIEvents) Subscribers() int {
 
 // Handler serves the SSE stream.
 func (b *UIEvents) Handler(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
+	// ResponseController rather than a w.(http.Flusher) assertion.
+	//
+	// This handler runs behind the filter pipeline, which wraps the response
+	// whenever a post_handler or log filter is installed. A type assertion
+	// against a wrapper only succeeds if that wrapper remembered to reimplement
+	// Flush; ResponseController walks the Unwrap chain instead, which is the
+	// standard contract every wrapper is expected to honour. The failure mode
+	// this avoids is a bad one: installing an unrelated plugin silently turns
+	// this stream into one that buffers forever, and what stops working is the
+	// console's ability to report plugin changes.
+	rc := http.NewResponseController(w)
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -69,8 +75,15 @@ func (b *UIEvents) Handler(w http.ResponseWriter, r *http.Request) {
 	// Without this an intermediary that buffers responses would hold events
 	// until the stream closed, defeating the point.
 	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+
+	// The first flush commits the headers and proves the response can stream.
+	// Doing it before writing a status means a writer that cannot stream still
+	// gets a useful error rather than an open connection that never delivers.
+	if err := rc.Flush(); err != nil {
+		w.Header().Del("Content-Type")
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
 
 	ch := make(chan string, 8)
 	b.mu.Lock()
@@ -89,11 +102,15 @@ func (b *UIEvents) Handler(w http.ResponseWriter, r *http.Request) {
 		select {
 		case ev := <-ch:
 			fmt.Fprintf(w, "event: %s\ndata: {}\n\n", ev)
-			flusher.Flush()
+			if err := rc.Flush(); err != nil {
+				return
+			}
 		case <-ticker.C:
 			// A comment line is a valid SSE keepalive the browser ignores.
 			fmt.Fprint(w, ": keepalive\n\n")
-			flusher.Flush()
+			if err := rc.Flush(); err != nil {
+				return
+			}
 		case <-r.Context().Done():
 			return
 		}

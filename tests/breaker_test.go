@@ -11,6 +11,11 @@ import (
 
 // Failure policy, end to end.
 //
+// Note: these observe the breaker with Breaker.Open(), never with Allow().
+// Allow consumes a half-open probe slot, so using it to check state is not a
+// check — it changes the thing being checked, and a test that polls with it
+// starves the probe it is waiting for.
+//
 // Two of the framework's promises only matter when something is broken: a
 // filter that fails must either let traffic through or stop it, according to
 // what its manifest declared, and a filter that keeps failing must stop being
@@ -79,14 +84,14 @@ func TestFilterCircuitBreakerOpens(t *testing.T) {
 	url, inst, cleanup := failingFilterGateway(t, false)
 	defer cleanup()
 
-	if !inst.Allow() {
+	if inst.Breaker.Open() {
 		t.Fatal("the breaker was open before anything failed")
 	}
 
 	// Drive failures until the breaker trips.
 	var calls int
 	deadline := time.Now().Add(10 * time.Second)
-	for inst.Allow() && time.Now().Before(deadline) {
+	for !inst.Breaker.Open() && time.Now().Before(deadline) {
 		calls++
 		if status, _, _ := get(t, url+"/boom"); status != http.StatusNotFound {
 			t.Fatalf("request %d answered %d; fail-open should have let it through", calls, status)
@@ -94,7 +99,7 @@ func TestFilterCircuitBreakerOpens(t *testing.T) {
 	}
 
 	t.Logf("the breaker opened after %d failing requests", calls)
-	if inst.Allow() {
+	if !inst.Breaker.Open() {
 		t.Fatal("the breaker never opened; a broken filter is consulted forever")
 	}
 
@@ -116,10 +121,10 @@ func TestFailClosedBreakerRejects(t *testing.T) {
 	defer cleanup()
 
 	deadline := time.Now().Add(10 * time.Second)
-	for inst.Allow() && time.Now().Before(deadline) {
+	for !inst.Breaker.Open() && time.Now().Before(deadline) {
 		get(t, url+"/boom")
 	}
-	if inst.Allow() {
+	if !inst.Breaker.Open() {
 		t.Fatal("the breaker never opened")
 	}
 
@@ -167,14 +172,14 @@ func TestBreakerIsPerPlugin(t *testing.T) {
 	defer srv.Close()
 
 	deadline := time.Now().Add(10 * time.Second)
-	for broken.Allow() && time.Now().Before(deadline) {
+	for !broken.Breaker.Open() && time.Now().Before(deadline) {
 		get(t, srv.URL+"/boom")
 	}
-	if broken.Allow() {
+	if !broken.Breaker.Open() {
 		t.Fatal("the breaker never opened")
 	}
 
-	if !healthy.Allow() {
+	if healthy.Breaker.Open() {
 		t.Error("one plugin's breaker opened another plugin's; a single bug should not take out unrelated filters")
 	}
 
@@ -182,5 +187,102 @@ func TestBreakerIsPerPlugin(t *testing.T) {
 	status, body, _ := get(t, srv.URL+"/deny")
 	if status != http.StatusForbidden {
 		t.Errorf("the healthy plugin's filter answered %d, want its 403: %s", status, body)
+	}
+}
+
+// The half of the breaker that matters after the incident: a plugin that
+// recovers must get its traffic back.
+//
+// Opening is the easy direction and the one already covered. If closing never
+// happened, a plugin that hiccupped five times would have its filters skipped
+// for the rest of the process's life — a momentary fault turned permanent, and
+// silently, because a fail-open filter that is being skipped looks exactly
+// like one that is passing everything.
+//
+// The observable is the filter's own effect, not the breaker's state: the
+// fixture short-circuits /deny with a 403, so a 403 means the filter ran and a
+// 404 means it was skipped and the request fell through to Core.
+func TestBreakerClosesAndTheFilterWorksAgain(t *testing.T) {
+	url, inst, cleanup := failingFilterGateway(t, false)
+	defer cleanup()
+
+	// Healthy to begin with: the filter runs and stops /deny.
+	if status, _, _ := get(t, url+"/deny"); status != http.StatusForbidden {
+		t.Fatalf("status = %d before any failure; the filter was not running", status)
+	}
+
+	// Drive it to failure.
+	deadline := time.Now().Add(10 * time.Second)
+	for !inst.Breaker.Open() && time.Now().Before(deadline) {
+		get(t, url+"/boom")
+	}
+	if !inst.Breaker.Open() {
+		t.Fatal("the breaker never opened")
+	}
+
+	// While open, the filter is skipped — /deny is no longer stopped.
+	if status, _, _ := get(t, url+"/deny"); status != http.StatusNotFound {
+		t.Errorf("status = %d with the breaker open, want the filter to be skipped (404)", status)
+	}
+
+	// Wait out the open period. The real five seconds rather than a fake
+	// clock, because what is under test is a plugin coming back on its own
+	// with nothing intervening.
+	//
+	// Open() going false means only that the breaker has stopped refusing
+	// outright — it cannot distinguish half-open from closed, and from a
+	// caller's side that distinction is invisible anyway: a probe that
+	// succeeds runs the filter just like a closed breaker would. So this is
+	// the wait, not the assertion.
+	deadline = time.Now().Add(30 * time.Second)
+	for inst.Breaker.Open() && time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+	}
+	if inst.Breaker.Open() {
+		t.Fatal("the breaker was still refusing every call well past its open period")
+	}
+
+	// The assertion is the filter's behaviour: it stops /deny again. That is
+	// what a recovered plugin means to everything outside it, and it is what a
+	// breaker that never let go would prevent.
+	recovered := false
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if status, _, _ := get(t, url+"/deny"); status == http.StatusForbidden {
+			recovered = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !recovered {
+		t.Error("the breaker closed but the filter is still not stopping /deny; " +
+			"traffic is being allowed past a filter that is once again healthy")
+	}
+}
+
+// A plugin that stays broken must not be let back in just because time passed.
+// The probe is an opportunity to prove recovery, not a reset.
+func TestBreakerReopensIfTheProbeFails(t *testing.T) {
+	url, inst, cleanup := failingFilterGateway(t, false)
+	defer cleanup()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !inst.Breaker.Open() && time.Now().Before(deadline) {
+		get(t, url+"/boom")
+	}
+	if !inst.Breaker.Open() {
+		t.Fatal("the breaker never opened")
+	}
+
+	// Keep failing across the open period, so every probe fails too.
+	end := time.Now().Add(8 * time.Second)
+	for time.Now().Before(end) {
+		get(t, url+"/boom")
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !inst.Breaker.Open() {
+		t.Error("the breaker closed for a plugin that never stopped failing; " +
+			"the half-open probe is resetting on time rather than on recovery")
 	}
 }

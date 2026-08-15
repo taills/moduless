@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,10 @@ type echoImpl struct {
 	key      string
 	instance string // which replica this process is, echoed back on responses
 	hostEcho string // value round-tripped through the reverse connection
+
+	// Events this process received over its subscription, so a test can prove
+	// one plugin heard another across two process boundaries and Core.
+	received []string
 }
 
 func (e *echoImpl) bindHost(conn *grpc.ClientConn) {
@@ -62,9 +67,47 @@ func (e *echoImpl) Configure(ctx context.Context, req *pb.ConfigureRequest) (*pb
 	e.hostEcho = resp.GetConfig()["greeting"]
 	e.mu.Unlock()
 
+	// A plugin granted the events capability starts listening. Subscribe
+	// blocks until the stream ends, so it belongs in its own goroutine — the
+	// mistake this fixture would otherwise be modelling for anyone reading it.
+	if slices.Contains(req.GetGrantedPermissions(), "events") {
+		// What to listen for is configuration, which is also how a real plugin
+		// would decide.
+		go e.listen(resp.GetConfig()["subscribe_to"])
+	}
+
 	log.Printf("echoplugin: configured key=%s perms=%v greeting=%q",
 		req.GetPluginKey(), req.GetGrantedPermissions(), e.hostEcho)
 	return &pb.ConfigureResponse{Ready: true}, nil
+}
+
+// listen records every event delivered on the subscription.
+func (e *echoImpl) listen(eventName string) {
+	if eventName == "" {
+		return
+	}
+	stream, err := e.hostClient().Subscribe(context.Background(),
+		&pb.SubscribeRequest{EventName: eventName})
+	if err != nil {
+		log.Printf("echoplugin: subscribe: %v", err)
+		return
+	}
+	for {
+		ev, err := stream.Recv()
+		if err != nil {
+			log.Printf("echoplugin: subscription ended: %v", err)
+			return
+		}
+		e.mu.Lock()
+		e.received = append(e.received, string(ev.GetData()))
+		e.mu.Unlock()
+	}
+}
+
+func (e *echoImpl) hostClient() pb.HostServicesClient {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.host
 }
 
 func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.HttpResponse, error) {
@@ -94,6 +137,22 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
 		}
 		body = out
+	case "/publish":
+		// Broadcast an event other plugins can hear.
+		if _, err := e.hostClient().Publish(context.Background(), &pb.PublishRequest{
+			EventName: "thing.happened",
+			Data:      []byte(req.GetQuery()),
+		}); err != nil {
+			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
+		}
+		body = []byte("published")
+
+	case "/received":
+		// What this process heard on its subscription, newline separated.
+		e.mu.RLock()
+		body = []byte(strings.Join(e.received, "\n"))
+		e.mu.RUnlock()
+
 	case "/cache":
 		// Uses a capability that requires a declared permission, so tests can
 		// prove Core refuses it on its own side rather than trusting the

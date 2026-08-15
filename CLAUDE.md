@@ -58,7 +58,12 @@ go test ./... -race
 go vet ./... && gofmt -l .
 
 # Database-backed tests skip unless this points at a PostgreSQL instance
-TEST_DATABASE_URL='postgres://postgres:pass@localhost:5432/test?sslmode=disable' go test ./...
+# Database-backed tests skip unless this points at a PostgreSQL instance.
+# A throwaway one, on a port that will not collide with anything already running:
+#   docker run -d --name moduless-test-db -p 15433:5432 \
+#     -e POSTGRES_USER=moduless -e POSTGRES_PASSWORD=moduless \
+#     -e POSTGRES_DB=moduless_test postgres:18-alpine
+TEST_DATABASE_URL='postgres://moduless:moduless@localhost:15433/moduless_test?sslmode=disable' go test ./...
 
 # Console
 cd core/frontend && npm install && npm run build   # or npm run dev

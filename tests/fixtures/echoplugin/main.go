@@ -70,11 +70,19 @@ func (e *echoImpl) HandleHTTP(_ context.Context, req *pb.HttpRequest) (*pb.HttpR
 	e.mu.RUnlock()
 
 	body := req.GetBody()
-	if req.GetPath() == "/env" {
+	switch req.GetPath() {
+	case "/env":
 		// Reports what the child process can actually see, so Core's tests can
 		// prove SkipHostEnv really withheld its own environment rather than
 		// just assuming it did.
 		body = []byte(strings.Join(os.Environ(), "\n"))
+	case "/crash":
+		// Dies the way a panic or an OOM kill would: abruptly, without going
+		// through Shutdown, and without Core having asked. This is what the
+		// supervisor's crash recovery is for, and it is deliberately distinct
+		// from Core stopping the plugin on purpose.
+		log.Print("echoplugin: exiting abruptly on request")
+		os.Exit(3)
 	}
 
 	return &pb.HttpResponse{

@@ -57,6 +57,13 @@ go build ./...
 go test ./... -race
 go vet ./... && gofmt -l .
 
+# Keep the whole output. A failure here is often something that only shows up
+# under load and does not reproduce alone, so the run that failed is the only
+# place the reason exists — and filtering the output down to `FAIL` throws it
+# away before anybody reads it. That has cost two investigations in this
+# repository already.
+go test ./... -count=1 > /tmp/suite.log 2>&1; grep -B2 -A8 '^--- FAIL' /tmp/suite.log
+
 # Run the suite on Linux, which the target actually is. Some behaviour differs
 # from macOS in ways that matter here — writing to a running executable fails
 # with ETXTBSY, and Pdeathsig only exists at all — so a green run on the

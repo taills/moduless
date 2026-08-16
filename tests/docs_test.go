@@ -35,6 +35,16 @@ import (
 // sdkRef matches an `sdk.Something` reference in the guide.
 var sdkRef = regexp.MustCompile(`\bsdk\.([A-Z][A-Za-z0-9_]*)`)
 
+// sdkMethodRef catches the method in sdk.Log.Gauge — the second segment, which
+// sdkRef never looked at.
+//
+// It only ever captured the first, so every `sdk.X.Y()` in the guide was
+// checked as far as X and no further: sdk.Log.Timer, a method that does not
+// exist, passed because sdk.Log does. The code-fence scan covered some of
+// these by accident, and anything written in a table — which is where the
+// metric kinds are documented — was checked by nothing at all.
+var sdkMethodRef = regexp.MustCompile(`\bsdk\.[A-Z][A-Za-z0-9_]*\.([A-Z][A-Za-z0-9_]*)`)
+
 // exportedSDKNames collects everything sdk/plugin exports.
 func exportedSDKNames(t *testing.T) map[string]bool {
 	t.Helper()
@@ -111,6 +121,24 @@ func TestGuideOnlyNamesRealSDKSymbols(t *testing.T) {
 
 	if len(seen) < 15 {
 		t.Fatalf("only %d sdk.X references found in the guide; the pattern is wrong", len(seen))
+	}
+
+	// The method half of sdk.X.Y, wherever it appears — prose, table or code.
+	methods := 0
+	for _, m := range sdkMethodRef.FindAllStringSubmatch(string(guide), -1) {
+		name := m[1]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		methods++
+		if !have[name] {
+			missing = append(missing, name)
+		}
+	}
+	if methods == 0 {
+		t.Fatal("no sdk.X.Y methods found in the guide; the pattern stopped matching " +
+			"and this half of the check now passes by looking at nothing")
 	}
 	// Methods called on SDK values inside the guide's Go blocks. Restricted to
 	// code fences so that prose mentioning a word followed by a bracket does

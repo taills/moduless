@@ -77,6 +77,13 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
 # linux build tag and is the only check that a plugin dies with Core, and
 # TestBuildOutputNamesAreIgnored needs git, which golang:alpine does not ship.
 
+# Migrations roll back only as far as 000008, which dropped the extension
+# tables and cannot put the data back. It says so when asked to go further
+# rather than letting the rollback walk into a confusing error three migrations
+# later. tests/migrations_test.go builds a throwaway database and checks both
+# halves — the reversible window round-trips, and the one-way door explains
+# itself.
+
 # Database-backed tests skip unless this points at a PostgreSQL instance.
 # A throwaway one, on a port that will not collide with anything already running:
 #   docker run -d --name moduless-test-db -p 15433:5432 \

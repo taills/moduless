@@ -75,3 +75,39 @@ func RunMigrations(conn *sql.DB) error {
 	}
 	return nil
 }
+
+// RollBackMigrations reverses the last n migrations, or all of them when n is
+// zero.
+//
+// Core never calls it: a rollback is an operator's decision, taken against a
+// database they have backed up, not something a starting process does. It
+// exists so the .down.sql files can be executed by something — they had never
+// been run by Core or by a test, which made them a rollback capability nobody
+// had checked, to be discovered at the moment it was needed.
+func RollBackMigrations(conn *sql.DB, steps int) error {
+	src, err := iofs.New(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("load embedded migrations: %w", err)
+	}
+
+	driver, err := postgres.WithInstance(conn, &postgres.Config{})
+	if err != nil {
+		return fmt.Errorf("init migrate driver: %w", err)
+	}
+
+	m, err := migrate.NewWithInstance("iofs", src, "postgres", driver)
+	if err != nil {
+		return fmt.Errorf("init migrator: %w", err)
+	}
+
+	if steps > 0 {
+		if err := m.Steps(-steps); err != nil && err != migrate.ErrNoChange {
+			return fmt.Errorf("roll back %d migration(s): %w", steps, err)
+		}
+		return nil
+	}
+	if err := m.Down(); err != nil && err != migrate.ErrNoChange {
+		return fmt.Errorf("roll back migrations: %w", err)
+	}
+	return nil
+}

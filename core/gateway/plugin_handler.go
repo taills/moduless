@@ -172,7 +172,7 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 		// events included, which is how this console learns a plugin was
 		// disabled.
 		if !chain.HasPhase(pb.Phase_PHASE_POST_HANDLER) && !chain.HasPhase(pb.Phase_PHASE_LOG) {
-			next.ServeHTTP(w, requestWithContext(r, rc))
+			next.ServeHTTP(w, r)
 			return
 		}
 		// Capture when somebody asked for the body, not when a post_handler
@@ -180,7 +180,7 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 		// declaring needs_response_body got one on plugin routes and an empty
 		// one here, so auditing was blind to the responses of Core's own API.
 		rec := newRecorder(w, chain.NeedsResponseBody())
-		next.ServeHTTP(rec, requestWithContext(r, rc))
+		next.ServeHTTP(rec, r)
 		rc.ResponseStatus = rec.status
 		rc.ResponseHeader = rec.Header()
 		rc.ResponseBody = rec.body()
@@ -521,19 +521,17 @@ func clientIP(r *http.Request) string {
 	return r.RemoteAddr
 }
 
-// requestWithContext threads the trace id into the downstream request so
-// Core's own handlers can log it alongside the plugin ones.
-func requestWithContext(r *http.Request, rc *pipeline.RequestContext) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), traceIDContextKey{}, rc.TraceID))
-}
-
-type traceIDContextKey struct{}
-
-// TraceIDFromContext returns the trace id Core assigned to the request.
-func TraceIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(traceIDContextKey{}).(string)
-	return id
-}
+// Core's own handlers reach the trace id through the response.
+//
+// This used to be threaded into the downstream request's context, with an
+// exported accessor for handlers to read it back. Nothing ever called it — the
+// audit middleware, the one place that wanted the id, sits outside this
+// handler and never saw that context at all. It reads X-Request-Id off the
+// response instead, which is set before anything downstream runs and needs no
+// plumbing.
+//
+// So the context value and its accessor are gone, along with the two
+// allocations every non-plugin request was paying for a value nobody read.
 
 // recorder captures a downstream response so post_handler filters can inspect
 // or rewrite it. Buffering is opt-in: when no filter subscribed to

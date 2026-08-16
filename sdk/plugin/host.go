@@ -38,8 +38,25 @@ func (d *DBClient) Put(ctx context.Context, collection, id string, value any) (i
 
 // PutIfVersion writes only when the stored version still matches, which is how
 // two replicas update the same document without silently overwriting each
-// other. A mismatch returns an error whose gRPC code is FailedPrecondition:
-// re-read and retry.
+// other. A mismatch returns an error matching ErrVersionConflict: re-read and
+// retry.
+//
+//	for range maxAttempts {
+//		found, version, err := sdk.DB.Get(ctx, "stock", id, &item)
+//		…
+//		if _, err = sdk.DB.PutIfVersion(ctx, "stock", id, item, version); err == nil {
+//			break
+//		}
+//		if !errors.Is(err, sdk.ErrVersionConflict) {
+//			return err
+//		}
+//	}
+//
+// Branch on the sentinel, not on a gRPC code. This comment used to name
+// FailedPrecondition, which stopped being true when version conflicts moved to
+// Aborted so that they could be told apart from an expired transaction — and
+// FailedPrecondition now means exactly that, an expired transaction, where
+// retrying is the one thing that cannot work.
 func (d *DBClient) PutIfVersion(ctx context.Context, collection, id string, value any, expected int64) (int64, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -791,9 +808,39 @@ func asLogValue(v any) string {
 	}
 }
 
-// Metric records a measurement.
+// Metric records a counter increment.
+//
+// Named without "Counter" because counting is the common case and this is the
+// name plugins already call. Gauge and Histogram are its siblings.
 func (l *Logger) Metric(ctx context.Context, name string, value float64, labels map[string]string) {
+	l.record(ctx, pb.MetricKind_METRIC_COUNTER, name, value, labels)
+}
+
+// Gauge records a value that goes up and down — a queue depth, a cache size,
+// a number of open connections.
+func (l *Logger) Gauge(ctx context.Context, name string, value float64, labels map[string]string) {
+	l.record(ctx, pb.MetricKind_METRIC_GAUGE, name, value, labels)
+}
+
+// Histogram records one observation of a distribution, such as a duration.
+func (l *Logger) Histogram(ctx context.Context, name string, value float64, labels map[string]string) {
+	l.record(ctx, pb.MetricKind_METRIC_HISTOGRAM, name, value, labels)
+}
+
+// record sends one measurement.
+//
+// Core has handled all three kinds from the start and the SDK offered only the
+// counter, so two of its three branches could not be reached by any plugin
+// written against this package: a plugin wanting to report a queue depth had
+// to report it as a counter and let whoever read the metric work out that it
+// was not one.
+//
+// The error is dropped deliberately, and only here. A measurement that cannot
+// be delivered must not take down the work being measured, and there is
+// nothing a caller could usefully do about it — which is the opposite of every
+// other call in this file, where the error is the answer.
+func (l *Logger) record(ctx context.Context, kind pb.MetricKind, name string, value float64, labels map[string]string) {
 	_, _ = l.c.RecordMetric(outgoing(ctx), &pb.MetricRequest{
-		Name: name, Kind: pb.MetricKind_METRIC_COUNTER, Value: value, Labels: labels,
+		Name: name, Kind: kind, Value: value, Labels: labels,
 	})
 }

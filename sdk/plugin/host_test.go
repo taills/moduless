@@ -3,6 +3,10 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +36,8 @@ type fakeHost struct {
 	lastCacheSet  *pb.CacheSetRequest
 	lastBeginTx   *pb.BeginTxRequest
 	lastDownload  *pb.DownloadTokenRequest
+	lastMetric    *pb.MetricRequest
+	putErr        error
 
 	queryResp     *pb.QueryResponse
 	aggregateResp *pb.AggregateResponse
@@ -56,6 +62,9 @@ func (f *fakeHost) Aggregate(_ context.Context, in *pb.AggregateRequest, _ ...gr
 
 func (f *fakeHost) Put(_ context.Context, in *pb.PutRequest, _ ...grpc.CallOption) (*pb.PutResponse, error) {
 	f.lastPut = in
+	if f.putErr != nil {
+		return nil, f.putErr
+	}
 	if f.putResp == nil {
 		return &pb.PutResponse{Version: 1}, nil
 	}
@@ -694,4 +703,162 @@ func (f *fakeHost) CommitTx(_ context.Context, _ *pb.TxRequest, _ ...grpc.CallOp
 
 func (f *fakeHost) RollbackTx(_ context.Context, _ *pb.TxRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
 	return &emptypb.Empty{}, nil
+}
+
+func (f *fakeHost) RecordMetric(_ context.Context, in *pb.MetricRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	f.lastMetric = in
+	return &emptypb.Empty{}, nil
+}
+
+// Each metric kind reaches Core as itself.
+//
+// Core has switched on all three kinds from the start; the SDK only ever sent
+// METRIC_COUNTER, so two of those branches were unreachable from any plugin
+// written against this package. A plugin reporting a queue depth had to send
+// it as a counter and hope whoever read it knew better.
+func TestEachMetricKindReachesCore(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Logger, context.Context)
+		want pb.MetricKind
+	}{
+		{"counter", func(l *Logger, ctx context.Context) { l.Metric(ctx, "jobs_done", 1, nil) },
+			pb.MetricKind_METRIC_COUNTER},
+		{"gauge", func(l *Logger, ctx context.Context) { l.Gauge(ctx, "queue_depth", 42, nil) },
+			pb.MetricKind_METRIC_GAUGE},
+		{"histogram", func(l *Logger, ctx context.Context) { l.Histogram(ctx, "render_ms", 12.5, nil) },
+			pb.MetricKind_METRIC_HISTOGRAM},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &fakeHost{}
+			tc.call(&Logger{c: host}, t.Context())
+			if host.lastMetric == nil {
+				t.Fatal("no metric reached the host")
+			}
+			if got := host.lastMetric.GetKind(); got != tc.want {
+				t.Errorf("kind = %v, want %v: the reader cannot tell a gauge from a "+
+					"counter once it arrives as one", got, tc.want)
+			}
+		})
+	}
+}
+
+// The aggregate functions, each mapped to its own operation.
+//
+// Avg was the one of the four with no test. Nothing was wrong with it — but a
+// family of one-line methods that differ only by a constant is exactly where a
+// copied line goes unnoticed, and three of the four being covered is what
+// makes the fourth look covered too.
+func TestEachAggregateReachesItsOwnFunc(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Query, context.Context) (map[string]float64, error)
+		want pb.AggregateFunc
+	}{
+		{"sum", func(q *Query, ctx context.Context) (map[string]float64, error) { return q.Sum(ctx, "total") },
+			pb.AggregateFunc_AGG_SUM},
+		{"avg", func(q *Query, ctx context.Context) (map[string]float64, error) { return q.Avg(ctx, "total") },
+			pb.AggregateFunc_AGG_AVG},
+		{"min", func(q *Query, ctx context.Context) (map[string]float64, error) { return q.Min(ctx, "total") },
+			pb.AggregateFunc_AGG_MIN},
+		{"max", func(q *Query, ctx context.Context) (map[string]float64, error) { return q.Max(ctx, "total") },
+			pb.AggregateFunc_AGG_MAX},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db, host := newTestDB()
+			if _, err := tc.call(db.Where("orders"), t.Context()); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got := host.lastAggregate.GetFunc(); got != tc.want {
+				t.Errorf("func = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// The sentinels a plugin's retry logic branches on.
+//
+// sdk/plugin/errors.go exists so an author can write
+// errors.Is(err, sdk.ErrVersionConflict) instead of matching strings, and the
+// shipped inventory example's retry loop does exactly that. Nothing tested it.
+// A wrong mapping here does not look like a bug: the retry simply never fires,
+// and the symptom is lost writes under contention rather than an error.
+//
+// The codes are the ones Core sends — core/hostsvc maps a version conflict to
+// Aborted and a transaction ceiling to ResourceExhausted, and
+// tests/error_codes_test.go pins that side. Naming them in both places is what
+// makes a divergence show up as a failure on one end or the other.
+func TestHostErrorsMapToSentinels(t *testing.T) {
+	tests := []struct {
+		name string
+		code codes.Code
+		want error
+	}{
+		{"version conflict", codes.Aborted, ErrVersionConflict},
+		{"expired transaction", codes.FailedPrecondition, ErrTxExpired},
+		{"missing capability", codes.PermissionDenied, ErrNotAllowed},
+		{"rate limited", codes.ResourceExhausted, ErrRateLimited},
+		{"absent document", codes.NotFound, ErrNotFound},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			const detail = "collection notes, document e2e"
+			host := &fakeHost{putErr: status.Error(tc.code, detail)}
+			db := &DBClient{c: host}
+
+			_, err := db.Put(t.Context(), "notes", "e2e", map[string]int{"n": 1})
+			if err == nil {
+				t.Fatal("Put succeeded against a host that returned an error")
+			}
+			if !errors.Is(err, tc.want) {
+				t.Errorf("errors.Is(err, %v) was false for %v: a plugin branching on "+
+					"this sentinel takes the wrong branch silently", tc.want, tc.code)
+			}
+			// The sentinel says what kind of failure it is; the message has to
+			// keep saying which one, or the wrapping costs the author the only
+			// detail they can act on.
+			if !strings.Contains(err.Error(), detail) {
+				t.Errorf("err = %q, which no longer mentions %q", err, detail)
+			}
+
+			// Unwrapping reaches Core's own error, so status.FromError and
+			// errors.As still work on it. errors.Is above goes through the
+			// Is method and would pass even with Unwrap broken, which is
+			// exactly how a wrapper loses everything underneath it unnoticed.
+			inner := errors.Unwrap(err)
+			if inner == nil {
+				t.Fatal("the wrapped error does not unwrap; anything matching on what " +
+					"Core actually sent is cut off at the sentinel")
+			}
+			if st, ok := status.FromError(inner); !ok || st.Code() != tc.code {
+				t.Errorf("unwrapped to %v, which is not the %v Core sent", inner, tc.code)
+			}
+		})
+	}
+}
+
+// A code with no sentinel is passed through rather than mapped to something
+// close. Guessing would be worse than not answering.
+func TestAnUnmappedCodeKeepsItsOwnError(t *testing.T) {
+	host := &fakeHost{putErr: status.Error(codes.Unavailable, "database is not configured")}
+	db := &DBClient{c: host}
+
+	_, err := db.Put(t.Context(), "notes", "e2e", map[string]int{"n": 1})
+	if err == nil {
+		t.Fatal("Put succeeded against a host that returned an error")
+	}
+	for _, sentinel := range []error{ErrVersionConflict, ErrTxExpired, ErrNotAllowed, ErrRateLimited, ErrNotFound} {
+		if errors.Is(err, sentinel) {
+			t.Errorf("an Unavailable was reported as %v; a plugin would retry, or give "+
+				"up, on the strength of a guess", sentinel)
+		}
+	}
+	if !strings.Contains(err.Error(), "database is not configured") {
+		t.Errorf("err = %q, which lost what Core said", err)
+	}
 }

@@ -385,6 +385,11 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 			// Two values on one header, to prove repeated headers survive the
 			// round trip. The legacy tunnel dropped all but the first.
 			"X-Multi": {Values: []string{"a", "b"}},
+			// What this handler was actually handed, so a filter's header
+			// mutation can be checked against what the backend received rather
+			// than against the filter having claimed to make it.
+			"X-Saw-Probe":   {Values: []string{firstHeader(req.GetHeaders(), "X-Probe")}},
+			"X-Saw-Removed": {Values: []string{firstHeader(req.GetHeaders(), "X-Remove-Me")}},
 		},
 		Body: body,
 	}, nil
@@ -509,6 +514,25 @@ func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterR
 		// still inside the filter.
 		time.Sleep(200 * time.Millisecond)
 		return &pb.FilterResponse{Action: pb.FilterResponse_ACTION_CONTINUE}, nil
+	}
+
+	// ECHO_MUTATE_HEADERS exercises the four header mutations in one pass: two
+	// on the request, which only the backend can confirm, and two on the
+	// response, which only the client can.
+	if os.Getenv("ECHO_MUTATE_HEADERS") != "" {
+		m := &pb.RequestMutation{}
+		if req.GetPhase() == pb.Phase_PHASE_POST_HANDLER {
+			m.SetResponseHeaders = map[string]*pb.HeaderValues{
+				"X-Added-Response": {Values: []string{"from-filter"}},
+			}
+			m.RemoveResponseHeaders = []string{"X-Multi"}
+		} else {
+			m.SetRequestHeaders = map[string]*pb.HeaderValues{
+				"X-Probe": {Values: []string{"from-filter"}},
+			}
+			m.RemoveRequestHeaders = []string{"X-Remove-Me"}
+		}
+		return &pb.FilterResponse{Action: pb.FilterResponse_ACTION_MUTATE, Mutation: m}, nil
 	}
 
 	// ECHO_REWRITE_TO makes this filter rewrite every request's path, which is
@@ -797,4 +821,16 @@ type failingImpl struct{ echoImpl }
 
 func (f *failingImpl) Configure(context.Context, *pb.ConfigureRequest) (*pb.ConfigureResponse, error) {
 	return &pb.ConfigureResponse{Ready: false, Error: "deliberate configure failure"}, nil
+}
+
+// firstHeader returns the first value of a header, or "" when it is absent.
+// Absent and empty are the same answer here on purpose: the question a test
+// asks is whether the backend saw a value.
+func firstHeader(h map[string]*pb.HeaderValues, key string) string {
+	for k, v := range h {
+		if strings.EqualFold(k, key) && len(v.GetValues()) > 0 {
+			return v.GetValues()[0]
+		}
+	}
+	return ""
 }

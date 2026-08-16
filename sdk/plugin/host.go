@@ -298,12 +298,30 @@ func decodeDocuments(docs [][]byte, dest any) error {
 	return nil
 }
 
+// TxOps is what a transaction body may do.
+//
+// An interface rather than the concrete *TxClient, so that the code inside a
+// transaction can be tested. TxClient holds an unexported gRPC client, so an
+// author cannot build one, and a callback typed to it was unreachable without a
+// running Core — which put every invariant a transaction exists to protect
+// (read the level, refuse when short, write both documents) out of reach of an
+// ordinary go test.
+//
+// *TxClient satisfies this, so nothing changes at the call site except the type
+// named in the closure.
+type TxOps interface {
+	Put(ctx context.Context, collection, id string, value any) (int64, error)
+	PutIfVersion(ctx context.Context, collection, id string, value any, expected int64) (int64, error)
+	Get(ctx context.Context, collection, id string, dest any) (found bool, version int64, err error)
+	Delete(ctx context.Context, collection, id string) error
+}
+
 // Tx runs fn inside a transaction, committing on success and rolling back on
 // error or panic. Requires the "db:tx" permission.
 //
 // A transaction holds a database connection for as long as it is open, and
 // Core rolls it back once its timeout passes, so keep the work inside short.
-func (d *DBClient) Tx(ctx context.Context, timeout time.Duration, fn func(tx *TxClient) error) error {
+func (d *DBClient) Tx(ctx context.Context, timeout time.Duration, fn func(tx TxOps) error) error {
 	resp, err := d.c.BeginTx(outgoing(ctx), &pb.BeginTxRequest{
 		TimeoutSeconds: wholeSeconds(timeout),
 	})

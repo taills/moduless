@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,11 +178,27 @@ func reserve(w http.ResponseWriter, r *http.Request) {
 // instead of holding a connection open forever.
 const maxReserveAttempts = 8
 
+// runTx is the seam over the transaction.
+//
+// A function that calls sdk.DB.Tx, not the method value `sdk.DB.Tx` itself. The
+// host clients are nil until Core hands over the reverse connection in
+// Configure, so a method value captured at package initialisation would bind
+// that nil receiver permanently and panic on the first reservation in
+// production — while looking perfectly correct. It is the same timing trap as
+// reading configuration in main(): the thing is not there yet.
+//
+// The callback takes sdk.TxOps rather than *sdk.TxClient, which is what makes
+// the body below reachable from a test: TxClient holds an unexported gRPC
+// client, so no test can build one.
+var runTx = func(ctx context.Context, timeout time.Duration, fn func(sdk.TxOps) error) error {
+	return sdk.DB.Tx(ctx, timeout, fn)
+}
+
 // reserveOnce is one attempt: read the level, decide, write both documents.
 func reserveOnce(r *http.Request, sku string, qty int, forWhom string,
 	taken *Reservation, remaining *int) error {
 
-	return sdk.DB.Tx(r.Context(), 10*time.Second, func(tx *sdk.TxClient) error {
+	return runTx(r.Context(), 10*time.Second, func(tx sdk.TxOps) error {
 		var item Item
 		// The version comes back from a transactional Get for the same reason
 		// it does outside one: two transactions can both read this row, and

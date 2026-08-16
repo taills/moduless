@@ -253,9 +253,9 @@ next, err := sdk.DB.Where("notes").
 total, err := sdk.DB.Where("notes").Eq("status", "open").Count(ctx)
 sums, err := sdk.DB.Where("orders").Sum(ctx, "total", "region")
 
-// 事务（需要 db:tx）。TxClient 的方法和非事务版本一一对应，
+// 事务（需要 db:tx）。回调拿到的是 sdk.TxOps 接口，方法和非事务版本一一对应，
 // 签名也一样 —— 包括 Get 返回 version、以及 PutIfVersion。
-err := sdk.DB.Tx(ctx, 30*time.Second, func(tx *sdk.TxClient) error {
+err := sdk.DB.Tx(ctx, 30*time.Second, func(tx sdk.TxOps) error {
     var stock Stock
     found, version, err := tx.Get(ctx, "stock", sku, &stock)
     if err != nil {
@@ -521,6 +521,19 @@ var _ fetcher = (*sdk.HTTPClient)(nil)   // 编译得过
 对**出站 HTTP 这条尤其重要**：Core 会拒绝插件拨往 loopback 和私有地址（这正是它挡住 DNS 重绑定和元数据端点的方式），所以没有任何地址是测试能监听、而 Core 又肯拨的 —— 接缝不是偏好，是唯一的办法。
 
 **唯一没有天然接缝的**是 `sdk.DB.Where(...)`：它返回一个具体的链式构造器，假造它等于重写构造器本身。碰到查询的代码目前还是只能靠 `tests/` 那套做法 —— 现场编译插件、由 Core 启动、发真实请求。
+
+**事务曾经也在这个名单上，现在不在了。**`sdk.DB.Tx` 的回调以前收到 `*sdk.TxClient` —— 具体类型，内部持有不导出的 gRPC 客户端，作者造不出来。于是事务体（也就是不变量真正所在的地方：读库存、不够就拒、扣减与记录一起落盘）没有 Core 就一行都测不了。现在回调收到的是 `sdk.TxOps` 接口，`*sdk.TxClient` 满足它，生产路径没有任何变化。
+
+`extension-example/inventory` 演示了全套：一个记账用的假事务、注入版本冲突、以及七个测试覆盖超卖、边界值、未知 SKU 和冲突上报。它的接缝还有一个细节值得抄：
+
+```go
+// 不能写成 var runTx = sdk.DB.Tx
+var runTx = func(ctx context.Context, timeout time.Duration, fn func(sdk.TxOps) error) error {
+	return sdk.DB.Tx(ctx, timeout, fn)
+}
+```
+
+`sdk.DB` 在 Core 递过反向连接之前是 nil，**包初始化时取方法值会把那个 nil 接收者永久绑住** —— 代码看起来完全正常，生产里第一次下单就 panic。这和「在 `main()` 里读配置拿到空 map」是同一个时序陷阱。
 
 这个空缺有多大，量过一次：`extension-example/apikey` 是最依赖数据库的示例，14 个函数里 **8 个不需要任何接缝**（含 `authorize` —— 决定谁能访问什么的那个，签名是 `_ context.Context`，压根不碰宿主能力），**5 个**用 Get/Put/Delete 层面的接缝就够，**只有 1 个**（列表接口）撞上 `Where`。所以在动手造内存替身之前值得先量一遍自己的插件：多数逻辑并不在那 1/14 里。
 

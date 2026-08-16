@@ -653,7 +653,7 @@ func TestNoPositiveDurationBecomesZeroOnTheWire(t *testing.T) {
 	t.Run("transaction timeout", func(t *testing.T) {
 		host := &fakeHost{}
 		db := &DBClient{c: host}
-		if err := db.Tx(t.Context(), tiny, func(*TxClient) error { return nil }); err != nil {
+		if err := db.Tx(t.Context(), tiny, func(TxOps) error { return nil }); err != nil {
 			t.Fatalf("Tx: %v", err)
 		}
 		if got := host.lastBeginTx.GetTimeoutSeconds(); got < 1 {

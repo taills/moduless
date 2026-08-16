@@ -139,8 +139,12 @@ guide. Three rules matter most:
    Writing to stdout after the handshake is survivable, so the rule is about
    start-up; use stderr anyway, since `sdk.Log` carries the trace id.
 2. **Plugins must be built with `CGO_ENABLED=0`.** A dynamically linked binary
-   fails to exec in the musl-based runtime image, and that one does not point
-   at its cause.
+   cannot exec in the musl-based runtime image, and the error points the wrong
+   way: the kernel returns ENOENT because the *interpreter* is missing, so both
+   the shell and Go report `no such file or directory` for a file that is
+   plainly there. Measured — it is not `exec format error`, which means a
+   wrong architecture. Confirm with
+   `docker run --rm -v "$PWD:/x" alpine ldd /x/bin/plugin`.
 3. **Deploying a new version must replace the binary, not overwrite it.** The
    previous version is still serving until the upgrade commits, and writing
    into a file that is executing corrupts that process. Use `mv`, not `cp`.

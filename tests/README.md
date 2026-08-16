@@ -168,3 +168,28 @@ MEASURE=1 CEILINGS="4 8" TEST_DATABASE_URL=... go test ./tests/ -run TestTransac
 所以现在文档里给的是结构体声明，并且有 `TestGuideStructsMatchTheSDK` 守着 —— 文档展示的每个字段必须在 SDK 上存在且类型一致。它不要求文档展示全部字段（只展示有意思的那半是合理的），只要求**展示出来的是真的**。
 
 用它变异验证过：把 `ID` 写成 `string`、或加一个不存在的字段，都会失败。
+
+
+## 静态链接那条规则，实测出来的样子
+
+`CGO_ENABLED=0` 那条规则的失败信息，之前三处文档都写成 `exec format error`。实测不是。
+
+复现（需要 Docker）：
+
+```bash
+# 在 glibc 里造一个动态链接的插件
+docker run --rm -v "$PWD:/src" -w /src golang:1.25 \
+  sh -c 'CGO_ENABLED=1 go build -o /src/.dyn ./tests/fixtures/echoplugin'
+
+# 在 musl 里执行它
+docker run --rm -v "$PWD:/src" alpine /src/.dyn
+# sh: /src/.dyn: not found        ← 文件就在那儿
+```
+
+Go 的 `exec.Command` 看到的是 `fork/exec /src/.dyn: no such file or directory`。
+
+内核返回 ENOENT 是因为**动态链接器**不存在（`/lib/ld-linux-*.so`），不是那个二进制 —— 但错误指着二进制说它不存在。**这不是「不指向原因」，是指向了错误的方向**：看到这句话的人会去查路径、查挂载、查权限，而问题在编译参数上。
+
+`exec format error` 是 ENOEXEC，架构不符时才出现（arm64 上跑 amd64）。让人去找它，就是让人永远找不到。
+
+这个实验没有做成自动化测试：它需要 Docker 加一次 glibc 构建，代价远超收益。留下的是可复现的命令和确切的输出。

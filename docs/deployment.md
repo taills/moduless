@@ -197,7 +197,8 @@ Core 重启会冷启动所有插件（几百毫秒到一秒级，取决于插件
 |---|---|
 | 插件不出现在列表 | 目录名与 manifest 的 `key` 不一致，或 manifest 校验失败 —— 控制台会显示原因 |
 | 插件启动失败且日志无信息 | 插件向 stdout 写了东西，破坏了启动握手 |
-| `exec format error` | 插件不是静态链接（漏了 `CGO_ENABLED=0`）或架构不符 |
+| `exec format error` | 架构不符（例如在 arm64 上跑 amd64 二进制） |
+| `no such file or directory`，但文件确实在 | 插件是动态链接的（漏了 `CGO_ENABLED=0`）。缺的是动态链接器不是二进制，内核只能返回 ENOENT。用 `docker run --rm -v "$PWD:/x" alpine ldd /x/bin/plugin` 确认 |
 | 插件调用某能力报 PermissionDenied | manifest 的 `permissions` 里没声明它 |
 | 插件调用某能力报 Unavailable | Core 没配那项能力（比如没有 `DATABASE_URL`） |
 | 升级后插件行为异常 | 用 `cp` 覆盖了正在执行的二进制，见上文 |

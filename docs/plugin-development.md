@@ -68,7 +68,28 @@ plugin noisy: handshake failed: Unrecognized remote plugin message: debugging: a
 
 **二、必须 `CGO_ENABLED=0`。**
 
-运行时镜像基于 alpine（musl）。动态链接的二进制在容器里会直接 `exec format error`。
+运行时镜像基于 alpine（musl）。一个动态链接的二进制在里面**根本跑不起来，而且报的是一句指向错误方向的话**：
+
+```
+fork/exec /plugins/notes/bin/plugin: no such file or directory
+```
+
+文件就在那儿，可执行位也在。内核返回 ENOENT 是因为缺的是**动态链接器**（`/lib/ld-linux-*.so`），不是那个二进制 —— 但错误指着二进制说它不存在。实测（glibc 里 `CGO_ENABLED=1` 编译，alpine 里执行）：
+
+```
+sh: /plugin: not found          # shell
+fork/exec /plugin: no such file or directory   # Go 的 exec
+```
+
+**不要去找 `exec format error`** —— 那是架构不符（在 arm64 上跑 amd64 二进制）时才出现的 ENOEXEC，和这件事是两码事。看到「文件不存在但文件明明在」就是这个问题。
+
+排查一行命令：
+
+```
+docker run --rm -v "$PWD:/x" alpine ldd /x/bin/plugin
+# 静态：not a dynamic executable
+# 动态：列出 libc.so.6 之类 —— 就是它
+```
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/plugin .

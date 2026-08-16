@@ -637,4 +637,29 @@ checked 2 TestMain across 98 test files
 
 顺带一条**归因错误**，同样值得记：我一度把 Core 路由从 52 µs 降到 41 µs 归功于本会话记录过的那次热路径优化（89→86 allocs）。A/B 一跑，基线版本同样是 41 µs —— 差异全在环境。那次优化真实存在，但值约等于 **0 µs**。**把环境当成成果**，和把量具当成回归，是同一枚硬币的两面。
 
+## `git log -S` 回答的不是你问的那个问题
+
+查「文档里的事务上限为什么和代码对不上」时用了：
+
+```bash
+git log -S "MaxOpenTxPerPlugin = " -- core/db/tx.go
+```
+
+只有一个提交。顺着这个答案，结论会是「常量从来没变过，是文档一开始就写错了」。
+
+错的。`-S` 是 pickaxe，它找的是**字符串出现次数发生变化**的提交。把 `= 4` 改成 `= 8`，`"MaxOpenTxPerPlugin = "` 的出现次数**没变**，于是那次修改对它是隐形的。
+
+要找「碰过这一行的提交」，用 `-G`（匹配 diff 内容）：
+
+```bash
+git log -G "MaxOpenTxPerPlugin = " -- core/db/tx.go
+# 037854a perf: raise the transaction ceiling to 8, measured
+# 0a667aa fix: bound the shared resources one plugin can take from the others
+```
+
+真相是文档写下时（4）是对的，后来常量提到 8，文档没跟 —— 和 `-S` 给出的图景正好相反。
+
+> 这和这份文档里其他几条是同一类：**一个看不见东西的探针，和一个「什么都没发现」的探针，输出完全一样。**区别在于前者答的是另一个问题。工具给出「只有一个结果」时，先问它找的到底是什么。
+
+
 

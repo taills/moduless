@@ -184,13 +184,15 @@ egress_allow:                 # 出站 HTTP 白名单
 
 上面那些管的是 manifest 能声明什么，这些管的是插件运行时能占多少 —— 都是共享资源，一个插件用光了别人就没有：
 
-| | 上限 | 为什么 |
-|---|---|---|
-| 同时打开的事务 | 每插件 4 个 | 每个占一条数据库连接 |
-| 队列积压 | 每插件 10 万条待处理 | 队列是共享的表和磁盘 |
-| 同时持有的锁 | 全局 1 万个 | 过期的锁也会定期清理 |
-| 事件订阅 | 每插件 64 路 | 每路是一条常驻的流 |
-| 数据库连接池 | 全局 25 条 | 低于 PostgreSQL 默认的 max_connections |
+| | 上限 | 常量 | 为什么 |
+|---|---|---|---|
+| 同时打开的事务 | 每插件 8 个 | `db.MaxOpenTxPerPlugin` | 每个占一条数据库连接 |
+| 队列积压 | 每插件 100000 条待处理 | `hostsvc.DefaultMaxQueueDepth` | 队列是共享的表和磁盘 |
+| 同时持有的锁 | 全局 10000 个 | `hostsvc.DefaultMaxLocks` | 过期的锁也会定期清理 |
+| 事件订阅 | 每插件 64 路 | `hostsvc.DefaultMaxSubscriptionsPerPlugin` | 每路是一条常驻的流 |
+| 数据库连接池 | 全局 25 条 | `db.MaxOpenConns` | 低于 PostgreSQL 默认的 max_connections |
+
+常量名写在表里，是因为这张表烂过一次：事务上限从 4 提到 8，代码里改了，这里没改，于是文档少报了一半的容量。`TestDocumentedLimitsMatchTheCode` 现在逐行比对，改了常量不改这里会失败。
 
 除连接池外都是**按插件**计的，这是有意的：一个插件的失误应该是那个插件的错误，而不是所有人的故障 —— 而且错误信息里会写明是哪个插件。超限是一个**状态**不是惩罚：占用降下来就恢复。
 
@@ -198,14 +200,14 @@ egress_allow:                 # 出站 HTTP 白名单
 
 manifest 里的东西不是无限的。这些上限比任何合理用法都宽一到两个数量级，存在的理由不是防恶意（插件本来就是可信的），而是让**一次失误**在安装时变成一条明确的错误，而不是变成一个跑起来莫名其妙很慢的 Core、一个多了一千张表的数据库，或者一棵浏览器渲染不动的菜单树：
 
-| | 上限 |
-|---|---|
-| manifest 文件本身 | 1 MB |
-| filters | 64 |
-| database.collections | 64 |
-| jobs | 64 |
-| config | 128 |
-| 菜单深度 | 8 层 |
+| | 上限 | 常量 |
+|---|---|---|
+| manifest 文件本身 | 1048576 字节（1 MB） | `manifest.MaxManifestBytes` |
+| filters | 64 | `manifest.MaxFilters` |
+| database.collections | 64 | `manifest.MaxCollections` |
+| jobs | 64 | `manifest.MaxJobs` |
+| config | 128 | `manifest.MaxConfigKeys` |
+| 菜单深度 | 8 层 | `manifest.MaxMenuDepth` |
 | 菜单节点总数 | 256 |
 
 Core **不接受它不认识的字段**。`filter:` 少写一个 s、`permission:` 少写一个 s、或者照着某份旧设计文档写了个 `resources:`，都会在加载时直接报错，指出是哪一行。

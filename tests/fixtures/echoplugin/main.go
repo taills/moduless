@@ -426,6 +426,16 @@ func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterR
 	recordPhase(req.GetTraceId(), req.GetPhase())
 	recordFilterName(req.GetTraceId(), req.GetFilterName())
 
+	// ECHO_FILTER_DELAY makes every filter call slow, which is how a plugin
+	// degrades in practice — not by dying, but by taking longer than anyone
+	// budgeted. A filter subscribed to /** is on the critical path of every
+	// request in the system, including requests belonging to other plugins.
+	if d := os.Getenv("ECHO_FILTER_DELAY"); d != "" {
+		if wait, err := time.ParseDuration(d); err == nil {
+			time.Sleep(wait)
+		}
+	}
+
 	// Matched by suffix: a filter sees whatever path the phase gives it, which
 	// is the full request path in pre_route and the plugin-relative one later.
 	// Matching on the whole string made a test silently exercise nothing.

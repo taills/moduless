@@ -225,3 +225,14 @@ kill -0 $PID && echo "原进程 alive"               # alive
 ```
 
 用 alpine 做这个实验会得到假结果：它的 `/bin/sleep` 是 busybox 的软链，复制过去 argv[0] 变了、applet 找不到，进程根本没跑起来 —— 于是覆盖「成功」了，看上去像 Linux 不拦。第一次就是这么错的。
+
+
+## 一个慢插件对别人的代价
+
+```bash
+MEASURE=1 go test ./tests/ -run TestSlowFilterCost -v
+```
+
+崩溃的隔离好测也已经测了。**慢**是更难也更常见的那种：插件不死，只是开始比谁都预算的时间长，而一个订阅 `/**` 的 filter 在每个请求的关键路径上。
+
+结论见 `docs/plugin-development.md`。方法上值得记一笔：测出「200ms 的 filter 配 20ms 预算只加 146µs」之后，我先写下的解释是「熔断器打开了」—— 那是**假设**。一个写在注释里的假设就是一份被写进文档的错误机制，所以补了 `TestABudgetIsPaidUntilTheBreakerOpens` 去验它：前 5 个请求付预算，之后归零。假设成立，而且现在有了数字。

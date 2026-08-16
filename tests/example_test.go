@@ -323,24 +323,49 @@ func TestExampleRateLimitConfigPushToStoppedPlugin(t *testing.T) {
 // Every shipped example must be installable exactly as it stands, with no
 // test-only edits. An example that does not load is worse than no example: it
 // is the first thing a new plugin author copies.
-func TestExampleManifestsAreValid(t *testing.T) {
-	examples := []struct{ dir, key, source string }{
-		{"ratelimit", "ratelimit", "../extension-example/ratelimit"},
-		{"notes", "notes", "../extension-example/notes"},
-		{"audit", "audit", "../extension-example/audit"},
-		{"inventory", "inventory", "../extension-example/inventory"},
-		{"apikey", "apikey", "../extension-example/apikey"},
-		{"redact", "redact", "../extension-example/redact"},
+// shippedExamples lists every example directory, discovered rather than
+// written down.
+//
+// The two lists this replaced had six entries each and there are seven
+// examples: syncer was added and neither list was updated, so the newest
+// example — the one whose manifest is least likely to have been checked
+// against a rule added since — was the one nothing validated. A list of
+// examples is exactly the kind of thing that stops being true without anybody
+// noticing, because nothing fails when it does.
+func shippedExamples(t *testing.T) []string {
+	t.Helper()
+
+	const dir = "../extension-example"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", dir, err)
 	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, e.Name(), "manifest.yaml")); err != nil {
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	if len(out) == 0 {
+		t.Fatal("no examples found; the discovery broke and every test using it now " +
+			"passes by covering nothing")
+	}
+	return out
+}
 
+func TestExampleManifestsAreValid(t *testing.T) {
 	root := t.TempDir()
-	for _, ex := range examples {
-		t.Run(ex.key, func(t *testing.T) {
-			installExampleAs(t, root, ex.dir, ex.key, ex.source)
+	for _, name := range shippedExamples(t) {
+		t.Run(name, func(t *testing.T) {
+			installExampleAs(t, root, name, name, "../extension-example/"+name)
 
-			pkg, err := pluginhost.LoadPackage(filepath.Join(root, ex.dir))
+			pkg, err := pluginhost.LoadPackage(filepath.Join(root, name))
 			if err != nil {
-				t.Fatalf("the shipped %s example does not load: %v", ex.key, err)
+				t.Fatalf("the shipped %s example does not load: %v", name, err)
 			}
 			t.Logf("%s: %d filter(s), %d permission(s), %d job(s), %d collection(s)",
 				pkg.Key(), len(pkg.Filters), len(pkg.Manifest.Permissions),
@@ -357,17 +382,10 @@ func TestExampleManifestsAreValid(t *testing.T) {
 // The notes example needs a database for its own routes, but not to start —
 // so this covers start-up without requiring PostgreSQL.
 func TestExamplesStart(t *testing.T) {
-	for _, ex := range []struct{ dir, key, source string }{
-		{"ratelimit", "ratelimit", "../extension-example/ratelimit"},
-		{"notes", "notes", "../extension-example/notes"},
-		{"inventory", "inventory", "../extension-example/inventory"},
-		{"audit", "audit", "../extension-example/audit"},
-		{"apikey", "apikey", "../extension-example/apikey"},
-		{"redact", "redact", "../extension-example/redact"},
-	} {
-		t.Run(ex.key, func(t *testing.T) {
+	for _, name := range shippedExamples(t) {
+		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
-			installExampleAs(t, root, ex.dir, ex.key, ex.source)
+			installExampleAs(t, root, name, name, "../extension-example/"+name)
 
 			cfg := hostsvc.NewStaticConfig()
 			reg := pluginhost.NewRegistry()
@@ -384,13 +402,16 @@ func TestExamplesStart(t *testing.T) {
 			drainOnCleanup(t, reg, mgr)
 
 			mgr.Scan()
-			if err := mgr.Enable(context.Background(), ex.key); err != nil {
-				t.Fatalf("the shipped %s example does not start: %v", ex.key, err)
+			if err := mgr.Enable(context.Background(), name); err != nil {
+				t.Fatalf("the shipped %s example does not start: %v", name, err)
 			}
 
+			// Replica count comes from the manifest: syncer declares two on
+			// purpose, and asserting one would fail it for being correct.
 			for _, st := range mgr.List() {
-				if st.Key == ex.key && st.Ready != 1 {
-					t.Errorf("%s started but reports %d ready replica(s)", ex.key, st.Ready)
+				if st.Key == name && st.Ready != st.Replicas {
+					t.Errorf("%s started with %d of %d replica(s) ready",
+						name, st.Ready, st.Replicas)
 				}
 			}
 		})

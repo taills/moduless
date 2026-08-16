@@ -32,17 +32,19 @@ import (
 // stackOfThree installs every shipped example against one registry, one
 // database and one gateway.
 func stackOfThree(t *testing.T, config map[string]map[string]string) (url string, mgr *pluginhost.Manager, reg *pluginhost.Registry) {
+	return stackOf(t, config, "ratelimit", "notes", "audit")
+}
+
+// stackOf runs the named shipped examples in one Core, the way an operator
+// would: real packages on disk, real processes, one gateway in front.
+func stackOf(t *testing.T, config map[string]map[string]string, names ...string) (url string, mgr *pluginhost.Manager, reg *pluginhost.Registry) {
 	t.Helper()
 
 	handle := requireDB(t)
 	root := t.TempDir()
 
-	for _, ex := range []struct{ dir, source string }{
-		{"ratelimit", "../extension-example/ratelimit"},
-		{"notes", "../extension-example/notes"},
-		{"audit", "../extension-example/audit"},
-	} {
-		installExampleAs(t, root, ex.dir, ex.dir, ex.source)
+	for _, name := range names {
+		installExampleAs(t, root, name, name, "../extension-example/"+name)
 	}
 
 	cfg := hostsvc.NewStaticConfig()

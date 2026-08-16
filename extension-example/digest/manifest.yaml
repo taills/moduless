@@ -1,0 +1,52 @@
+# A plugin that archives an external resource whenever it changes.
+#
+# The three capabilities here have no other example: outbound HTTP, writing
+# files, and minting download links. All three are shaped by one decision —
+# a plugin never reaches the network or the object store itself, it asks Core,
+# and Core enforces the rules on its own side of the connection.
+
+key: digest
+display_name: 外部快照
+version: 1.0.0
+
+runtime:
+  entrypoint: bin/digest
+  # One replica. Core picks a single replica per scheduled run anyway, so a
+  # second would only sit idle between requests to the small read API.
+  replicas: 1
+
+# http:egress to fetch, files:write to store, files:read to mint a download
+# link, db to index what was stored, cron because nobody triggers this by hand.
+#
+# files:read and files:write are separate on purpose and this plugin shows why:
+# it writes snapshots and hands out links to them, and never reads a byte back.
+# A plugin that could mint links for files it did not write would be a way to
+# enumerate someone else's.
+permissions: [db, cron, files:read, files:write, http:egress]
+
+egress_allow:
+  # Only what this plugin is meant to reach. A hostname here is still checked
+  # at dial time against the address it resolves to, so listing a host does not
+  # grant a route into the private network behind it.
+  - api.github.com
+
+jobs:
+  - name: archive
+    # 04:23, not 04:00: everything scheduled on the hour arrives together, and
+    # this job's whole purpose is to be unremarkable.
+    cron: "23 4 * * *"
+
+config:
+  - key: source_url
+    label: 快照来源
+    description: 要归档的 URL。主机必须在 egress_allow 里，否则调用返回 PermissionDenied。
+    default: "https://api.github.com/meta"
+
+database:
+  collections:
+    - name: snapshots
+
+menus:
+  - path: /digest
+    title: 外部快照
+    icon: archive

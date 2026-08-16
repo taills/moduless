@@ -17,7 +17,9 @@ vendor/
 # added as examples and not added here, so building either left a binary a
 # `git add -A` would have taken. TestBuildOutputNamesAreIgnored now discovers
 # the examples from the directory and checks each one, so the next omission
-# fails rather than waiting to be committed.
+# fails rather than waiting to be committed. It has since caught one for real —
+# digest, the run it was added in — which is better evidence than the canary it
+# was calibrated against.
 /notes
 /ratelimit
 /audit
@@ -25,6 +27,7 @@ vendor/
 /apikey
 /redact
 /syncer
+/digest
 /echoplugin
 /orphanhost
 /moduless

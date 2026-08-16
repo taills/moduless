@@ -305,6 +305,19 @@ for _, id := range ids {
 
 单条操作：`Put`、`PutIfVersion`、`Get`、`Delete(ctx, collection, id) (found bool, err error)`。删除不需要事务；`Delete` 返回的第一个值告诉你那条记录本来是否存在。
 
+**谓词打在文档没有的字段上，那份文档会被排除 —— 包括 `Ne`。**集合是 schemaless 的，同一个集合里放着形状不同的文档是允许的，于是这一条迟早会撞上。谓词编译成 `<jsonb 路径> <运算符> $1`，而缺失字段的路径求值是 SQL NULL，`NULL != 'x'` 的结果是 NULL 而非 true：
+
+```go
+// 想排除一份没有 id 字段的标记文档 —— 它确实被排除了，
+// 但靠的是三值逻辑，不是这句话的字面意思。
+sdk.DB.Where("snapshots").Ne("id", "_latest")
+
+// 说到做到：快照就是指向某个文件的那种文档。
+sdk.DB.Where("snapshots").IsNotNull("file_id")
+```
+
+两种写法在 `extension-example/digest` 里结果相同，但只有第二种在别人读它的时候还是对的。要表达「有或没有」，用 `IsNull` / `IsNotNull`，别用一个否定谓词去兼职。
+
 **所有比较值都是字符串**，包括数字和时间。这是因为文档存储的字段类型由 JSON 决定，而比较需要一个确定的顺序。实际影响是：**要按时间范围查询，就得把时间存成按字典序可比的格式** —— RFC3339（`2026-08-16T03:17:00Z`）可以，Unix 时间戳整数不行（`"9"` 排在 `"10"` 后面）。
 
 ```go
@@ -491,7 +504,21 @@ req = req.WithContext(sdk.WithUser(req.Context(), &sdk.UserContext{
 
 传 `nil` 就是匿名请求 —— **这个用例一定要测**：`sdk.User(ctx)` 会返回 `nil`，而插件里的 panic 不是 500 而是进程死亡。
 
-**还没有的**：一个能替 `sdk.DB` / `sdk.Queue` / `sdk.Cache` 的内存实现。碰到这些能力的代码，目前只能靠把它和纯逻辑分开来测，或者照本仓库 `tests/` 的做法 —— 现场编译插件、由 Core 启动、发真实请求。这是一个已知的空缺。
+**还没有的**：一个能替 `sdk.DB` / `sdk.Queue` / `sdk.Cache` 的内存实现。但这不像听起来那么挡路 —— **SDK 的能力接口用的都是标准库类型**（`*http.Response`、`io.Reader`、普通字符串），所以自己定义一个一两个方法的小接口，SDK 客户端**直接就满足它**，不需要写任何适配器：
+
+```go
+type fetcher interface {
+    Get(ctx context.Context, url string) (*http.Response, error)
+}
+
+var _ fetcher = (*sdk.HTTPClient)(nil)   // 编译得过
+```
+
+生产代码接 `sdk.HTTP`，测试接一个 `httptest.Server`。`extension-example/digest` 就是这么写的，它的整个定时任务 —— 抓取、哈希比对、写文件、建索引 —— 在没有 Core、没有数据库、没有对象存储的情况下被七个测试覆盖。
+
+对**出站 HTTP 这条尤其重要**：Core 会拒绝插件拨往 loopback 和私有地址（这正是它挡住 DNS 重绑定和元数据端点的方式），所以没有任何地址是测试能监听、而 Core 又肯拨的 —— 接缝不是偏好，是唯一的办法。
+
+**唯一没有天然接缝的**是 `sdk.DB.Where(...)`：它返回一个具体的链式构造器，假造它等于重写构造器本身。碰到查询的代码目前还是只能靠 `tests/` 那套做法 —— 现场编译插件、由 Core 启动、发真实请求。
 
 **日志和指标不算在内。**`sdk.Log` 在 `sdk.Serve` 之前是 nil，但它的方法对 nil 接收者是安全的：没有 Core 时记录会落到 **stderr**（不是 stdout —— 那会污染启动握手），指标直接丢弃。所以下面这个最常见的写法在 `go test` 下正常工作：
 

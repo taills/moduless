@@ -511,6 +511,17 @@ func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterR
 		return &pb.FilterResponse{Action: pb.FilterResponse_ACTION_CONTINUE}, nil
 	}
 
+	// ECHO_REWRITE_TO makes this filter rewrite every request's path, which is
+	// how a plugin puts a short public URL in front of somebody's real one.
+	// Set on the process rather than keyed off a path, because the interesting
+	// case is rewriting a path that has nothing to do with this plugin.
+	if to := os.Getenv("ECHO_REWRITE_TO"); to != "" {
+		return &pb.FilterResponse{
+			Action:   pb.FilterResponse_ACTION_MUTATE,
+			Mutation: &pb.RequestMutation{RewritePath: to},
+		}, nil
+	}
+
 	switch req.GetPath() {
 
 	case "/deny":

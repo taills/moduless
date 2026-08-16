@@ -864,6 +864,27 @@ sdk.Serve(sdk.Config{
 
 这个测量第一版是错的，值得一提：它拿 `Breaker.Open()` 当信号，而那个方法只判断窗口有没有到期、与探针成功与否无关 —— 于是它量出「400ms 窗口用了 414ms」，一句平凡真话。真正的信号是**插件有没有被重新调用**。
 
+### 改写路径
+
+`Mutate().RewritePath(p)` 在 `pre_route` 和 `pre_handler` 阶段有效，路由按改写后的路径进行 —— 这是 ISAPI filter 最典型的用法：在插件自己的路径前面挂一个对外的短地址。
+
+```go
+sdk.PhasePreRoute: func(ctx context.Context, req *sdk.FilterRequest) (*sdk.FilterResult, error) {
+    if strings.HasPrefix(req.Path, "/s/") {
+        return sdk.Mutate().RewritePath("/api/plugins/shortener/resolve" + req.Path[2:]), nil
+    }
+    return sdk.Continue(), nil
+},
+```
+
+三条实测出来的边界：
+
+- **改写进插件命名空间是可以的**（`/legacy/items` → `/api/plugins/hello/items` 能打到插件）。这一条曾经不成立：「这是不是插件路由」是用**原始 URL** 在 `pre_route` **之前**判定的，所以改写只更新了内部路径，请求早已被交给网关其余部分并 404。
+- **请求体会跟着过去**。这是上面那条修起来不平凡的原因：body 必须在 filter 之前缓冲，而是否缓冲取决于同一个判定。把 body 丢掉会是比 404 更安静的失败。
+- **改写出插件命名空间会 404**，不会回落给网关其余部分。要放行给 Core 自己的路由，用 `Continue()` 而不是改写。
+
+`post_handler` 之后改写路径没有意义（后端已经跑完），Core 会忽略。
+
 ### Body
 
 默认不把 body 跨进程传给 filter。实测一个 64KB 的 body 会让调用成本变成空 body 的四倍，而多数 filter 只看方法、路径、头和身份。

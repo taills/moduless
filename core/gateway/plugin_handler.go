@@ -108,7 +108,8 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 
 	// Buffer the body only when something downstream needs it: a filter that
 	// asked for it, or a plugin backend that will receive it.
-	if chain.NeedsRequestBody() || isPluginRoute {
+	buffered := chain.NeedsRequestBody() || isPluginRoute
+	if buffered {
 		body, err := h.readBody(w, r)
 		if err != nil {
 			// readBody already wrote the response. Record what it was, or the
@@ -122,6 +123,33 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 	if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_PRE_ROUTE, rc); out.Stopped() {
 		h.writeResponse(w, out.ShortCircuit)
 		return
+	}
+
+	// A pre_route filter may have rewritten the path into the plugin
+	// namespace, which is the ordinary URL-rewriting case: a short public path
+	// in front of a plugin's own, the thing an ISAPI filter is for.
+	//
+	// Whether this was a plugin route used to be decided once, from the
+	// original URL, before the phase documented to run before routing. So the
+	// rewrite updated rc.Path, the split below routed on it correctly, and the
+	// request never got here — it had already been handed to the rest of the
+	// gateway and answered 404. The rewrite worked inside the namespace and
+	// could not reach into it, which is the direction anyone would try first.
+	//
+	// The body is the reason this cannot simply move: filters must see it, so
+	// it is buffered before they run, and whether to buffer depended on the
+	// same decision. It is only unbuffered here when nothing had wanted it, in
+	// which case r.Body is still untouched and can be read now.
+	if !isPluginRoute && strings.HasPrefix(rc.Path, PluginAPIPrefix) {
+		if !buffered {
+			body, err := h.readBody(w, r)
+			if err != nil {
+				rc.ResponseStatus = http.StatusRequestEntityTooLarge
+				return
+			}
+			rc.RequestBody = body
+		}
+		isPluginRoute = true
 	}
 
 	if !isPluginRoute {

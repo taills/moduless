@@ -64,6 +64,19 @@ go vet ./... && gofmt -l .
 docker run --rm -v "$(pwd)":/src -w /src -v "$HOME/go/pkg/mod":/go/pkg/mod \
   -e CGO_ENABLED=0 golang:1.25-alpine go test ./... -count=1
 
+# That run reaches no database or object storage, so everything gated on them
+# skips — most of the queue, lock and transaction coverage. Measured: 61s
+# against 164s. Without this, "it passes on Linux" means a third of the suite.
+docker run --rm --add-host=host.docker.internal:host-gateway \
+  -v "$(pwd)":/src -w /src -v "$HOME/go/pkg/mod":/go/pkg/mod -e CGO_ENABLED=0 \
+  -e TEST_DATABASE_URL='postgres://moduless:moduless@host.docker.internal:15433/moduless_test?sslmode=disable' \
+  -e TEST_S3_ENDPOINT='http://host.docker.internal:19000' \
+  golang:1.25-alpine go test ./... -count=1
+
+# Two tests exist only there: TestPdeathsigKillsOrphanedPlugins is behind a
+# linux build tag and is the only check that a plugin dies with Core, and
+# TestBuildOutputNamesAreIgnored needs git, which golang:alpine does not ship.
+
 # Database-backed tests skip unless this points at a PostgreSQL instance.
 # A throwaway one, on a port that will not collide with anything already running:
 #   docker run -d --name moduless-test-db -p 15433:5432 \

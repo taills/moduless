@@ -19,6 +19,7 @@ import (
 	"github.com/taills/moduless/core/hostsvc"
 	"github.com/taills/moduless/core/pipeline"
 	"github.com/taills/moduless/core/pluginhost"
+	"github.com/taills/moduless/internal/dbtest"
 	"github.com/taills/moduless/manifest"
 	pb "github.com/taills/moduless/proto/plugin"
 )
@@ -58,7 +59,7 @@ func run(m *testing.M) int {
 		return 1
 	}
 
-	defer lockTestDatabase()()
+	defer dbtest.Lock()()
 
 	return m.Run()
 }

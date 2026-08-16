@@ -481,6 +481,50 @@ ok  github.com/taills/moduless/tests  434.310s   ← 217.868 + 216.4
 
 > 一般化的教训：**当一个前提没有被强制执行时，它迟早会以「看起来像别的东西」的方式被违反。**这里最贵的不是失败本身，是失败伪装成了队列 bug。
 
+## 同一个缺陷的更严重版本：它发生在一条标准命令内部
+
+上面那个修复只覆盖了 `tests` 一个包。收尾时顺手查了「还有谁碰这个库」，答案是**四个包**：
+
+```
+core/auth    core/db    core/hostsvc    tests
+```
+
+而 `go test ./...` **默认并行跑不同的包**。查它们的清理语句，`core/db` 里有一句：
+
+```sql
+TRUNCATE plugin_queue        -- 不带任何限定，清空整张队列表
+```
+
+也就是说：`tests` 正在跑队列测试时，`core/db` 可以把整张表清掉 —— **在一条最普通的 `go test ./...` 里**，不需要谁犯错。
+
+按 core/db 跑完的节奏锤它，复现出来的失败是这样的：
+
+```
+--- FAIL: TestQueueRedeliversAfterConsumerCrash
+    the message was never redelivered after its consumer died;
+    work handed to a plugin that crashed has been lost
+--- FAIL: TestDeadMessagesDoNotShowInTheDepth
+    dead depth = 2, want 3
+```
+
+第一条在指控**框架会在插件崩溃后丢失工作**。这是 P0 级别的结论，而且完全是假的 —— 队列没有任何问题，是隔壁包把它的表清空了。
+
+它一直没被发现的原因也清楚了：`core/db` 一秒多就跑完，`tests` 要三分多钟，**重叠窗口只有开头那一小段**。所以它表现为偶发、不可复现、换个时间就好了。
+
+修法是把锁提到 `internal/dbtest`（不是 `_test.go`，因为要跨包共享），四个包各自在 `TestMain` 里取。同样的锤击强度下，从 3 条失败变成 **0 条**。
+
+> 这一条值得单独记，因为它改变了问题的性质。「两套测试别一起跑」是一条可以靠纪律回避的约束；**「一条标准命令内部就会自我破坏」不是**。查「还有谁碰这个共享资源」只花了一次 grep，而修复第一个版本时我没查 —— 差一点就把一个更严重的同源缺陷留在原地，还以为已经解决了。
+
+于是把这个问题**系统地问完**，而不是只问出问题的那一处。共享资源一共三处：
+
+| 资源 | 谁在用 | 结论 |
+|---|---|---|
+| PostgreSQL | `core/auth`、`core/db`、`core/hostsvc`、`tests` 四个包 | 会互相破坏，已用 `internal/dbtest` 的锁串行化 |
+| S3 / MinIO | 只有 `tests` | 单包独占，无跨包风险 |
+| 包内并行 | `tests` 里 0 处 `t.Parallel()` | 包内串行，不存在内部冲突 |
+
+记下这张表是为了给出**边界**：排查做过了，范围是这三项。下次再出现类似的偶发失败，可以从「是不是又有新的共享资源」接着查，而不是从头再问一遍。
+
 ## `go test` 会吞掉通过包的输出，于是诊断信息只在没人看的时候出现
 
 加完锁之后有个后续问题，差点就漏过去了：等待提示**没有出现在输出里**。

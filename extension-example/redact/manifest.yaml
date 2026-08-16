@@ -1,0 +1,52 @@
+key: redact
+display_name: 响应脱敏
+version: 1.0.0
+
+runtime:
+  entrypoint: bin/plugin
+
+# Nothing. This plugin sees every response body in the system and cannot store
+# one, send one anywhere, or write one to disk — no db, no queue, no files, no
+# http:egress. That is worth noticing when reviewing it: the risk here is not
+# what it can do with the data, it is that it sees the data at all. A reviewer
+# should be reading the code for what it logs, not for what it exfiltrates.
+permissions: []
+
+filters:
+  - name: strip-fields
+    phase: post_handler
+    order: 900
+    # Scoped deliberately. A post_handler filter with needs_response_body on
+    # /** copies every response body in the system across a process boundary
+    # twice — measured at roughly double the RPC cost for 16KB and 944µs for
+    # 256KB. Name the routes that actually return personal data.
+    match:
+      paths:
+        - /api/plugins/notes/**
+        - /api/plugins/inventory/**
+    needs_response_body: true
+    max_body_bytes: 262144
+    # Fail-open: this filter cannot let anything through that would otherwise
+    # have been refused — the response has already been produced. If it breaks,
+    # responses go out unredacted, which is the same as not having installed
+    # it. fail_closed here would turn a wobble in this plugin into a site-wide
+    # outage, and that trade is not worth it for a filter that only reshapes.
+    fail_closed: false
+    timeout_ms: 100
+
+config:
+  - key: fields
+    label: 要移除的字段
+    description: 逗号分隔，大小写不敏感，任意层级都会匹配
+    type: string
+    default: email,phone,ssn,password
+  - key: mask
+    label: 替换成什么
+    type: string
+    default: "[redacted]"
+
+menus:
+  - path: /redact
+    title: 响应脱敏
+    icon: eye-off
+    roles: [admin]

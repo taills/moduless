@@ -320,6 +320,19 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 		// survive it or die cleanly, but either way Core must stay up.
 		panic("deliberate panic inside the plugin handler")
 
+	case "/json":
+		// A JSON document with fields worth removing, so a post_handler filter
+		// that rewrites bodies can be exercised end to end.
+		return &pb.HttpResponse{
+			StatusCode: 200,
+			Headers: map[string]*pb.HeaderValues{
+				"Content-Type": {Values: []string{"application/json"}},
+				"X-Echo-Path":  {Values: []string{req.GetPath()}},
+			},
+			Body: []byte(`{"id":"7","name":"Ada","email":"ada@example.com",` +
+				`"contacts":[{"phone":"555-0100"}]}`),
+		}, nil
+
 	case "/slow":
 		// Slow but not hung: finishes well within any sane timeout.
 		time.Sleep(150 * time.Millisecond)

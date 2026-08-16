@@ -110,3 +110,32 @@ func TestPostHandlerContinuePreservesTheResponse(t *testing.T) {
 		t.Error("the backend's headers were lost")
 	}
 }
+
+// Replacing a response discards the backend's headers.
+//
+// writeResponse writes the short circuit's own headers and nothing else, so a
+// post_handler filter that rewrites a body also drops Content-Type, caching
+// headers and anything else the backend set — unless it copies them across
+// itself.
+//
+// This is the trap in the mechanism documented alongside it: the obvious
+// implementation of a redaction filter returns Stop(status, cleaned) and
+// silently strips every header from every response it touches. The symptom is
+// a browser rendering JSON as text, which points nowhere near the filter.
+func TestPostHandlerReplacementDropsBackendHeaders(t *testing.T) {
+	url := postHandlerStack(t, true)
+
+	// Untouched: the backend's header is there.
+	_, _, kept := get(t, url+"/api/plugins/hello/large?64")
+	if kept.Get("X-Echo-Path") == "" {
+		t.Fatal("the backend's header is missing before any replacement")
+	}
+
+	// Replaced: it is not.
+	_, _, replaced := get(t, url+"/api/plugins/hello/refuse")
+	if replaced.Get("X-Echo-Path") != "" {
+		t.Error("the backend's headers survived a replacement; if that is now true the " +
+			"guide's warning about copying them across is wrong and should go")
+	}
+	t.Log("a post_handler replacement carries only its own headers, as documented")
+}

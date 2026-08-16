@@ -862,6 +862,22 @@ sdk.PhasePostHandler: func(ctx context.Context, req *sdk.FilterRequest) (*sdk.Fi
 
 同一个 `Stop` 在 `pre_route` / `authorize` 里是「拦下这个请求」，在 `post_handler` 里是「换掉这个响应」—— 阶段决定了它的含义。
 
+**替换会丢掉后端的响应头。**Core 只写短路响应自己带的头，所以上面那段代码会把它碰过的每个响应的 `Content-Type` 抹掉 —— 症状是浏览器把 JSON 当纯文本渲染，指向的位置离这个 filter 十万八千里。要保留就自己抄过去：
+
+```go
+res := sdk.Stop(req.ResponseStatus, cleaned)
+for key, values := range req.ResponseHeader {
+    for _, v := range values {
+        res = res.WithHeader(key, v)
+    }
+}
+return res, nil
+```
+
+**没改动的时候返回 `Continue`，不要 `Stop`。**`Stop` 要付这份头拷贝，而且重新编码 JSON 会打乱键序、丢掉格式 —— 对本来不需要改的流量，这些都是白付的。
+
+[`redact` 示例](../extension-example/redact)是这条路的完整写法。
+
 ```yaml
 filters:
   - name: inject-banner

@@ -843,7 +843,24 @@ sdk.Serve(sdk.Config{
 
 需要时声明 `needs_request_body: true` 并设 `max_body_bytes`。超过上限时：`fail_closed` 的 filter 返回 413，fail-open 的跳过。**不会截断后传给你** —— 一个基于半截数据做判断的安全 filter，可能得出和后端处理完整数据不同的结论。
 
-**响应 body 是另一个开关。** `post_handler` 和 `on_error` 阶段能拿到 `req.ResponseStatus` 和 `req.ResponseHeader`，但 `req.ResponseBody` 只在声明了 `needs_response_body: true` 时才有内容 —— 否则它是一个空切片，而不是一个错误。想改写或检查响应体的 filter 必须显式声明：
+**响应 body 是另一个开关。** `post_handler` 和 `on_error` 阶段能拿到 `req.ResponseStatus` 和 `req.ResponseHeader`，但 `req.ResponseBody` 只在声明了 `needs_response_body: true` 时才有内容 —— 否则它是一个空切片，而不是一个错误。想检查响应体的 filter 必须显式声明：
+
+**改写响应体走的是另一条路，而且不显然。**`Mutate()` 只能改头、路径、身份和 context —— **没有改响应体的方法**。看 mutation 的 API 会以为改不了。
+
+改法是在 `post_handler` 里 **`Stop()`**：这个阶段后端已经答完了，没有东西可以「拒绝」，所以短路的语义变成了**替换那个答案**。
+
+```go
+sdk.PhasePostHandler: func(ctx context.Context, req *sdk.FilterRequest) (*sdk.FilterResult, error) {
+    cleaned, changed := redact(req.ResponseBody)   // 需要 needs_response_body: true
+    if !changed {
+        return sdk.Continue(), nil                 // 原样放行
+    }
+    // 在这个阶段，Stop 不是拒绝，是换掉响应
+    return sdk.Stop(req.ResponseStatus, cleaned), nil
+},
+```
+
+同一个 `Stop` 在 `pre_route` / `authorize` 里是「拦下这个请求」，在 `post_handler` 里是「换掉这个响应」—— 阶段决定了它的含义。
 
 ```yaml
 filters:

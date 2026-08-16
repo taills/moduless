@@ -439,6 +439,19 @@ func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterR
 	// Matched by suffix: a filter sees whatever path the phase gives it, which
 	// is the full request path in pre_route and the plugin-relative one later.
 	// Matching on the whole string made a test silently exercise nothing.
+	// Suffix-matched, like /slow-filter below: a filter sees the full request
+	// path in pre_route and the plugin-relative one later, so an exact match
+	// only fires in one phase and silently does nothing in the others.
+	if strings.HasSuffix(req.GetPath(), "/refuse") {
+		return &pb.FilterResponse{
+			Action: pb.FilterResponse_ACTION_SHORT_CIRCUIT,
+			ShortCircuitResponse: &pb.HttpResponse{
+				StatusCode: 403,
+				Body:       []byte("replaced by echoplugin"),
+			},
+		}, nil
+	}
+
 	if strings.HasSuffix(req.GetPath(), "/slow-filter") {
 		// Slow enough that something else can happen while the request is
 		// still inside the filter.

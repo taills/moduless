@@ -46,22 +46,31 @@ func main() {
 		Filters: map[sdk.Phase]sdk.FilterFunc{
 			sdk.PhasePostHandler: redact,
 		},
-		OnConfigChanged: func(cfg map[string]string) {
-			set := map[string]bool{}
-			for _, f := range strings.Split(cfg["fields"], ",") {
-				if f = strings.TrimSpace(f); f != "" {
-					set[strings.ToLower(f)] = true
-				}
-			}
-			mask := cfg["mask"]
-			if mask == "" {
-				mask = "[redacted]"
-			}
-			settings.Lock()
-			settings.fields, settings.mask = set, mask
-			settings.Unlock()
-		},
+		OnConfigChanged: configure,
 	})
+}
+
+// configure applies admin settings.
+//
+// A named function rather than a closure written inline above, because that is
+// the difference between this logic being testable and not: a test can call
+// this, and it cannot call an anonymous function passed to sdk.Serve. The
+// normalisations here — lowercasing field names, defaulting the mask — are
+// exactly the kind of thing that is worth a test and easy to get wrong.
+func configure(cfg map[string]string) {
+	set := map[string]bool{}
+	for _, f := range strings.Split(cfg["fields"], ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			set[strings.ToLower(f)] = true
+		}
+	}
+	mask := cfg["mask"]
+	if mask == "" {
+		mask = "[redacted]"
+	}
+	settings.Lock()
+	settings.fields, settings.mask = set, mask
+	settings.Unlock()
 }
 
 // redact removes configured fields from a JSON response.

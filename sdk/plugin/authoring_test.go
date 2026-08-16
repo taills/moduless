@@ -3,12 +3,17 @@ package sdk
 import (
 	"context"
 	"encoding/json"
-	pb "github.com/taills/moduless/proto/plugin"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	pb "github.com/taills/moduless/proto/plugin"
 )
 
 // What a plugin author can test without a live Core.
@@ -235,5 +240,69 @@ func TestOnReadyContextIsCancelledOnShutdown(t *testing.T) {
 		t.Error("OnReady's context was not cancelled by Shutdown; a blocking consumer " +
 			"would sit there until Core killed the process, which is what the drain " +
 			"deadline exists to avoid")
+	}
+}
+
+// A filter that logs must still be testable.
+//
+// The host clients are nil until Core hands over the reverse connection, so
+// under the author's own `go test` every sdk.Log call has a nil receiver. That
+// used to be a segmentation fault, which landed on the most ordinary shape
+// there is — log the reason, then refuse:
+//
+//	sdk.Log.Warn(ctx, "rate limit exceeded", "bucket", key)
+//	return sdk.Stop(http.StatusTooManyRequests, body), nil
+//
+// Found by writing the first test for extension-example/ratelimit: seven
+// shipped examples had no tests between them, so nothing had ever exercised
+// this path. Whether a function can be unit-tested must not depend on whether
+// it happens to log.
+func TestLoggingWithoutACoreDoesNotPanic(t *testing.T) {
+	var unbound *Logger // exactly what sdk.Log is before Serve runs
+	ctx := context.Background()
+
+	// Each of these would have been a nil dereference.
+	unbound.Debug(ctx, "debug", "k", 1)
+	unbound.Info(ctx, "info", "k", "v")
+	unbound.Warn(ctx, "warn", "err", errNotBoundExample)
+	unbound.Error(ctx, "error")
+	unbound.Metric(ctx, "things_done", 1, nil)
+	unbound.Gauge(ctx, "depth", 3, nil)
+	unbound.Histogram(ctx, "latency_ms", 12.5, nil)
+}
+
+var errNotBoundExample = errors.New("boom")
+
+// The fallback goes to stderr, not stdout: Core reads the startup handshake
+// from the first line of stdout, so a habit that works in tests and corrupts
+// start-up would be worse than printing nothing at all.
+func TestUnboundLogsGoToStderrWithTheirFields(t *testing.T) {
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = old }()
+
+	var unbound *Logger
+	unbound.Warn(context.Background(), "rate limit exceeded", "bucket", "ip:203.0.113.7", "path", "/api/x")
+
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+
+	got := string(out)
+	for _, want := range []string{"[warn]", "rate limit exceeded", "bucket=ip:203.0.113.7", "path=/api/x"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the record dropped %q on the way to stderr: %s", want, got)
+		}
+	}
+	// Fields are sorted, so a test asserting on this output is not at the mercy
+	// of map iteration order.
+	if i, j := strings.Index(got, "bucket="), strings.Index(got, "path="); i > j {
+		t.Errorf("fields are not in a stable order: %s", got)
 	}
 }

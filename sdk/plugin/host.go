@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"sort"
+	"strings"
 	"time"
 
 	pb "github.com/taills/moduless/proto/plugin"
@@ -867,13 +870,21 @@ func (l *Logger) Error(ctx context.Context, msg string, fields ...any) {
 // other Go library uses would not expect to. Anything that is not already a
 // string is formatted here instead.
 func (l *Logger) log(ctx context.Context, level pb.LogLevel, msg string, fields []any) {
-	stream, err := l.c.Log(outgoing(ctx))
-	if err != nil {
-		return
-	}
 	kv := make(map[string]string, len(fields)/2)
 	for i := 0; i+1 < len(fields); i += 2 {
 		kv[asLogValue(fields[i])] = asLogValue(fields[i+1])
+	}
+
+	// Unbound: no Core, so this is the plugin's own `go test`. Logging must not
+	// be the thing that decides whether code is testable — see logUnbound.
+	if l == nil || l.c == nil {
+		logUnbound(level, msg, kv)
+		return
+	}
+
+	stream, err := l.c.Log(outgoing(ctx))
+	if err != nil {
+		return
 	}
 	_ = stream.Send(&pb.LogRecord{
 		Level:              level,
@@ -883,6 +894,49 @@ func (l *Logger) log(ctx context.Context, level pb.LogLevel, msg string, fields 
 		TimestampUnixNanos: time.Now().UnixNano(),
 	})
 	_, _ = stream.CloseAndRecv()
+}
+
+// logUnbound writes a record that has nowhere else to go.
+//
+// The host clients are nil until Core hands over the reverse connection in
+// Configure, so under `go test` every sdk.Log call has a nil receiver. Before
+// this, that was a segmentation fault, and it fell on exactly the code the
+// documentation tells authors is easy to test:
+//
+//	if !allowed {
+//	    sdk.Log.Warn(ctx, "rate limit exceeded", "bucket", key)   // SIGSEGV
+//	    return sdk.Stop(429, body), nil
+//	}
+//
+// Logging when refusing a request is the ordinary thing to write, so "filters
+// are ordinary Go functions and test like one" was false for most real filters.
+// Whether a function can be unit-tested should not be decided by whether it
+// logs.
+//
+// stderr rather than silence: the author is running their own tests and their
+// log lines are often what they are reading. stdout would be wrong even here —
+// Core reads the startup handshake from the first stdout line, and a habit that
+// works in tests but corrupts start-up is worse than no output.
+func logUnbound(level pb.LogLevel, msg string, fields map[string]string) {
+	var b strings.Builder
+	b.WriteString("[")
+	b.WriteString(strings.ToLower(strings.TrimPrefix(level.String(), "LOG_")))
+	b.WriteString("] ")
+	b.WriteString(msg)
+	// Sorted so a test asserting on this output is not at the mercy of map
+	// iteration order.
+	keys := make([]string, 0, len(fields))
+	for k := range fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		b.WriteString(" ")
+		b.WriteString(k)
+		b.WriteString("=")
+		b.WriteString(fields[k])
+	}
+	fmt.Fprintln(os.Stderr, b.String())
 }
 
 // asLogValue renders one field value. Errors use their message rather than
@@ -930,6 +984,11 @@ func (l *Logger) Histogram(ctx context.Context, name string, value float64, labe
 // nothing a caller could usefully do about it — which is the opposite of every
 // other call in this file, where the error is the answer.
 func (l *Logger) record(ctx context.Context, kind pb.MetricKind, name string, value float64, labels map[string]string) {
+	// Same reasoning as log: a metric call inside otherwise pure logic must not
+	// be what makes that logic untestable.
+	if l == nil || l.c == nil {
+		return
+	}
 	_, _ = l.c.RecordMetric(outgoing(ctx), &pb.MetricRequest{
 		Name: name, Kind: kind, Value: value, Labels: labels,
 	})

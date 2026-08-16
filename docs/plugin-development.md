@@ -493,6 +493,21 @@ req = req.WithContext(sdk.WithUser(req.Context(), &sdk.UserContext{
 
 **还没有的**：一个能替 `sdk.DB` / `sdk.Queue` / `sdk.Cache` 的内存实现。碰到这些能力的代码，目前只能靠把它和纯逻辑分开来测，或者照本仓库 `tests/` 的做法 —— 现场编译插件、由 Core 启动、发真实请求。这是一个已知的空缺。
 
+**日志和指标不算在内。**`sdk.Log` 在 `sdk.Serve` 之前是 nil，但它的方法对 nil 接收者是安全的：没有 Core 时记录会落到 **stderr**（不是 stdout —— 那会污染启动握手），指标直接丢弃。所以下面这个最常见的写法在 `go test` 下正常工作：
+
+```go
+if !allowed {
+    sdk.Log.Warn(ctx, "rate limit exceeded", "bucket", key)
+    return sdk.Stop(http.StatusTooManyRequests, body), nil
+}
+```
+
+这一条以前是**段错误**。发现它的方式是给 `extension-example/ratelimit` 写第一个测试 —— 七个示例此前一个测试都没有，所以这条路径从没被走过。一个函数能不能被单测，不该取决于它有没有记日志。
+
+**两个可以直接抄的样板**：`extension-example/ratelimit/main_test.go`（filter 的判定、`Retry-After`、令牌桶耗尽）和 `extension-example/redact/main_test.go`（短路替换、后端 header 的保留、四条「无事可做」的放行路径）。两个示例都不碰宿主能力，所以它们是这套说法成立的完整证明。
+
+**把配置处理写成具名函数。**`OnConfigChanged` 直接写成传给 `sdk.Serve` 的匿名闭包，测试就够不着它 —— 而配置里的归一化（字段名转小写、默认值兜底）恰恰是容易写错又值得测的部分。`redact` 原先就是这么写的，改成具名的 `configure` 之后才测得了。
+
 ### 一次响应能有多大
 
 插件和 Core 之间是 gRPC，单条消息上限 **16 MiB**（gRPC 自己的默认是 4 MiB，两端都显式抬高了，并在 `Configure` 时协商）。

@@ -312,6 +312,13 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 		time.Sleep(150 * time.Millisecond)
 	}
 
+	if strings.HasSuffix(req.GetPath(), "/filter-names") {
+		return &pb.HttpResponse{
+			StatusCode: 200,
+			Body:       []byte(strings.Join(namesFor(req.GetQuery()), " ")),
+		}, nil
+	}
+
 	if strings.HasSuffix(req.GetPath(), "/phases") {
 		return &pb.HttpResponse{
 			StatusCode: 200,
@@ -371,6 +378,31 @@ func recordPhase(traceID string, phase pb.Phase) {
 	phaseLog.seen[traceID] = append(phaseLog.seen[traceID], phase.String())
 }
 
+// filterNames records which manifest declaration matched, per trace. A plugin
+// may declare several filters in one phase, and they arrive at one function.
+var filterNames struct {
+	sync.Mutex
+	seen map[string][]string
+}
+
+func recordFilterName(traceID, name string) {
+	if traceID == "" || name == "" {
+		return
+	}
+	filterNames.Lock()
+	defer filterNames.Unlock()
+	if filterNames.seen == nil {
+		filterNames.seen = map[string][]string{}
+	}
+	filterNames.seen[traceID] = append(filterNames.seen[traceID], name)
+}
+
+func namesFor(traceID string) []string {
+	filterNames.Lock()
+	defer filterNames.Unlock()
+	return filterNames.seen[traceID]
+}
+
 func phasesFor(traceID string) []string {
 	phaseLog.Lock()
 	defer phaseLog.Unlock()
@@ -379,6 +411,7 @@ func phasesFor(traceID string) []string {
 
 func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterResponse, error) {
 	recordPhase(req.GetTraceId(), req.GetPhase())
+	recordFilterName(req.GetTraceId(), req.GetFilterName())
 
 	// Matched by suffix: a filter sees whatever path the phase gives it, which
 	// is the full request path in pre_route and the plugin-relative one later.

@@ -195,6 +195,10 @@ func (rc *RequestContext) buildFilterRequest(phase pb.Phase, f *Filter) *pb.Filt
 		Identity:      rc.Identity,
 		Context:       rc.Values,
 		ElapsedMicros: rc.Elapsed().Microseconds(),
+		// Which declaration matched. A plugin may declare several filters in
+		// one phase and the SDK dispatches by phase, so without this the two
+		// calls are indistinguishable at the far end.
+		FilterName: f.Decl.Name,
 	}
 	if f.Decl.NeedsRequestBody {
 		req.Body = rc.RequestBody

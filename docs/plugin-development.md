@@ -424,6 +424,38 @@ req = req.WithContext(sdk.WithUser(req.Context(), &sdk.UserContext{
 
 **还没有的**：一个能替 `sdk.DB` / `sdk.Queue` / `sdk.Cache` 的内存实现。碰到这些能力的代码，目前只能靠把它和纯逻辑分开来测，或者照本仓库 `tests/` 的做法 —— 现场编译插件、由 Core 启动、发真实请求。这是一个已知的空缺。
 
+### 几件文档以前没说的小事
+
+**路由是相对的。**Core 会剥掉 `/api/plugins/<key>` 前缀再交给你的 `http.Handler`，所以 `mux.HandleFunc("GET /orders", ...)` 对应外部的 `/api/plugins/orders/orders`。而 filter 的 `match.paths` 是在 Core 那一层匹配的，要写**完整路径**。
+
+**它是一个真正的 `*http.Request`。**Go 1.22 的 `mux.HandleFunc("DELETE /keys/{id}", ...)` 和 `r.PathValue("id")` 都正常工作。
+
+**你传给 `Put` / `Publish` 的值会被 SDK 用 `encoding/json` 编码**，不需要自己 `json.Marshal`；`Get` 和 `m.Decode` 反过来。所以文档字段名来自 `json:` tag。
+
+**`sdk.Cache` 有 `Delete`**，不只是 `Get`/`Set`。
+
+**`config` 里的 `required: true` 不强制任何东西。**Core 不会因为它没填就拒绝启动 —— 那会把一个漏填变成一次故障 —— 它只是让控制台标出来、让审核的人看见。所以插件代码里该做的防御一样要做。
+
+**`OnShutdown` 能用多久**：Core 用的是排空超时（`DrainTimeout`，默认 30 秒），`OnShutdown` 在这段预算之内。写一个比它短的内部超时，别让 `wg.Wait()` 无限期挂住。
+
+### 同一个阶段挂多个 filter
+
+manifest 里 `filters:` 是列表，同一个 phase 可以有多条 —— 不同的 `match`、不同的 `fail_closed`。Go 侧的 `Filters` 是 `map[sdk.Phase]sdk.FilterFunc`，一个 phase 一个函数，所以这几条声明**都会走进同一个函数**。用 `req.Name` 区分：
+
+```go
+sdk.PhasePreRoute: func(ctx context.Context, req *sdk.FilterRequest) (*sdk.FilterResult, error) {
+    switch req.Name {          // manifest 里那条声明的 name
+    case "ratelimit":
+        return checkRate(ctx, req)
+    case "waf":
+        return checkPayload(ctx, req)
+    }
+    return sdk.Continue(), nil
+},
+```
+
+不要靠 `req.Path` 反推是哪条匹配的 —— 那是在重做 Core 已经做过的匹配，而且两条声明同时匹配同一个路径时根本推不出来。
+
 ### 收尾：OnShutdown
 
 `Consume` 和 `Subscribe` 起的 goroutine 会一直跑到 ctx 被取消。插件被停用、升级或排空时，Core 会先调 `OnShutdown`，之后才杀进程：
@@ -455,7 +487,7 @@ sdk.Serve(sdk.Config{
 4. 到这里身份仍然是空的话，Core 返回 401。
 5. `pre_handler`、后端、`post_handler`。
 
-第 1 步和第 4 步分开是后来才修的。原先 Core 在第 1 步解析失败就直接 401，于是第 2 步永远跑不到 —— 一个带着 API key 但没有 session cookie 的请求，会被 Core 在那个懂它凭据的插件被问到之前就拒掉。整套 `filter:authenticate` 机制存在，但用不了。
+第 1 步和第 4 步是分开的：session 解析不出来**不是拒绝**，只是这个请求暂时匿名，第 4 步才是那个无条件的 401。这两步之间就是 authenticate filter 的机会窗口 —— 没有它，一个带着 API key 但没有 session cookie 的请求会在懂它凭据的插件被问到之前就被拒掉。
 
 **一个必须知道的限制**：插件路由不能是公开的。第 4 步是无条件的，所以一个 `authorize` filter 返回 Continue 并不能放行匿名请求。没装 authenticate filter 的部署行为和以前完全一致。
 
@@ -715,7 +747,13 @@ sdk.Serve(sdk.Config{
 
 默认 **fail-open**：filter 超时或报错时请求照常放行。因为多数 filter 是观察者，一个坏掉的观察者不该让站点不可用。
 
-任何做安全决策的 filter 必须显式声明 `fail_closed: true`，否则该插件宕机会悄悄变成一次鉴权绕过。声明了 `fail_closed` 时，filter 无法给出判断的请求一律返回 **503**，包括这几种情形：插件没在运行、正在排空、熔断器已打开、以及这次调用本身报错或超时。对调用方来说它们是同一件事 —— 这个 filter 没能做出决定 —— 所以状态码也是同一个。
+**能自己放行请求的安全 filter 必须声明 `fail_closed: true`**，否则该插件宕机会悄悄变成一次鉴权绕过。
+
+界线是「这个 filter 宕掉，请求会不会因此被放过」。一个 `authorize` 阶段、负责拒绝的 filter：宕了就没人拒绝，必须 fail-closed。一个 `authenticate` 阶段、只负责贴身份标签、从不自己放行的 filter：宕了的后果是有效凭据的调用者被降级成匿名，后面的 `authorize` 和 handler 该拒还是拒 —— 那是**更严格**而不是更松，fail-open 反而是对的（`fail_closed: true` 会把它变成「认证服务一抖，全站 503」）。
+
+判断方法：把这个 filter 想成永远返回 `Continue`，问一句「有没有本该被拒的请求因此通过了」。答案是「有」就 fail-closed。
+
+声明了 `fail_closed` 时，filter 无法给出判断的请求一律返回 **503**，包括这几种情形：插件没在运行、正在排空、熔断器已打开、以及这次调用本身报错或超时。对调用方来说它们是同一件事 —— 这个 filter 没能做出决定 —— 所以状态码也是同一个。
 
 失败的 fail-open filter 仍会记录日志 —— 否则它会因为坏掉而恰好从运维视野里消失。
 

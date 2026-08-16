@@ -332,3 +332,79 @@ func TestOnErrorFiresWhenTheBackendFails(t *testing.T) {
 		t.Errorf("phases = %v; the log phase must still run for a failed request", got)
 	}
 }
+
+// Two filters in one phase are told apart.
+//
+// The manifest permits it — only names must be unique, nothing forbids two
+// pre_route declarations with different path rules — and the SDK dispatches by
+// phase, so both land on the same Go function. Until the request carried the
+// declaration's name, that function could not tell which one matched. Deriving
+// it from the path duplicates the matching Core already did, and is impossible
+// outright when both declarations match the same path.
+//
+// Found by an author who could read only the plugin guide, and who correctly
+// reported it as a blank rather than guessing.
+func TestFilterKnowsWhichDeclarationMatched(t *testing.T) {
+	watcher := launchPlugin(t, "watcher", "1.0.0", nil)
+	backend := launchPlugin(t, "hello", "1.0.0", nil)
+
+	reg := pluginhost.NewRegistry()
+	reg.InstallPlugin(pluginhost.Registration{
+		Key:       "watcher",
+		Instances: []*pluginhost.Instance{watcher},
+		Filters: compileFilters(t, "watcher",
+			manifest.FilterDecl{
+				Name: "broad", Phase: manifest.PhasePreRoute, Order: 10,
+				Match: manifest.FilterMatch{Paths: []string{"/**"}},
+			},
+			// Both match the same request. That is the case no amount of
+			// path inspection can disambiguate.
+			manifest.FilterDecl{
+				Name: "narrow", Phase: manifest.PhasePreRoute, Order: 20,
+				Match: manifest.FilterMatch{Paths: []string{"/api/plugins/hello/**"}},
+			},
+		),
+	})
+	reg.InstallPlugin(pluginhost.Registration{
+		Key:       "hello",
+		Instances: []*pluginhost.Instance{backend},
+	})
+
+	srv := newGateway(reg)
+	defer srv.Close()
+
+	resp := requestWithTrace(t, srv.URL, "/api/plugins/hello/items", "which-decl")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	// Both declarations matched, so the plugin was called twice in this phase.
+	got := waitForPhases(t, watcher, "which-decl", 2)
+	if len(got) < 2 {
+		t.Fatalf("the plugin was called %d time(s); both declarations match this path", len(got))
+	}
+
+	// And the names arrived. Read from the fixture, which records them.
+	names := filterNamesSeen(t, watcher, "which-decl")
+	if len(names) != 2 || names[0] != "broad" || names[1] != "narrow" {
+		t.Errorf("filter names = %v; want [broad narrow] in declared order — without them "+
+			"one function receives two calls it cannot tell apart", names)
+	}
+}
+
+func filterNamesSeen(t *testing.T, inst *pluginhost.Instance, traceID string) []string {
+	t.Helper()
+
+	resp, err := inst.Client.HandleHTTP(context.Background(), &pb.HttpRequest{
+		Method: http.MethodGet, Path: "/filter-names", Query: traceID,
+	})
+	if err != nil {
+		t.Fatalf("asking for filter names: %v", err)
+	}
+	body := strings.TrimSpace(string(resp.GetBody()))
+	if body == "" {
+		return nil
+	}
+	return strings.Fields(body)
+}

@@ -169,6 +169,14 @@ message FilterRequest {
   // context carries values injected by earlier filters in the same request.
   map<string, string> context = 13;
   int64 elapsed_micros = 14;
+  // filter_name is the manifest declaration that matched this request.
+  //
+  // A plugin may declare several filters in one phase — different path rules,
+  // different fail_closed settings — and the SDK dispatches by phase, so
+  // without this a plugin receives two calls it cannot tell apart. Re-deriving
+  // it from the path duplicates the matching Core already did, and is
+  // impossible outright when two declarations match the same path.
+  string filter_name = 15;
 }
 
 message FilterResponse {

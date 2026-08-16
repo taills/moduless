@@ -132,9 +132,16 @@ func outgoing(ctx context.Context) context.Context {
 // needs_request_body / needs_response_body, because moving a body across the
 // process boundary roughly quadruples the cost of the call.
 type FilterRequest struct {
-	Phase    Phase
-	TraceID  string
-	Method   string
+	Phase   Phase
+	TraceID string
+	Method  string
+	// Name is the manifest declaration that matched this request.
+	//
+	// Only interesting when a plugin declares more than one filter in the same
+	// phase — different path rules, different fail_closed settings. The SDK
+	// dispatches by phase, so this is how the one function tells them apart.
+	Name string
+
 	Path     string
 	Query    string
 	ClientIP string
@@ -154,6 +161,7 @@ type FilterRequest struct {
 func filterRequestFrom(req *pb.FilterRequest) *FilterRequest {
 	out := &FilterRequest{
 		Phase:          Phase(req.GetPhase() - 1),
+		Name:           req.GetFilterName(),
 		TraceID:        req.GetTraceId(),
 		Method:         req.GetMethod(),
 		Path:           req.GetPath(),

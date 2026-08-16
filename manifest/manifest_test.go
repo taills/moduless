@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -220,11 +221,11 @@ func TestLoadRejectsAnEnormousManifest(t *testing.T) {
 // every request goes unauthenticated while the console shows the manifest that
 // says otherwise.
 func TestUnknownFieldIsRefused(t *testing.T) {
-	for _, tc := range []struct{ name, extra string }{
-		{"misspelled filters", "filter:\n  - name: guard\n    phase: authenticate\n"},
-		{"misspelled permissions", "permission:\n  - db\n"},
-		{"field from a design that was never built", "resources:\n  memory_mb: 256\n"},
-		{"nested unknown field", "filters:\n  - name: guard\n    phase: pre_route\n    needs_body: true\n"},
+	for _, tc := range []struct{ name, extra, field string }{
+		{"misspelled filters", "filter:\n  - name: guard\n    phase: authenticate\n", "filter"},
+		{"misspelled permissions", "permission:\n  - db\n", "permission"},
+		{"field from a design that was never built", "resources:\n  memory_mb: 256\n", "resources"},
+		{"nested unknown field", "filters:\n  - name: guard\n    phase: pre_route\n    needs_body: true\n", "needs_body"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := writeManifest(t, "key: hello\nversion: 1.0.0\n"+
@@ -234,10 +235,23 @@ func TestUnknownFieldIsRefused(t *testing.T) {
 			if err == nil {
 				t.Fatal("accepted; the declaration a reviewer reads and what Core enforces now differ")
 			}
-			t.Logf("refused: %v", err)
+
+			// Refusing is half of it. The guide promises the error points at the
+			// line, and that is the half an author actually uses: a manifest can
+			// be a hundred lines, and "invalid manifest" sends them to read all
+			// of it. Asserted rather than logged, so wrapping this into
+			// something generic fails here instead of in someone's terminal.
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("the refusal does not name %q: %v", tc.field, err)
+			}
+			if !lineRef.MatchString(err.Error()) {
+				t.Errorf("the refusal gives no line number: %v", err)
+			}
 		})
 	}
 }
+
+var lineRef = regexp.MustCompile(`line \d+`)
 
 // The other direction: everything the schema does declare still parses. A
 // stricter decoder that refused valid manifests would pass the test above.

@@ -54,7 +54,10 @@ cd db && sqlc generate
 
 # Build and test
 go build ./...
-go test ./... -race
+go test ./... -race   # 247s against 220s without it — 12%, because this suite
+                     # spends its time launching real plugin processes and
+                     # waiting on timing, not on CPU. Cheap enough to be the
+                     # default rather than an occasional check.
 go vet ./... && gofmt -l .
 
 # Keep the whole output. A failure here is often something that only shows up

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/taills/moduless/core/pluginhost"
 	"github.com/taills/moduless/manifest"
@@ -103,14 +104,24 @@ func requestWithTrace(t *testing.T, url, path, traceID string) *http.Response {
 
 // waitForPhases polls until the expected count arrives. The log phase runs
 // after the response is written, so reading immediately would race it.
+//
+// Bounded by a deadline rather than an iteration count. The first version
+// looped a hundred times with no pause, which is about four milliseconds of
+// polling — enough on an idle machine and not enough under the full suite,
+// where this failed intermittently while passing every time it was run alone.
+// A flaky test is worse than none: it teaches people to re-run.
 func waitForPhases(t *testing.T, inst *pluginhost.Instance, traceID string, want int) []string {
 	t.Helper()
-	for range 100 {
-		if got := phasesSeen(t, inst, traceID); len(got) >= want {
+
+	deadline := time.Now().Add(5 * time.Second)
+	var got []string
+	for time.Now().Before(deadline) {
+		if got = phasesSeen(t, inst, traceID); len(got) >= want {
 			return got
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return phasesSeen(t, inst, traceID)
+	return got
 }
 
 // An ordinary request runs every phase, in the documented order.

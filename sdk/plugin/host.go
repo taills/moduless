@@ -187,6 +187,40 @@ func (q *Query) All(ctx context.Context, dest any) (nextCursor string, err error
 	return resp.GetNextCursor(), nil
 }
 
+// Rows is All with the document ids alongside.
+//
+// ids[i] names dest[i]. Use it when the point of the query is to act on what
+// it finds: Delete and PutIfVersion both take an id, and All returns only the
+// decoded bodies — so "delete everything matching this filter", which is the
+// ordinary reason to run a query, could not be written without duplicating the
+// id inside the document body first.
+//
+// That gap was found by handing this guide to somebody who had never seen the
+// SDK and asking them to write exactly that. They reported it as the one thing
+// they could not do, and were right: Core reads these ids on every query and
+// used to discard all but the last, which it kept for the cursor.
+func (q *Query) Rows(ctx context.Context, dest any) (ids []string, nextCursor string, err error) {
+	if q.err != nil {
+		return nil, "", q.err
+	}
+	resp, err := q.c.Query(outgoing(ctx), &pb.QueryRequest{
+		Collection: q.collection,
+		Filters:    q.filters,
+		Sort:       q.sort,
+		Limit:      q.limit,
+		Cursor:     q.cursor,
+	})
+	if err != nil {
+		return nil, "", hostErr(err)
+	}
+	if dest != nil {
+		if err := decodeDocuments(resp.GetDocuments(), dest); err != nil {
+			return nil, "", err
+		}
+	}
+	return resp.GetIds(), resp.GetNextCursor(), nil
+}
+
 // Count returns how many documents match, without transferring them.
 func (q *Query) Count(ctx context.Context) (int64, error) {
 	resp, err := q.c.Aggregate(outgoing(ctx), &pb.AggregateRequest{

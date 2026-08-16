@@ -172,6 +172,7 @@ func (s *Server) Query(ctx context.Context, req *pb.QueryRequest) (*pb.QueryResp
 	}
 	return &pb.QueryResponse{
 		Documents:  res.Documents,
+		Ids:        res.IDs,
 		NextCursor: res.NextCursor,
 		HasMore:    res.HasMore,
 	}, nil

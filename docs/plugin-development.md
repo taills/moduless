@@ -290,6 +290,19 @@ err := sdk.DB.Tx(ctx, 30*time.Second, func(tx *sdk.TxClient) error {
 
 终结方法：`All(ctx, &dest)` 取一页并返回下一页游标，`Count(ctx)`，以及 `Sum` / `Avg` / `Min` / `Max`（都可选传 group by 字段）。
 
+**要对查到的东西动手，用 `Rows` 而不是 `All`。**`All` 只把文档正文解码给你，**不给文档 id** —— 而 `Delete` 和 `PutIfVersion` 都要 id。所以「把符合条件的都删掉」这个最常见的用法，用 `All` 写不出来：
+
+```go
+var stale []Record
+ids, next, err := sdk.DB.Where("records").
+    Lt("updated_at", cutoff).Limit(100).Rows(ctx, &stale)
+for _, id := range ids {
+    _, _ = sdk.DB.Delete(ctx, "records", id)
+}
+```
+
+`ids[i]` 对应 `stale[i]`。分页方式和 `All` 一样。
+
 单条操作：`Put`、`PutIfVersion`、`Get`、`Delete(ctx, collection, id) (found bool, err error)`。删除不需要事务；`Delete` 返回的第一个值告诉你那条记录本来是否存在。
 
 **所有比较值都是字符串**，包括数字和时间。这是因为文档存储的字段类型由 JSON 决定，而比较需要一个确定的顺序。实际影响是：**要按时间范围查询，就得把时间存成按字典序可比的格式** —— RFC3339（`2026-08-16T03:17:00Z`）可以，Unix 时间戳整数不行（`"9"` 排在 `"10"` 后面）。
@@ -399,7 +412,9 @@ found, err := sdk.Cache.Get(ctx, "profile:"+id, &profile)
 lease, ok, err := sdk.Locks.Acquire(ctx, "nightly-job", 30*time.Second, 0)
 if ok {
     defer lease.Release(ctx)
-    // 长任务里定期续租；Renew 返回 false 说明租约已失去，
+    // 长任务里定期续租。签名：
+    //   func (l *Lease) Renew(ctx context.Context, ttl time.Duration) (bool, error)
+    // 返回 false 说明租约已失去，
     // 别人可能已在做同样的活儿 —— 应当停下而不是继续
 }
 ```
@@ -740,6 +755,17 @@ sdk.Log.Info(ctx, "订单已创建", "order_id", id, "total", total)
 sdk.Log.Error(ctx, "支付回调失败", "err", err, "attempt", n)
 sdk.Log.Metric(ctx, "orders_created", 1, map[string]string{"region": region})
 ```
+
+**三种指标，选对那一种**：
+
+| 方法 | 用于 | 例子 |
+|---|---|---|
+| `sdk.Log.Metric` | 只增不减的计数 | 处理了多少条消息 |
+| `sdk.Log.Gauge` | 会上下浮动的当前值 | 队列深度、缓存条目数、连接数 |
+| `sdk.Log.Histogram` | 一次观测值的分布 | 单次同步耗时 |
+
+三者签名相同：`(ctx, name string, value float64, labels map[string]string)`。选错不会报错，只会让读指标的人得出错误结论 —— 把队列深度报成计数器，看到的是一条只涨不跌的线。
+
 
 字段是交替的键值对，值可以是任意类型 —— 字符串、数字、error 都行，Core 侧统一格式化。trace id 自动附加，不用手工传。
 

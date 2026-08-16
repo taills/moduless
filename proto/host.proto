@@ -168,6 +168,16 @@ message QueryResponse {
   repeated bytes documents = 1;
   string next_cursor = 2;
   bool has_more = 3;
+
+  // ids[i] is the document id of documents[i].
+  //
+  // Core reads these from the table on every query and used to discard all but
+  // the last, which it kept for the cursor. Without them a plugin cannot act on
+  // what it found: Delete and PutIfVersion both take an id, and a query result
+  // carried none — so "delete everything matching this filter", which is the
+  // ordinary reason to run a query, was not expressible unless the plugin had
+  // thought to duplicate the id inside the document body.
+  repeated string ids = 4;
 }
 
 enum AggregateFunc {

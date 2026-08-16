@@ -126,6 +126,7 @@ func (d *CMDSData) Query(ctx context.Context, pluginKey, collection string, opts
 	}
 	return QueryResult{
 		Documents:  res.Documents,
+		IDs:        res.IDs,
 		NextCursor: res.NextCursor,
 		HasMore:    res.HasMore,
 	}, nil

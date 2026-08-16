@@ -68,7 +68,11 @@ type QueryOptions struct {
 
 // QueryResult is one page.
 type QueryResult struct {
-	Documents  [][]byte
+	Documents [][]byte
+	// IDs[i] is the document id of Documents[i]. Read from the table anyway —
+	// the cursor needs the last one — and kept rather than discarded, because
+	// a caller that cannot name what it found cannot delete or update it.
+	IDs        []string
 	NextCursor string
 	HasMore    bool
 }
@@ -304,6 +308,7 @@ func (m *CMDSManager) Query(ctx context.Context, ex execer, extKey, collection s
 			break
 		}
 		result.Documents = append(result.Documents, raw)
+		result.IDs = append(result.IDs, id)
 		docs = append(docs, raw)
 		lastID = id
 	}

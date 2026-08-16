@@ -37,7 +37,9 @@ type QueryOptions struct {
 }
 
 type QueryResult struct {
-	Documents  [][]byte
+	Documents [][]byte
+	// IDs[i] names Documents[i], so a caller can act on what it found.
+	IDs        []string
 	NextCursor string
 	HasMore    bool
 }

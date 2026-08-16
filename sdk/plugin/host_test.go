@@ -993,3 +993,35 @@ func TestLogFieldsArePairs(t *testing.T) {
 			"came next would be worse, but it is worth knowing it vanishes", fields)
 	}
 }
+
+// Rows hands back the ids alongside the documents.
+//
+// Without them a query result cannot be acted on — Delete and PutIfVersion
+// both take an id, and All returns only decoded bodies. Somebody writing
+// against the guide alone reported this as the one thing they could not do.
+func TestRowsReturnsDocumentIDs(t *testing.T) {
+	host := &fakeHost{queryResp: &pb.QueryResponse{
+		Documents:  [][]byte{[]byte(`{"total":10}`), []byte(`{"total":20}`)},
+		Ids:        []string{"order-1", "order-2"},
+		NextCursor: "cursor-2",
+	}}
+	db := &DBClient{c: host}
+
+	var orders []struct {
+		Total int `json:"total"`
+	}
+	ids, next, err := db.Where("orders").Rows(t.Context(), &orders)
+	if err != nil {
+		t.Fatalf("Rows: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "order-1" || ids[1] != "order-2" {
+		t.Errorf("ids = %v; a caller that cannot name what it found cannot delete or "+
+			"update it", ids)
+	}
+	if len(orders) != 2 || orders[0].Total != 10 {
+		t.Errorf("documents did not decode alongside the ids: %+v", orders)
+	}
+	if next != "cursor-2" {
+		t.Errorf("next cursor = %q; paging has to work the same as All", next)
+	}
+}

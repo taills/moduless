@@ -315,3 +315,63 @@ func TestTransactionCeilingIsReportedAsRetryable(t *testing.T) {
 			"moment from a broken Core, and giving up is its only safe response", got, got)
 	}
 }
+
+// A query result names its documents, against the real store.
+//
+// The fake in sdk/plugin proves the field travels; only this proves the ids
+// are the ones Put used. Without that, "delete everything matching this
+// filter" is unwritable — Delete takes an id and a query returned none.
+func TestQueryReturnsTheIDsPutUsed(t *testing.T) {
+	const key = "idsback"
+	// txData provisions a "notes" collection, which is all this needs — the
+	// collection name is not what is under test.
+	data := txData(t, key)
+	ctx := context.Background()
+
+	want := map[string]bool{}
+	for _, id := range []string{"rec-a", "rec-b", "rec-c"} {
+		if _, err := data.Put(ctx, key, "notes", id,
+			[]byte(`{"tenant":"acme"}`), "", 0); err != nil {
+			t.Fatalf("put %s: %v", id, err)
+		}
+		want[id] = true
+	}
+
+	res, err := data.Query(ctx, key, "notes", hostsvc.QueryOptions{Limit: 10}, "")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(res.Documents) != 3 {
+		t.Fatalf("%d documents, want 3", len(res.Documents))
+	}
+	if len(res.IDs) != len(res.Documents) {
+		t.Fatalf("%d ids for %d documents; they are meant to line up by index",
+			len(res.IDs), len(res.Documents))
+	}
+	for _, id := range res.IDs {
+		if !want[id] {
+			t.Errorf("query returned id %q, which was never written; the ids have to be "+
+				"the ones Put used or Delete cannot take them", id)
+		}
+		delete(want, id)
+	}
+	if len(want) != 0 {
+		t.Errorf("these written ids did not come back: %v", want)
+	}
+
+	// The point of having them: delete what the query found.
+	for _, id := range res.IDs {
+		ok, err := data.Delete(ctx, key, "notes", id, "")
+		if err != nil || !ok {
+			t.Errorf("deleting %s: ok=%v err=%v", id, ok, err)
+		}
+	}
+	after, err := data.Query(ctx, key, "notes", hostsvc.QueryOptions{Limit: 10}, "")
+	if err != nil {
+		t.Fatalf("query after delete: %v", err)
+	}
+	if len(after.Documents) != 0 {
+		t.Errorf("%d documents survived a delete driven by the query's own ids",
+			len(after.Documents))
+	}
+}

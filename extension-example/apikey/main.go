@@ -110,22 +110,31 @@ func main() {
 			sdk.PhaseAuthenticate: authenticate,
 			sdk.PhaseAuthorize:    authorize,
 		},
-		OnConfigChanged: func(cfg map[string]string) {
-			settings.Lock()
-			defer settings.Unlock()
-			if d, err := time.ParseDuration(cfg["cache_ttl"]); err == nil && d > 0 {
-				settings.cacheTTL = d
-			} else if settings.cacheTTL == 0 {
-				settings.cacheTTL = 60 * time.Second
-			}
-			if d, err := time.ParseDuration(cfg["local_ttl"]); err == nil && d > 0 {
-				settings.localTTL = d
-			} else if settings.localTTL == 0 {
-				settings.localTTL = 5 * time.Second
-			}
-			settings.protected = splitList(cfg["protected_prefixes"])
-		},
+		OnConfigChanged: configure,
 	})
+}
+
+// configure applies admin settings.
+//
+// A named function rather than a closure written inline above, for the reason
+// extension-example/redact records: a test can call this, and it cannot call an
+// anonymous function passed to sdk.Serve. What it decides is worth testing —
+// protected_prefixes is the list that makes authorize refuse anyone, so a typo
+// here is an authorization hole rather than a formatting problem.
+func configure(cfg map[string]string) {
+	settings.Lock()
+	defer settings.Unlock()
+	if d, err := time.ParseDuration(cfg["cache_ttl"]); err == nil && d > 0 {
+		settings.cacheTTL = d
+	} else if settings.cacheTTL == 0 {
+		settings.cacheTTL = 60 * time.Second
+	}
+	if d, err := time.ParseDuration(cfg["local_ttl"]); err == nil && d > 0 {
+		settings.localTTL = d
+	} else if settings.localTTL == 0 {
+		settings.localTTL = 5 * time.Second
+	}
+	settings.protected = splitList(cfg["protected_prefixes"])
 }
 
 // authenticate turns an API key into an identity.
@@ -150,7 +159,7 @@ func authenticate(ctx context.Context, req *sdk.FilterRequest) (*sdk.FilterResul
 		return sdk.Continue(), nil
 	}
 
-	key, found, err := lookup(ctx, hashKey(raw))
+	key, found, err := resolveKey(ctx, hashKey(raw))
 	if err != nil {
 		// Returning the error matters. This filter is declared fail_closed, so
 		// Core refuses the request rather than letting it through
@@ -191,6 +200,20 @@ func authorize(_ context.Context, req *sdk.FilterRequest) (*sdk.FilterResult, er
 		[]byte(`{"error":"an API key is required for this path"}`)).
 		WithHeader("WWW-Authenticate", `Bearer realm="moduless"`), nil
 }
+
+// resolveKey is the seam for the one host-backed step in the authenticate path.
+//
+// A package-level func var rather than the interface field extension-example/
+// digest uses, because this plugin is already built around package-level state
+// (the local cache is a package var, and the filters are plain functions Core
+// calls by name). Fitting a struct around it to hold one dependency would be a
+// larger change than the thing it buys.
+//
+// The trade is real and worth stating: a var is global mutable state, so a test
+// that swaps it has to put it back, and two tests cannot swap it concurrently.
+// digest's field carries neither problem. Prefer that shape in new plugins;
+// this one shows the lighter option for code already written this way.
+var resolveKey = lookup
 
 // lookup resolves a key hash, through the cache.
 //

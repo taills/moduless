@@ -62,9 +62,14 @@ func main() {
 
 // --- HTTP API ---------------------------------------------------------------
 
-func listNotes(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
+// notesQuery turns the request's query string into a query.
+//
+// Split out from listNotes because this is where the decisions are — whether an
+// author filter was applied, whether the cursor was carried through, what the
+// page size actually is — and a query can be inspected with Describe() without
+// a Core or a database behind it. Executing it still needs both; asserting that
+// it was built correctly does not.
+func notesQuery(r *http.Request) *sdk.Query {
 	q := sdk.DB.Where("notes").SortDesc("created").Limit(50)
 	if author := r.URL.Query().Get("author"); author != "" {
 		q = q.Eq("author", author)
@@ -72,9 +77,12 @@ func listNotes(w http.ResponseWriter, r *http.Request) {
 	if after := r.URL.Query().Get("after"); after != "" {
 		q = q.After(after)
 	}
+	return q
+}
 
+func listNotes(w http.ResponseWriter, r *http.Request) {
 	var notes []Note
-	next, err := q.All(ctx, &notes)
+	next, err := notesQuery(r).All(r.Context(), &notes)
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err)
 		return

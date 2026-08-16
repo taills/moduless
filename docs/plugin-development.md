@@ -520,7 +520,24 @@ var _ fetcher = (*sdk.HTTPClient)(nil)   // 编译得过
 
 对**出站 HTTP 这条尤其重要**：Core 会拒绝插件拨往 loopback 和私有地址（这正是它挡住 DNS 重绑定和元数据端点的方式），所以没有任何地址是测试能监听、而 Core 又肯拨的 —— 接缝不是偏好，是唯一的办法。
 
-**唯一没有天然接缝的**是 `sdk.DB.Where(...)`：它返回一个具体的链式构造器，假造它等于重写构造器本身。碰到查询的代码目前还是只能靠 `tests/` 那套做法 —— 现场编译插件、由 Core 启动、发真实请求。
+**查询不能在测试里执行，但可以被检查。**`sdk.DB.Where(...)` 返回具体的链式构造器，假造它等于重写构造器本身 —— 但真正值得测的是**查询被构造成了什么**（author 过滤加上了吗、游标带过去了吗、页大小是不是它声称的那个），而不是它返回哪几行。`Describe()` 报告这个：
+
+```go
+got := notesQuery(req).Describe()
+// got.Filters[0] == {Field: "author", Op: "EQ", Values: []string{"ann"}}
+// got.Sort[0]    == {Field: "created", Descending: true}
+// got.Limit, got.Cursor
+```
+
+`Op` 用的是运算符枚举名去掉 `OP_` 前缀（`EQ`、`NE`、`IN`、`IS_NULL`…），不是手写的符号表 —— 后者会在新增运算符时悄悄渲染成错的那个。
+
+**它报告的是请求，不是结果。**要断言「查出来的是哪几行」，仍然只能走 `tests/` 那套端到端路径。
+
+**`sdk.DB` 在没有 Core 时返回错误，不再是段错误。**未绑定时 `Put`/`Get`/`Delete`/`PutIfVersion`/`Tx` 返回 `sdk.ErrHostUnavailable`，`Where` 返回一个能构造、一执行就报同样错误的查询。于是「校验挡在存储之前」这类逻辑测得了，越过它的测试拿到的也是一句话而不是一个崩掉的进程。
+
+> **其余能力还没有这个待遇。**`sdk.Queue` / `Cache` / `Locks` / `Files` / `Events` / `HTTP` 在未绑定时仍然会 panic。通用的修法是给 `pb.HostServicesClient` 写一个统一返回错误的桩 —— 编译器会强制它完整，将来新增方法也漏不掉 —— 但那需要伪造 `Consume`/`Subscribe`/`Log` 三个流式方法。这里写出来，是因为**一个只做了一半的保护比没做更容易让人误以为全都安全了**。
+
+这个空缺到底挡住多少，量过两个样本：`apikey`（最依赖数据库）14 个函数里 1 个，`notes`（能力面最广）11 个里 3 个。但函数计数高估了它 —— `notes` 那三个里两个只是「调一次 `Count` 再格式化」，唯一带判断的 `listNotes` 现在被 `Describe()` 覆盖了。
 
 **事务曾经也在这个名单上，现在不在了。**`sdk.DB.Tx` 的回调以前收到 `*sdk.TxClient` —— 具体类型，内部持有不导出的 gRPC 客户端，作者造不出来。于是事务体（也就是不变量真正所在的地方：读库存、不够就拒、扣减与记录一起落盘）没有 Core 就一行都测不了。现在回调收到的是 `sdk.TxOps` 接口，`*sdk.TxClient` 满足它，生产路径没有任何变化。
 

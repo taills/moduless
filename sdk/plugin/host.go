@@ -28,6 +28,9 @@ type DBClient struct{ c pb.HostServicesClient }
 
 // Put writes a document, encoding value as JSON. It returns the new version.
 func (d *DBClient) Put(ctx context.Context, collection, id string, value any) (int64, error) {
+	if d == nil || d.c == nil {
+		return 0, ErrHostUnavailable
+	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		return 0, fmt.Errorf("encode document: %w", err)
@@ -61,6 +64,9 @@ func (d *DBClient) Put(ctx context.Context, collection, id string, value any) (i
 // FailedPrecondition now means exactly that, an expired transaction, where
 // retrying is the one thing that cannot work.
 func (d *DBClient) PutIfVersion(ctx context.Context, collection, id string, value any, expected int64) (int64, error) {
+	if d == nil || d.c == nil {
+		return 0, ErrHostUnavailable
+	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		return 0, fmt.Errorf("encode document: %w", err)
@@ -77,6 +83,9 @@ func (d *DBClient) PutIfVersion(ctx context.Context, collection, id string, valu
 // Get decodes a document into dest. It reports false when the document does
 // not exist, which is not an error.
 func (d *DBClient) Get(ctx context.Context, collection, id string, dest any) (found bool, version int64, err error) {
+	if d == nil || d.c == nil {
+		return false, 0, ErrHostUnavailable
+	}
 	resp, err := d.c.Get(outgoing(ctx), &pb.GetRequest{Collection: collection, DocId: id})
 	if err != nil {
 		return false, 0, hostErr(err)
@@ -94,6 +103,9 @@ func (d *DBClient) Get(ctx context.Context, collection, id string, dest any) (fo
 
 // Delete removes a document.
 func (d *DBClient) Delete(ctx context.Context, collection, id string) (bool, error) {
+	if d == nil || d.c == nil {
+		return false, ErrHostUnavailable
+	}
 	resp, err := d.c.Delete(outgoing(ctx), &pb.DeleteRequest{Collection: collection, DocId: id})
 	if err != nil {
 		return false, hostErr(err)
@@ -111,6 +123,12 @@ func (d *DBClient) Delete(ctx context.Context, collection, id string) (bool, err
 //		Limit(50).
 //		All(ctx, &orders)
 func (d *DBClient) Where(collection string) *Query {
+	if d == nil || d.c == nil {
+		// Unbound: no Core, so this is the plugin's own `go test`. The query
+		// still builds — Describe is the point of letting it — and the deferred
+		// error surfaces if something tries to run it.
+		return &Query{collection: collection, err: ErrHostUnavailable}
+	}
 	return &Query{c: d.c, collection: collection}
 }
 
@@ -125,6 +143,62 @@ type Query struct {
 	limit      int32
 	cursor     string
 	err        error
+}
+
+// QueryFilter is one condition a Query has accumulated.
+type QueryFilter struct {
+	Field string
+	// Op is the operator's name without its wire prefix: EQ, NE, GT, GTE, LT,
+	// LTE, LIKE, IN, BETWEEN, IS_NULL, IS_NOT_NULL.
+	//
+	// Taken from the enum rather than a hand-written table of symbols, so a new
+	// operator cannot quietly render as the wrong one.
+	Op     string
+	Values []string
+}
+
+// QuerySort is one ordering a Query has accumulated.
+type QuerySort struct {
+	Field      string
+	Descending bool
+}
+
+// QueryDescription is what a Query has been built to ask for.
+type QueryDescription struct {
+	Collection string
+	Filters    []QueryFilter
+	Sort       []QuerySort
+	Limit      int
+	Cursor     string
+}
+
+// Describe reports what this Query would ask Core for, without asking.
+//
+// Query building is where a handler's decisions live — whether the author
+// filter was applied, whether the cursor was carried, whether the page size is
+// what it claims — and until this existed none of it could be checked without a
+// running Core and a database. Faking the builder means reimplementing it;
+// inspecting it does not.
+//
+// It reports the request, not the answer. Nothing here says what rows come
+// back, and a test that needs that still needs the end-to-end path in tests/.
+func (q *Query) Describe() QueryDescription {
+	d := QueryDescription{
+		Collection: q.collection,
+		Limit:      int(q.limit),
+		Cursor:     q.cursor,
+	}
+	for _, f := range q.filters {
+		d.Filters = append(d.Filters, QueryFilter{
+			Field:  f.GetField(),
+			Op:     strings.TrimPrefix(f.GetOp().String(), "OP_"),
+			Values: f.GetValues(),
+		})
+	}
+	for _, s := range q.sort {
+		d.Sort = append(d.Sort, QuerySort{Field: s.GetField(), Descending: s.GetDescending()})
+	}
+	return d
 }
 
 func (q *Query) add(field string, op pb.Operator, values ...string) *Query {
@@ -226,6 +300,9 @@ func (q *Query) Rows(ctx context.Context, dest any) (ids []string, nextCursor st
 
 // Count returns how many documents match, without transferring them.
 func (q *Query) Count(ctx context.Context) (int64, error) {
+	if q.err != nil {
+		return 0, q.err
+	}
 	resp, err := q.c.Aggregate(outgoing(ctx), &pb.AggregateRequest{
 		Collection: q.collection,
 		Filters:    q.filters,
@@ -258,6 +335,9 @@ func (q *Query) Max(ctx context.Context, field string, groupBy ...string) (map[s
 }
 
 func (q *Query) aggregate(ctx context.Context, fn pb.AggregateFunc, field string, groupBy []string) (map[string]float64, error) {
+	if q.err != nil {
+		return nil, q.err
+	}
 	resp, err := q.c.Aggregate(outgoing(ctx), &pb.AggregateRequest{
 		Collection: q.collection,
 		Filters:    q.filters,
@@ -322,6 +402,9 @@ type TxOps interface {
 // A transaction holds a database connection for as long as it is open, and
 // Core rolls it back once its timeout passes, so keep the work inside short.
 func (d *DBClient) Tx(ctx context.Context, timeout time.Duration, fn func(tx TxOps) error) error {
+	if d == nil || d.c == nil {
+		return ErrHostUnavailable
+	}
 	resp, err := d.c.BeginTx(outgoing(ctx), &pb.BeginTxRequest{
 		TimeoutSeconds: wholeSeconds(timeout),
 	})

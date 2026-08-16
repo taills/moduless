@@ -50,6 +50,16 @@ var (
 
 	// ErrNotFound is a document, file or message that is not there.
 	ErrNotFound = errors.New("not found")
+
+	// ErrHostUnavailable means the host capabilities are not bound yet: this
+	// code ran outside a live Core, which in practice means it ran under the
+	// plugin's own `go test`.
+	//
+	// It exists so that reaching for a capability in a test produces a sentence
+	// rather than a segmentation fault. Building a query still works — see
+	// Query.Describe, which is how query-construction logic is tested — and only
+	// executing one fails.
+	ErrHostUnavailable = errors.New("host capabilities are not available outside a running Core")
 )
 
 // hostErr attaches a sentinel to an error from Core so callers can use

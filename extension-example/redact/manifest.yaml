@@ -25,7 +25,16 @@ filters:
         - /api/plugins/notes/**
         - /api/plugins/inventory/**
     needs_response_body: true
-    max_body_bytes: 262144
+    # No max_body_bytes here, and not because it was forgotten: the cap is read
+    # only where the request body is attached, so on a response filter it caps
+    # nothing — measured, a filter declaring 1 KiB was handed a whole 64 KiB
+    # response. Core now refuses the declaration rather than accept one that
+    # does nothing.
+    #
+    # Enforcing it would be worse than leaving it out. A response over the cap
+    # would skip this filter, and skipping this filter means the unredacted
+    # response goes out — so the caller could switch redaction off by asking
+    # for more rows. Bounding the cost is the match block's job, above.
     # Fail-open: this filter cannot let anything through that would otherwise
     # have been refused — the response has already been produced. If it breaks,
     # responses go out unredacted, which is the same as not having installed

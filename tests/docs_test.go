@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/taills/moduless/manifest"
 )
 
 // The plugin guide against the SDK it documents.
@@ -417,4 +419,77 @@ func typeText(fset *token.FileSet, expr ast.Expr) string {
 		return "?"
 	}
 	return b.String()
+}
+
+// The guide's own manifest has to be one Core would accept.
+//
+// Nothing checked this. The sample carried max_body_bytes alongside
+// needs_request_body: false — which Core now rejects, because the cap is read
+// only where the request body is attached and means nothing otherwise. The
+// guide would have been handing every new plugin author a manifest that fails
+// validation on first run, and the only signal would have been their error,
+// not ours.
+//
+// The same shape as TestGuideCompiles and TestGuideStructsMatchTheSDK: the
+// guide is executable and gets run.
+func TestGuideManifestsValidate(t *testing.T) {
+	guide, err := os.ReadFile(filepath.Join("..", "docs", "plugin-development.md"))
+	if err != nil {
+		t.Fatalf("reading the guide: %v", err)
+	}
+
+	blocks := yamlBlocks(string(guide))
+	if len(blocks) == 0 {
+		t.Fatal("the guide shows no yaml blocks; this test used to check something")
+	}
+
+	checked := 0
+	for i, block := range blocks {
+		// Only whole manifests. The guide also shows fragments — a filters:
+		// list on its own, a config: list on its own — which are illustrations
+		// of one field rather than files anybody saves.
+		if !strings.Contains(block, "key:") || !strings.Contains(block, "version:") {
+			continue
+		}
+		checked++
+
+		// Through Load rather than a decoder of our own, so the block meets
+		// everything a real package meets — including the unknown-field
+		// rejection, which a hand-rolled parse would skip.
+		path := filepath.Join(t.TempDir(), "manifest.yaml")
+		if err := os.WriteFile(path, []byte(block), 0o600); err != nil {
+			t.Fatalf("writing the block: %v", err)
+		}
+		m, err := manifest.Load(path)
+		if err != nil {
+			t.Errorf("yaml block %d is not a manifest Core would load: %v\n%s", i, err, block)
+			continue
+		}
+		if err := m.Validate(); err != nil {
+			t.Errorf("yaml block %d is a manifest Core would refuse: %v\n%s", i, err, block)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no complete manifest found in the guide; either the guide stopped " +
+			"showing one or the heuristic for finding it broke")
+	}
+	t.Logf("%d complete manifest(s) in the guide, all accepted by Validate", checked)
+}
+
+// yamlBlocks returns the contents of every ```yaml fence.
+func yamlBlocks(doc string) []string {
+	var out []string
+	for rest := doc; ; {
+		start := strings.Index(rest, "```yaml")
+		if start < 0 {
+			return out
+		}
+		rest = rest[start+len("```yaml"):]
+		end := strings.Index(rest, "```")
+		if end < 0 {
+			return out
+		}
+		out = append(out, strings.TrimPrefix(rest[:end], "\n"))
+		rest = rest[end+3:]
+	}
 }

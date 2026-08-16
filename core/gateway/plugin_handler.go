@@ -69,10 +69,15 @@ func (h *PluginHandler) Middleware(next http.Handler) http.Handler {
 }
 
 func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.Handler) {
-	// Load the snapshot exactly once and use it for the whole request. Calling
-	// Current() again mid-request could mix two versions of the routing table
-	// and filter chain, so a request might apply one plugin's filters while
-	// routing to another's backend.
+	// Load the snapshot exactly once and use it for the whole request, so the
+	// filter chain cannot change underneath it: a request must not apply one
+	// version of the routing table in an early phase and another in a late one.
+	//
+	// Which process answers a given key is a separate question, and that one is
+	// resolved live — h.Registry, not snap, is handed to the Runner. Freezing
+	// that too is what used to make an upgrade mid-request fail: the instance
+	// frozen here is killed as soon as its in-flight count hits zero, so a late
+	// phase found nothing to call.
 	snap := h.Registry.Current()
 	chain := snap.Chain()
 
@@ -85,6 +90,20 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 	// this, and a request that was admitted is never refused halfway through.
 	defer rc.ReleaseAdmissions()
 
+	// The log phase runs on the way out, whichever way out that is.
+	//
+	// It used to be a call at each of the ten points this function can return
+	// from, kept in step by hand — and one of them did not have it. The body is
+	// buffered before the pipeline starts, so an over-limit body was answered
+	// 413 and returned before any phase ran. That is the one rejection a caller
+	// can produce deliberately, and it was the one that left no audit record.
+	//
+	// Deferring it makes the guarantee structural rather than clerical: a
+	// future eleventh exit gets it without anyone remembering. Registered after
+	// ReleaseAdmissions so it runs before it, which is the order the explicit
+	// calls had. A chain with no log filters costs one length check here.
+	defer h.logPhase(chain, rc)
+
 	isPluginRoute := strings.HasPrefix(r.URL.Path, PluginAPIPrefix)
 
 	// Buffer the body only when something downstream needs it: a filter that
@@ -92,14 +111,16 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 	if chain.NeedsRequestBody() || isPluginRoute {
 		body, err := h.readBody(w, r)
 		if err != nil {
-			return // readBody already wrote the response
+			// readBody already wrote the response. Record what it was, or the
+			// log phase reports this request with no status at all.
+			rc.ResponseStatus = http.StatusRequestEntityTooLarge
+			return
 		}
 		rc.RequestBody = body
 	}
 
 	if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_PRE_ROUTE, rc); out.Stopped() {
 		h.writeResponse(w, out.ShortCircuit)
-		h.logPhase(chain, rc)
 		return
 	}
 
@@ -131,7 +152,6 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 		rc.ResponseStatus = rec.status
 		rc.ResponseHeader = rec.Header()
 		rc.ResponseBody = rec.body()
-		h.logPhase(chain, rc)
 		return
 	}
 
@@ -165,7 +185,6 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 	} {
 		if out := h.Runner.Run(r.Context(), chain, h.Registry, phase, rc); out.Stopped() {
 			h.writeResponse(w, out.ShortCircuit)
-			h.logPhase(chain, rc)
 			return
 		}
 	}
@@ -183,13 +202,11 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 	// approves, and not as an authorize filter quietly returning Continue.
 	if h.Auth != nil && rc.Identity == nil {
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
-		h.logPhase(chain, rc)
 		return
 	}
 
 	if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_PRE_HANDLER, rc); out.Stopped() {
 		h.writeResponse(w, out.ShortCircuit)
-		h.logPhase(chain, rc)
 		return
 	}
 
@@ -198,7 +215,6 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 	key, sub, ok := splitPluginPath(rc.Path)
 	if !ok {
 		http.NotFound(w, r)
-		h.logPhase(chain, rc)
 		return
 	}
 
@@ -214,11 +230,9 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 		rc.ResponseStatus = status
 		if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_ON_ERROR, rc); out.Stopped() {
 			h.writeResponse(w, out.ShortCircuit)
-			h.logPhase(chain, rc)
 			return
 		}
 		http.Error(w, err.Error(), status)
-		h.logPhase(chain, rc)
 		return
 	}
 
@@ -229,19 +243,16 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 	if rc.ResponseStatus >= 500 {
 		if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_ON_ERROR, rc); out.Stopped() {
 			h.writeResponse(w, out.ShortCircuit)
-			h.logPhase(chain, rc)
 			return
 		}
 	}
 
 	if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_POST_HANDLER, rc); out.Stopped() {
 		h.writeResponse(w, out.ShortCircuit)
-		h.logPhase(chain, rc)
 		return
 	}
 
 	writeFinal(w, rc)
-	h.logPhase(chain, rc)
 }
 
 // callBackend dispatches to the plugin that owns the route.

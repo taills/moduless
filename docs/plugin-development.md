@@ -158,9 +158,9 @@ filters:
       methods: ["POST", "PUT"]
     timeout_ms: 50
     fail_closed: false        # 见下方「失败策略」
-    needs_request_body: false  # 见下方「Body」
+    needs_request_body: true   # 见下方「Body」
     needs_response_body: false # post_handler/on_error 想读响应体时必须开
-    max_body_bytes: 65536
+    max_body_bytes: 65536      # 只对请求体生效，所以必须和上一行同时出现
 
 config:                       # 管理员能配什么，见下方「配置」
   - key: retention_days
@@ -789,7 +789,9 @@ Filter 是 IIS Filter / ASP.NET HttpModule 那套模型：插件可以介入**�
 | `on_error` | 后端 5xx 或超时 | 兜底、告警 |
 | `log` | 响应已发出 | 审计、埋点（异步，不影响响应） |
 
-`log` 阶段对**每一个**请求都会跑，包括被更早的 filter 短路掉的、鉴权失败的、以及后端返回 5xx 的 —— 所以审计不会对「被拒绝的流量」留下盲区。它在响应发出之后异步执行，返回值被忽略，`fail_closed` 在这里没有意义（响应都发完了，拒无可拒）。
+`log` 阶段对**每一个**请求都会跑，包括被更早的 filter 短路掉的、鉴权失败的、后端返回 5xx 的，以及**请求体超限被 413 拒掉的** —— 所以审计不会对「被拒绝的流量」留下盲区。
+
+最后那一条曾经是假的：body 在管道启动之前就被缓冲，超限时 Core 直接写 413 返回，一个阶段都没跑过。也就是说，**唯一一种调用者能随意触发的拒绝**（发个大 body 就行），恰好是唯一一种不留审计记录的拒绝 —— 有人在探这个上限时，在本该看见他的那份日志里正好是空白。现在这个保证是结构性的（`defer`，不再靠十个出口各自记得），并由 `tests/audit_blindspot_test.go` 钉住。它在响应发出之后异步执行，返回值被忽略，`fail_closed` 在这里没有意义（响应都发完了，拒无可拒）。
 
 **这带来一个用「审计」当例子时必须讲清楚的后果**：`log` 阶段的 filter 失败时，请求已经成功了，而那条审计记录就这么没了 —— 插件崩溃、熔断打开、正在排空的那段时间都会发生，只在 Core 自己的运维日志里留下「这个 filter 失败了」。也就是说**基于 `log` 阶段的审计是尽力而为的，不保证完整**。真正不能丢的审计要在 `log` 阶段里把记录投进持久队列（那有至少一次投递保证），或者接受这个缺口并监控 Core 日志里的 filter 失败。
 
@@ -851,9 +853,15 @@ sdk.Serve(sdk.Config{
 
 默认不把 body 跨进程传给 filter。实测一个 64KB 的 body 会让调用成本变成空 body 的四倍，而多数 filter 只看方法、路径、头和身份。
 
-需要时声明 `needs_request_body: true` 并设 `max_body_bytes`。超过上限时：`fail_closed` 的 filter 返回 413，fail-open 的跳过。**不会截断后传给你** —— 一个基于半截数据做判断的安全 filter，可能得出和后端处理完整数据不同的结论。
+需要时声明 `needs_request_body: true` 并设 `max_body_bytes`。超过上限时：`fail_closed` 的 filter 返回 413，fail-open 的跳过。**不会截断后传给你** —— 一个基于半截数据做判断的安全 filter，可能得出和后端处理完整数据不同的结论。这两条都实测过（`tests/body_limit_test.go`）。
+
+**「fail-open 的跳过」这句要连着想一遍**：body 多大是**发请求的人说了算的**。所以一个检查请求体的 fail-open filter，任何人只要发一个超过你声明上限的 body，就能让它不被调用 —— 而请求照样打到后端，带着完整的 body。如果这个 filter 是在**找**什么东西（恶意载荷、超额字段、注入），那它必须 `fail_closed: true`，否则上限就成了一个由攻击者触发的开关。上限对「只是想省开销」的观察型 filter 才是安全的。
 
 **响应 body 是另一个开关。** `post_handler` 和 `on_error` 阶段能拿到 `req.ResponseStatus` 和 `req.ResponseHeader`，但 `req.ResponseBody` 只在声明了 `needs_response_body: true` 时才有内容 —— 否则它是一个空切片，而不是一个错误。想检查响应体的 filter 必须显式声明：
+
+**`max_body_bytes` 对响应体不生效，Core 会拒绝这种声明。** 上限只在挂请求体的地方被读；实测一个声明了 1KiB 的 filter 拿到了完整的 64KiB 响应（`tests/response_body_limit_test.go`）。所以 `max_body_bytes` 必须和 `needs_request_body` 同时出现，只写 `needs_response_body` 时带上它会在校验期被拒 —— 一个什么都不做的声明比没有声明更糟，因为它让作者以为自己设了防线。
+
+**不在响应侧执行这个上限是有意的，不是遗漏。** 如果照请求侧的规则执行，「超限就跳过」在响应侧的含义是：一个大响应会跳过脱敏 filter，**未脱敏地发出去** —— 而调用者只要多要几行就能触发。想控制响应体的开销，办法是把 `match` 收窄到真正返回敏感数据的路由（`extension-example/redact` 就是这么做的），而不是声明一个数字。
 
 **改写响应体走的是另一条路，而且不显然。**`Mutate()` 只能改头、路径、身份和 context —— **没有改响应体的方法**。看 mutation 的 API 会以为改不了。
 

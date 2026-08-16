@@ -239,6 +239,26 @@ func (m *Manifest) Validate() error {
 		if f.MaxBodyBytes < 0 {
 			return fmt.Errorf("manifest: filter %s has a negative max_body_bytes", label)
 		}
+		// The cap is consulted only where the request body is attached. On a
+		// response-inspecting filter it does nothing at all: measured, a filter
+		// declaring 1 KiB was handed the whole 64 KiB response.
+		//
+		// Enforcing it there instead would be the wrong repair. On the request
+		// side, exceeding the cap skips a fail-open filter — harmless for an
+		// observer, since the request is refused by nobody who was going to
+		// refuse it. On the response side the same rule would mean a large
+		// response skips a redaction filter and goes out unredacted, letting
+		// the caller choose to be unfiltered by asking for more rows.
+		//
+		// So the honest fix is to refuse the declaration rather than to honour
+		// it. A filter that cannot afford an unbounded response body has to say
+		// so by narrowing its match, not by naming a number nothing reads.
+		if f.MaxBodyBytes > 0 && !f.NeedsRequestBody {
+			return fmt.Errorf(
+				"manifest: filter %s sets max_body_bytes without needs_request_body; "+
+					"the cap applies only to request bodies, and response bodies are "+
+					"delivered whole up to the transport limit", label)
+		}
 	}
 
 	seenJob := map[string]struct{}{}

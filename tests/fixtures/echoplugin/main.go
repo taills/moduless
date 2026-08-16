@@ -345,6 +345,16 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 		}, nil
 	}
 
+	if strings.HasSuffix(req.GetPath(), "/bodysizes") {
+		return &pb.HttpResponse{
+			StatusCode: 200,
+			Headers: map[string]*pb.HeaderValues{
+				"Content-Type": {Values: []string{"text/plain"}},
+			},
+			Body: []byte(strings.Join(bodySizesFor(req.GetQuery()), " ")),
+		}, nil
+	}
+
 	if strings.HasSuffix(req.GetPath(), "/phases") {
 		return &pb.HttpResponse{
 			StatusCode: 200,
@@ -411,6 +421,34 @@ var filterNames struct {
 	seen map[string][]string
 }
 
+// bodySizes records how much body each filter call actually received, which is
+// the only way to tell a declared limit that is enforced from one that is not:
+// a filter that is handed the whole thing looks identical, from outside, to a
+// filter whose declaration was honoured.
+var bodySizes struct {
+	sync.Mutex
+	seen map[string][]string
+}
+
+func recordBodySize(traceID string, req, resp int) {
+	if traceID == "" {
+		return
+	}
+	bodySizes.Lock()
+	defer bodySizes.Unlock()
+	if bodySizes.seen == nil {
+		bodySizes.seen = map[string][]string{}
+	}
+	bodySizes.seen[traceID] = append(bodySizes.seen[traceID],
+		fmt.Sprintf("req=%d/resp=%d", req, resp))
+}
+
+func bodySizesFor(traceID string) []string {
+	bodySizes.Lock()
+	defer bodySizes.Unlock()
+	return bodySizes.seen[traceID]
+}
+
 func recordFilterName(traceID, name string) {
 	if traceID == "" || name == "" {
 		return
@@ -438,6 +476,7 @@ func phasesFor(traceID string) []string {
 func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterResponse, error) {
 	recordPhase(req.GetTraceId(), req.GetPhase())
 	recordFilterName(req.GetTraceId(), req.GetFilterName())
+	recordBodySize(req.GetTraceId(), len(req.GetBody()), len(req.GetUpstreamBody()))
 
 	// ECHO_FILTER_DELAY makes every filter call slow, which is how a plugin
 	// degrades in practice — not by dying, but by taking longer than anyone

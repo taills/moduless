@@ -39,6 +39,35 @@ func TestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			// max_body_bytes is read only when the request body is attached, so
+			// declaring it alongside needs_response_body alone caps nothing.
+			// Measured: a filter declaring 1 KiB was handed the whole 64 KiB
+			// response. Enforcing it there instead would be worse — a large
+			// response would skip a fail-open redaction filter and go out
+			// unredacted — so the declaration is the thing that has to go.
+			name: "max_body_bytes without needs_request_body is rejected",
+			mutate: func(m *Manifest) {
+				m.Filters = []FilterDecl{{
+					Name: "scan", Phase: PhasePostHandler,
+					Match:             FilterMatch{Paths: []string{"/**"}},
+					NeedsResponseBody: true,
+					MaxBodyBytes:      262144,
+				}}
+			},
+			wantErr: true,
+		},
+		{
+			name: "max_body_bytes with needs_request_body is accepted",
+			mutate: func(m *Manifest) {
+				m.Filters = []FilterDecl{{
+					Name: "scan", Phase: PhasePreRoute,
+					Match:            FilterMatch{Paths: []string{"/**"}},
+					NeedsRequestBody: true,
+					MaxBodyBytes:     262144,
+				}}
+			},
+		},
+		{
 			name:    "unknown permission is rejected",
 			mutate:  func(m *Manifest) { m.Permissions = []string{"db", "root:everything"} },
 			wantErr: true,

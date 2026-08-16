@@ -3,6 +3,7 @@ package tests
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,30 @@ func waitForPhases(t *testing.T, inst *pluginhost.Instance, traceID string, want
 	return got
 }
 
+// waitUntilPhase waits for a named phase to be recorded.
+//
+// Waiting for a count instead is what a test asserting on a specific phase
+// must not do, and two tests here did. The log phase runs asynchronously after
+// the response is written, so waitForPhases(…, 1) returns the moment any
+// earlier phase lands — and an assertion that the last phase is PHASE_LOG then
+// reads a slice the log phase has not reached yet. It passes on an idle
+// machine and fails under a loaded full-suite run, which reads as flake and is
+// really the test asserting on something it never waited for.
+func waitUntilPhase(t *testing.T, inst *pluginhost.Instance, traceID, phase string) []string {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var got []string
+	for time.Now().Before(deadline) {
+		got = phasesSeen(t, inst, traceID)
+		if slices.Contains(got, phase) {
+			return got
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return got
+}
+
 // An ordinary request runs every phase, in the documented order.
 func TestPhasesRunInOrder(t *testing.T) {
 	url, watcher := lifecycleGateway(t)
@@ -211,7 +236,7 @@ func TestLogPhaseRunsForAShortCircuitedRequest(t *testing.T) {
 		t.Fatalf("status = %d, want 403; the blocking filter did not run", resp.StatusCode)
 	}
 
-	got := waitForPhases(t, watcher, trace, 1)
+	got := waitUntilPhase(t, watcher, trace, "PHASE_LOG")
 	if len(got) == 0 {
 		t.Fatal("the log phase did not run for a refused request; a rejected caller " +
 			"leaves no trace, which is the traffic most worth recording")
@@ -328,7 +353,7 @@ func TestOnErrorFiresWhenTheBackendFails(t *testing.T) {
 	}
 	t.Logf("status with a dead backend: %d", resp.StatusCode)
 
-	got := waitForPhases(t, watcher, trace, 1)
+	got := waitUntilPhase(t, watcher, trace, "PHASE_LOG")
 	var sawError bool
 	for _, p := range got {
 		if p == "PHASE_ON_ERROR" {

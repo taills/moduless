@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -24,6 +25,7 @@ type fakeHost struct {
 	lastQuery     *pb.QueryRequest
 	lastAggregate *pb.AggregateRequest
 	lastPut       *pb.PutRequest
+	lastEnqueue   *pb.EnqueueRequest
 
 	queryResp     *pb.QueryResponse
 	aggregateResp *pb.AggregateResponse
@@ -393,4 +395,105 @@ func TestTxClientMirrorsTheDBClient(t *testing.T) {
 	var dbCAS func(context.Context, string, string, any, int64) (int64, error) = db.PutIfVersion
 	var txCAS func(context.Context, string, string, any, int64) (int64, error) = tx.PutIfVersion
 	_, _ = dbCAS, txCAS
+}
+
+func (f *fakeHost) Enqueue(_ context.Context, in *pb.EnqueueRequest, _ ...grpc.CallOption) (*pb.EnqueueResponse, error) {
+	f.lastEnqueue = in
+	return &pb.EnqueueResponse{MessageId: 1}, nil
+}
+
+func newTestQueue() (*QueueClient, *fakeHost) {
+	host := &fakeHost{}
+	return &QueueClient{c: host}, host
+}
+
+// What the publish options put on the wire.
+//
+// None of these had a test, in Core or here — WithDelay, WithPriority and
+// WithMaxAttempts are referenced nowhere outside their own declarations. They
+// are also the whole author-facing surface of the queue's scheduling
+// behaviour, and the test that measured delayed delivery this week went
+// through db.Queue directly, so it would not have noticed if the SDK dropped
+// the option on the floor.
+func TestPublishOptionsReachTheRequest(t *testing.T) {
+	tests := []struct {
+		name string
+		opt  EnqueueOption
+		want func(*pb.EnqueueRequest) bool
+		desc string
+	}{
+		{
+			name: "delay of whole seconds",
+			opt:  WithDelay(90 * time.Second),
+			want: func(r *pb.EnqueueRequest) bool { return r.GetDelaySeconds() == 90 },
+			desc: "delay_seconds = 90",
+		},
+		{
+			name: "priority",
+			opt:  WithPriority(5),
+			want: func(r *pb.EnqueueRequest) bool { return r.GetPriority() == 5 },
+			desc: "priority = 5",
+		},
+		{
+			name: "max attempts",
+			opt:  WithMaxAttempts(3),
+			want: func(r *pb.EnqueueRequest) bool { return r.GetMaxAttempts() == 3 },
+			desc: "max_attempts = 3",
+		},
+		{
+			name: "dedup key",
+			opt:  WithDedupKey("nightly-2026-08-16"),
+			want: func(r *pb.EnqueueRequest) bool { return r.GetDedupKey() == "nightly-2026-08-16" },
+			desc: `dedup_key = "nightly-2026-08-16"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q, host := newTestQueue()
+			if _, _, err := q.Publish(t.Context(), "jobs", map[string]int{"n": 1}, tc.opt); err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+			if host.lastEnqueue == nil {
+				t.Fatal("no enqueue reached the host")
+			}
+			if !tc.want(host.lastEnqueue) {
+				t.Errorf("the option did not produce %s: %+v", tc.desc, host.lastEnqueue)
+			}
+		})
+	}
+}
+
+// A delay shorter than a second is not the same as no delay.
+//
+// WithDelay takes a time.Duration, which measures nanoseconds, and puts it on
+// the wire as whole seconds. Truncating means WithDelay(600*time.Millisecond)
+// arrives as zero — the message becomes deliverable at once, and nothing tells
+// the author their delay was dropped. A duration-shaped API that silently
+// floors to seconds is worse than one that took seconds in the first place,
+// because the type promises precision it discards.
+//
+// Rounding up rather than down is the direction that keeps the promise: the
+// contract for a delayed message is "not before", so a 600ms delay honoured as
+// one second is still correct, and honoured as zero is not.
+func TestASubSecondDelayIsNotDiscarded(t *testing.T) {
+	for _, d := range []time.Duration{time.Millisecond, 600 * time.Millisecond, 1500 * time.Millisecond} {
+		q, host := newTestQueue()
+		if _, _, err := q.Publish(t.Context(), "jobs", nil, WithDelay(d)); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+		got := host.lastEnqueue.GetDelaySeconds()
+		onWire := time.Duration(got) * time.Second
+		t.Logf("WithDelay(%s) → delay_seconds=%d (%s)", d, got, onWire)
+
+		// The contract is "not before", so the wire value has to be at least
+		// what was asked for. Flooring fails this in both directions that
+		// matter: 600ms becomes no delay at all, and 1.5s becomes a message
+		// deliverable half a second early.
+		if onWire < d {
+			t.Errorf("WithDelay(%s) put %s on the wire: the message becomes deliverable "+
+				"before the caller asked, and nothing reported that the delay was "+
+				"rounded away", d, onWire)
+		}
+	}
 }

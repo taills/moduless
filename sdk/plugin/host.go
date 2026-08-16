@@ -346,8 +346,24 @@ type QueueClient struct{ c pb.HostServicesClient }
 type EnqueueOption func(*pb.EnqueueRequest)
 
 // WithDelay holds a message back before it becomes deliverable.
+//
+// The wire carries whole seconds, so a duration that is not a whole number of
+// them is rounded **up**. That direction is not a detail: the guarantee is
+// "not before", and rounding down breaks it — truncation turned
+// WithDelay(600*time.Millisecond) into no delay at all, and
+// WithDelay(1500*time.Millisecond) into a message deliverable half a second
+// early, neither with any error to say the delay had been discarded.
+//
+// A delay is a floor, never a schedule. The message becomes *eligible* after
+// it, and is delivered whenever a consumer next asks.
 func WithDelay(d time.Duration) EnqueueOption {
-	return func(r *pb.EnqueueRequest) { r.DelaySeconds = int32(d / time.Second) }
+	return func(r *pb.EnqueueRequest) {
+		if d <= 0 {
+			r.DelaySeconds = 0
+			return
+		}
+		r.DelaySeconds = int32((d + time.Second - 1) / time.Second)
+	}
 }
 
 // WithDedupKey suppresses a duplicate while an identical message is still in

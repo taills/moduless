@@ -11,7 +11,12 @@ tmp_dir = "tmp"
   exclude_dir = [
     "assets", "tmp", "vendor", "tests", "docs",
     "extension-example", "plugins",
-    ".git"
+    ".git",
+    # include_dir 里的 "core" 会把 core/frontend 整个带进来，其中
+    # node_modules 有 701 个子目录 —— 实测占全部被监视目录的 97%，而它们
+    # 与这里的 Go 构建毫无关系（include_ext 只认 go/yaml/proto 等）。
+    # 前端有自己的 npm run dev。
+    "core/frontend/node_modules", "core/frontend/dist",
   ]
   include_dir = ["core", "proto"]
   exclude_file = []

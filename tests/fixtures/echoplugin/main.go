@@ -390,6 +390,16 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 		}, nil
 	}
 
+	if strings.HasSuffix(req.GetPath(), "/statuses") {
+		return &pb.HttpResponse{
+			StatusCode: 200,
+			Headers: map[string]*pb.HeaderValues{
+				"Content-Type": {Values: []string{"text/plain"}},
+			},
+			Body: []byte(strings.Join(statusesFor(req.GetQuery()), " ")),
+		}, nil
+	}
+
 	if strings.HasSuffix(req.GetPath(), "/phases") {
 		return &pb.HttpResponse{
 			StatusCode: 200,
@@ -468,6 +478,42 @@ func recordPhase(traceID string, phase pb.Phase) {
 	phaseLog.seen[traceID] = append(phaseLog.seen[traceID], phase.String())
 }
 
+// statusLog records the upstream status each log-phase call was shown, per
+// trace.
+//
+// The log phase is where auditing happens, and what it is worth auditing is
+// mostly the refusals. Recording the status separately from the phase is what
+// lets a test tell "the log filter ran" from "the log filter was told what
+// happened" — those came apart: every short-circuited request reached the log
+// phase carrying status 0, so an audit plugin saw the refusal and could not say
+// what it was.
+var statusLog struct {
+	sync.Mutex
+	seen map[string][]int32
+}
+
+func recordStatus(traceID string, phase pb.Phase, status int32) {
+	if traceID == "" || phase != pb.Phase_PHASE_LOG {
+		return
+	}
+	statusLog.Lock()
+	defer statusLog.Unlock()
+	if statusLog.seen == nil {
+		statusLog.seen = map[string][]int32{}
+	}
+	statusLog.seen[traceID] = append(statusLog.seen[traceID], status)
+}
+
+func statusesFor(traceID string) []string {
+	statusLog.Lock()
+	defer statusLog.Unlock()
+	out := make([]string, 0, len(statusLog.seen[traceID]))
+	for _, s := range statusLog.seen[traceID] {
+		out = append(out, strconv.Itoa(int(s)))
+	}
+	return out
+}
+
 // filterNames records which manifest declaration matched, per trace. A plugin
 // may declare several filters in one phase, and they arrive at one function.
 var filterNames struct {
@@ -531,6 +577,7 @@ func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterR
 	recordPhase(req.GetTraceId(), req.GetPhase())
 	recordFilterName(req.GetTraceId(), req.GetFilterName())
 	recordBodySize(req.GetTraceId(), len(req.GetBody()), len(req.GetUpstreamBody()))
+	recordStatus(req.GetTraceId(), req.GetPhase(), req.GetUpstreamStatus())
 
 	// ECHO_FILTER_DELAY makes every filter call slow, which is how a plugin
 	// degrades in practice — not by dying, but by taking longer than anyone

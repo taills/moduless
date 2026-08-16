@@ -121,7 +121,7 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 	}
 
 	if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_PRE_ROUTE, rc); out.Stopped() {
-		h.writeResponse(w, out.ShortCircuit)
+		h.writeResponse(w, rc, out.ShortCircuit)
 		return
 	}
 
@@ -216,7 +216,7 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 		pb.Phase_PHASE_AUTHORIZE,
 	} {
 		if out := h.Runner.Run(r.Context(), chain, h.Registry, phase, rc); out.Stopped() {
-			h.writeResponse(w, out.ShortCircuit)
+			h.writeResponse(w, rc, out.ShortCircuit)
 			return
 		}
 	}
@@ -233,12 +233,13 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 	// is ever wanted it belongs in the manifest, as a declaration an operator
 	// approves, and not as an authorize filter quietly returning Continue.
 	if h.Auth != nil && rc.Identity == nil {
+		rc.ResponseStatus = http.StatusUnauthorized
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
 	}
 
 	if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_PRE_HANDLER, rc); out.Stopped() {
-		h.writeResponse(w, out.ShortCircuit)
+		h.writeResponse(w, rc, out.ShortCircuit)
 		return
 	}
 
@@ -261,7 +262,7 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 		}
 		rc.ResponseStatus = status
 		if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_ON_ERROR, rc); out.Stopped() {
-			h.writeResponse(w, out.ShortCircuit)
+			h.writeResponse(w, rc, out.ShortCircuit)
 			return
 		}
 		http.Error(w, err.Error(), status)
@@ -274,13 +275,13 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 
 	if rc.ResponseStatus >= 500 {
 		if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_ON_ERROR, rc); out.Stopped() {
-			h.writeResponse(w, out.ShortCircuit)
+			h.writeResponse(w, rc, out.ShortCircuit)
 			return
 		}
 	}
 
 	if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_POST_HANDLER, rc); out.Stopped() {
-		h.writeResponse(w, out.ShortCircuit)
+		h.writeResponse(w, rc, out.ShortCircuit)
 		return
 	}
 
@@ -379,13 +380,26 @@ func (h *PluginHandler) readBody(w http.ResponseWriter, r *http.Request) ([]byte
 	return body, nil
 }
 
-func (h *PluginHandler) writeResponse(w http.ResponseWriter, resp *pb.HttpResponse) {
+// writeResponse sends a short circuit and records what it sent.
+//
+// Recording here rather than at each of the six call sites, for the reason the
+// log phase became a defer: a status written in one place and remembered in
+// another drift apart, and the drift is silent. Measured before this took the
+// rc: every short-circuited request — a filter refusing, Core refusing an
+// unauthenticated caller — reached the audit trail as status 0, which is the
+// same thing it says when it does not know. An audit trail's most interesting
+// rows are the refusals.
+func (h *PluginHandler) writeResponse(w http.ResponseWriter, rc *pipeline.RequestContext, resp *pb.HttpResponse) {
 	for k, hv := range resp.GetHeaders() {
 		for _, v := range hv.GetValues() {
 			w.Header().Add(k, v)
 		}
 	}
-	w.WriteHeader(normalizeStatus(int(resp.GetStatusCode())))
+	status := normalizeStatus(int(resp.GetStatusCode()))
+	rc.ResponseStatus = status
+	rc.ResponseHeader = pipeline.FromProtoHeaders(resp.GetHeaders())
+	rc.ResponseBody = resp.GetBody()
+	w.WriteHeader(status)
 	_, _ = w.Write(resp.GetBody())
 }
 

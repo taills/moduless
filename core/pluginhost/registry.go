@@ -123,6 +123,28 @@ func (s *Snapshot) Target(pluginKey string) (pipeline.Target, bool) {
 // reports so the browser knows to refetch.
 func (s *Snapshot) Version() uint64 { return s.version }
 
+// Target implements pipeline.Resolver against whatever is running now, which
+// is what makes the Resolver's promise true: a filter call lands on the
+// current process even when the request has been in flight across an upgrade.
+//
+// Resolving through the request's own snapshot instead looks safer and is not.
+// A swap kills the displaced instance as soon as its in-flight count reaches
+// zero, and a request that has not yet admitted anywhere does not count — so
+// by the time a post_handler filter runs, the instance frozen into its
+// snapshot is typically already gone, and a fail-closed filter rejects a
+// request for the duration of every deploy.
+//
+// The chain stays frozen; only the process behind a key is resolved live. That
+// is the split that matters: which filters run must not change mid-request,
+// which process answers them must.
+func (r *Registry) Target(pluginKey string) (pipeline.Target, bool) {
+	snap := r.current.Load()
+	if snap == nil {
+		return nil, false
+	}
+	return snap.Target(pluginKey)
+}
+
 // Pick returns a ready instance of key, or false when the plugin is absent,
 // disabled or has no healthy replica.
 func (s *Snapshot) Pick(key string) (*Instance, bool) {

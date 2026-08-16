@@ -97,9 +97,9 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 		rc.RequestBody = body
 	}
 
-	if out := h.Runner.Run(r.Context(), chain, snap, pb.Phase_PHASE_PRE_ROUTE, rc); out.Stopped() {
+	if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_PRE_ROUTE, rc); out.Stopped() {
 		h.writeResponse(w, out.ShortCircuit)
-		h.logPhase(chain, snap, rc)
+		h.logPhase(chain, rc)
 		return
 	}
 
@@ -131,7 +131,7 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 		rc.ResponseStatus = rec.status
 		rc.ResponseHeader = rec.Header()
 		rc.ResponseBody = rec.body()
-		h.logPhase(chain, snap, rc)
+		h.logPhase(chain, rc)
 		return
 	}
 
@@ -163,9 +163,9 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 		pb.Phase_PHASE_AUTHENTICATE,
 		pb.Phase_PHASE_AUTHORIZE,
 	} {
-		if out := h.Runner.Run(r.Context(), chain, snap, phase, rc); out.Stopped() {
+		if out := h.Runner.Run(r.Context(), chain, h.Registry, phase, rc); out.Stopped() {
 			h.writeResponse(w, out.ShortCircuit)
-			h.logPhase(chain, snap, rc)
+			h.logPhase(chain, rc)
 			return
 		}
 	}
@@ -183,13 +183,13 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 	// approves, and not as an authorize filter quietly returning Continue.
 	if h.Auth != nil && rc.Identity == nil {
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
-		h.logPhase(chain, snap, rc)
+		h.logPhase(chain, rc)
 		return
 	}
 
-	if out := h.Runner.Run(r.Context(), chain, snap, pb.Phase_PHASE_PRE_HANDLER, rc); out.Stopped() {
+	if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_PRE_HANDLER, rc); out.Stopped() {
 		h.writeResponse(w, out.ShortCircuit)
-		h.logPhase(chain, snap, rc)
+		h.logPhase(chain, rc)
 		return
 	}
 
@@ -198,7 +198,7 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 	key, sub, ok := splitPluginPath(rc.Path)
 	if !ok {
 		http.NotFound(w, r)
-		h.logPhase(chain, snap, rc)
+		h.logPhase(chain, rc)
 		return
 	}
 
@@ -212,13 +212,13 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 			status = unavailable.status()
 		}
 		rc.ResponseStatus = status
-		if out := h.Runner.Run(r.Context(), chain, snap, pb.Phase_PHASE_ON_ERROR, rc); out.Stopped() {
+		if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_ON_ERROR, rc); out.Stopped() {
 			h.writeResponse(w, out.ShortCircuit)
-			h.logPhase(chain, snap, rc)
+			h.logPhase(chain, rc)
 			return
 		}
 		http.Error(w, err.Error(), status)
-		h.logPhase(chain, snap, rc)
+		h.logPhase(chain, rc)
 		return
 	}
 
@@ -227,21 +227,21 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 	rc.ResponseBody = resp.GetBody()
 
 	if rc.ResponseStatus >= 500 {
-		if out := h.Runner.Run(r.Context(), chain, snap, pb.Phase_PHASE_ON_ERROR, rc); out.Stopped() {
+		if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_ON_ERROR, rc); out.Stopped() {
 			h.writeResponse(w, out.ShortCircuit)
-			h.logPhase(chain, snap, rc)
+			h.logPhase(chain, rc)
 			return
 		}
 	}
 
-	if out := h.Runner.Run(r.Context(), chain, snap, pb.Phase_PHASE_POST_HANDLER, rc); out.Stopped() {
+	if out := h.Runner.Run(r.Context(), chain, h.Registry, pb.Phase_PHASE_POST_HANDLER, rc); out.Stopped() {
 		h.writeResponse(w, out.ShortCircuit)
-		h.logPhase(chain, snap, rc)
+		h.logPhase(chain, rc)
 		return
 	}
 
 	writeFinal(w, rc)
-	h.logPhase(chain, snap, rc)
+	h.logPhase(chain, rc)
 }
 
 // callBackend dispatches to the plugin that owns the route.
@@ -306,11 +306,11 @@ func (h *PluginHandler) dispatch(ctx context.Context, inst *pluginhost.Instance,
 // logPhase dispatches the log phase without blocking. The request context is
 // no longer mutated by this point, and a fresh context is used because the
 // request's own is cancelled the moment the handler returns.
-func (h *PluginHandler) logPhase(chain *pipeline.Chain, snap *pluginhost.Snapshot, rc *pipeline.RequestContext) {
+func (h *PluginHandler) logPhase(chain *pipeline.Chain, rc *pipeline.RequestContext) {
 	// ForAsync because this outlives the response: the request has already
 	// released its reservations by the time this phase runs, so it needs its
 	// own to release in turn.
-	h.Runner.RunAsync(context.Background(), chain, snap, pb.Phase_PHASE_LOG, rc.ForAsync())
+	h.Runner.RunAsync(context.Background(), chain, h.Registry, pb.Phase_PHASE_LOG, rc.ForAsync())
 }
 
 func (h *PluginHandler) readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {

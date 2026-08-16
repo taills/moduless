@@ -145,9 +145,13 @@ guide. Three rules matter most:
    plainly there. Measured — it is not `exec format error`, which means a
    wrong architecture. Confirm with
    `docker run --rm -v "$PWD:/x" alpine ldd /x/bin/plugin`.
-3. **Deploying a new version must replace the binary, not overwrite it.** The
-   previous version is still serving until the upgrade commits, and writing
-   into a file that is executing corrupts that process. Use `mv`, not `cp`.
+3. **Deploying a new version must replace the binary, not overwrite it.** Use
+   `mv`, not `cp`. On Linux the kernel refuses the overwrite outright — `cp`
+   and `>` both fail with `Text file busy` (ETXTBSY) while the old version is
+   still serving — so the deployment fails rather than the process being
+   corrupted. Measured on debian: `mv` succeeds, and the running process
+   carries on from the old inode. (Corruption is what happens on platforms
+   without ETXTBSY; the target here is Linux.)
 
 ## Conventions
 

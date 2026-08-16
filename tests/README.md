@@ -193,3 +193,35 @@ Go 的 `exec.Command` 看到的是 `fork/exec /src/.dyn: no such file or directo
 `exec format error` 是 ENOEXEC，架构不符时才出现（arm64 上跑 amd64）。让人去找它，就是让人永远找不到。
 
 这个实验没有做成自动化测试：它需要 Docker 加一次 glibc 构建，代价远超收益。留下的是可复现的命令和确切的输出。
+
+
+## 三条招牌规则，全部实测过一遍
+
+`CLAUDE.md` 列了三条「最要紧的规则」。它们的**失败长什么样**，之前一条都没验证过 —— 验完发现三条的描述都不准，而且不准的方向各不相同：
+
+| 规则 | 文档原来说 | 实测 |
+|---|---|---|
+| 不要在 `sdk.Serve` 前写 stdout | 「失败不指向原因」 | **比文档说的好**：go-plugin 把你打的那行原样放进错误里 |
+| 必须 `CGO_ENABLED=0` | 「`exec format error`」 | **指向了错误的方向**：`no such file or directory`，而文件就在那儿（缺的是动态链接器）|
+| 用 `mv` 不用 `cp` | 「会破坏那个进程的内存映像」 | **Linux 上根本不会发生**：内核返回 `Text file busy` 拒绝写入，部署失败但进程完好 |
+
+第一条和第三条的实际行为都比文档描述的**友好**，第二条比描述的**恶劣**。三条都会让人往错的方向排查 —— 一条让人预期最坏，一条让人去找一个永远不会出现的字符串，一条让人以为需要担心数据损坏。
+
+复现命令都在下面各节里。教训不是「文档写错了」，是**关于失败的断言和关于成功的断言一样需要验证**，而前者几乎从来没人验。
+
+
+### mv / cp 的复现
+
+```bash
+docker run --rm debian:stable-slim sh -c '
+cp /bin/sleep /tmp/prog && chmod +x /tmp/prog
+/tmp/prog 30 & PID=$!
+sleep 1
+cp /bin/date /tmp/prog            # cp: cannot create regular file: Text file busy
+sh -c "echo x > /tmp/prog"        # cannot create /tmp/prog: Text file busy
+cp /bin/date /tmp/new && mv /tmp/new /tmp/prog   # 成功
+kill -0 $PID && echo "原进程 alive"               # alive
+'
+```
+
+用 alpine 做这个实验会得到假结果：它的 `/bin/sleep` 是 busybox 的软链，复制过去 argv[0] 变了、applet 找不到，进程根本没跑起来 —— 于是覆盖「成功」了，看上去像 Linux 不拦。第一次就是这么错的。

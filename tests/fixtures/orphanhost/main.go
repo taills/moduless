@@ -41,7 +41,6 @@ func main() {
 		Env:        []string{"PATH=/usr/bin:/bin"},
 		Stderr:     os.Stderr,
 		// The whole point: production process attributes, so Pdeathsig is set.
-		DevMode: false,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "launch: %v\n", err)

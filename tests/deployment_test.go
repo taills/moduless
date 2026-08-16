@@ -54,9 +54,6 @@ func startCore(t *testing.T, pluginDir string, extraEnv ...string) (baseURL stri
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("HTTP_ADDR=127.0.0.1:%d", port),
 		"PLUGIN_DIR="+pluginDir,
-		// Without it, Pdeathsig on Linux would take the plugins down when the
-		// test's own process tree is torn down at an awkward moment.
-		"PLUGIN_DEV_MODE=1",
 	)
 	cmd.Env = append(cmd.Env, extraEnv...)
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr

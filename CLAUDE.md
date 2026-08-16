@@ -108,7 +108,6 @@ a binary when you need to stop it reliably.
 | `PLUGIN_DIR` | `./plugins` | Where plugin packages live |
 | `PLUGIN_DATA_DIR` | — | Root for per-plugin writable directories |
 | `PLUGIN_LOG_LEVEL` | `warn` | Plugin log verbosity |
-| `PLUGIN_DEV_MODE` | off | Skips Pdeathsig; development only |
 | `HOST_FRONTEND_DIR` | `./core/frontend/dist` | Built console |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `admin123` | Seeded on first run |
 | `RUSTFS_*` | — | Object storage; without it the file capability is unavailable |

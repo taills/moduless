@@ -62,7 +62,6 @@ func contendedSyncer(t *testing.T, lockWait, work string, replicas int) *db.Queu
 			GrantedPermissions: []string{"lock", "queue"},
 			Config:             cfg,
 			Env:                []string{"PATH=/usr/bin:/bin"},
-			DevMode:            true,
 		})
 		if err != nil {
 			t.Fatalf("launching replica %d: %v", i, err)

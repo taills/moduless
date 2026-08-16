@@ -50,9 +50,8 @@ func redactStack(t *testing.T, fields string) string {
 		// sets only the second gets a plugin that behaves as if unconfigured —
 		// which is how the first run of this test "passed" the
 		// nothing-configured case and failed the other two.
-		Config:  map[string]string{"fields": fields, "mask": "[gone]"},
-		Env:     []string{"PATH=/usr/bin:/bin"},
-		DevMode: true,
+		Config: map[string]string{"fields": fields, "mask": "[gone]"},
+		Env:    []string{"PATH=/usr/bin:/bin"},
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)

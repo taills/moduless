@@ -165,9 +165,6 @@ func main() {
 		Dir:         env("PLUGIN_DIR", "./plugins"),
 		DataDirRoot: env("PLUGIN_DATA_DIR", ""),
 		LogLevel:    env("PLUGIN_LOG_LEVEL", "warn"),
-		// DevMode skips Pdeathsig so air's rebuild loop does not cold-start
-		// every plugin on each edit. Leave it off in production.
-		DevMode: os.Getenv("PLUGIN_DEV_MODE") == "1",
 		// What a plugin is launched with. Read at every launch rather than
 		// cached, so a restarted or upgraded plugin picks up whatever the
 		// operator set in the meantime.

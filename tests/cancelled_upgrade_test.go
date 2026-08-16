@@ -75,7 +75,6 @@ func TestACancelledUpgradeLeavesNothingBehind(t *testing.T) {
 	mgr := pluginhost.NewManager(pluginhost.ManagerConfig{
 		Dir:         root,
 		DataDirRoot: filepath.Join(root, "data"),
-		DevMode:     true,
 	}, reg, func(pkg *pluginhost.Package) pb.HostServicesServer {
 		return hostsvc.New(pkg.Key(), pkg.Manifest.Permissions, hostsvc.Deps{})
 	})

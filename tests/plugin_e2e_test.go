@@ -100,7 +100,6 @@ func launchReplica(t testing.TB, key, instanceID, version string, weight int, gr
 		GrantedPermissions: granted,
 		Env:                []string{"PATH=/usr/bin:/bin"},
 		Stderr:             os.Stderr,
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch plugin: %v", err)
@@ -353,7 +352,6 @@ func TestE2ETamperedBinaryIsRefused(t *testing.T) {
 		HostImpl:   hostsvc.New("hello", nil, hostsvc.Deps{}),
 		Env:        []string{"PATH=/usr/bin:/bin"},
 		Stderr:     os.Stderr,
-		DevMode:    true,
 	})
 	if err == nil {
 		inst.Kill()
@@ -488,7 +486,7 @@ func TestE2EZeroPermissionPluginServes(t *testing.T) {
 // caller, so that shutdown ordering stays explicit — main.go calls
 // registry.DrainAll for exactly this. No test did, and the processes outlive
 // the test binary: Pdeathsig is Linux-only and every test here runs in
-// DevMode, which skips it even there.
+// DevMode, which skipped it even there.
 //
 // Nothing failed as a result, which is why it went unnoticed. It showed up as
 // 5192 stray plugin processes on the development machine, each holding the

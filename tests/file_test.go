@@ -108,7 +108,6 @@ func fileStack(t *testing.T, key string, granted []string) (inst *pluginhost.Ins
 		GrantedPermissions: granted,
 		Env:                []string{"PATH=/usr/bin:/bin"},
 		Stderr:             os.Stderr,
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)

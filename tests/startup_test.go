@@ -32,7 +32,6 @@ func newManagerOver(t *testing.T, root string, cfg map[string]string) (*pluginho
 	mgr := pluginhost.NewManager(pluginhost.ManagerConfig{
 		Dir:         root,
 		DataDirRoot: filepath.Join(root, "data"),
-		DevMode:     true,
 		// A short poll so a watcher notices its instance is gone promptly.
 		// With the production default of one second, a test measuring what is
 		// left after a teardown would be sampling between two polls.
@@ -223,7 +222,6 @@ func TestFailedConfigureIsNotPublished(t *testing.T) {
 	mgr := pluginhost.NewManager(pluginhost.ManagerConfig{
 		Dir:         root,
 		DataDirRoot: filepath.Join(root, "data"),
-		DevMode:     true,
 		// The fixture refuses to become ready when this is set, which is how a
 		// plugin reports that its own start-up failed.
 		BaseEnv: []string{"PATH=/usr/bin:/bin", "ECHO_FAIL_CONFIGURE=1"},

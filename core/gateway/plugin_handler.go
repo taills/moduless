@@ -313,14 +313,23 @@ func (h *PluginHandler) callBackend(ctx context.Context, snap *pluginhost.Snapsh
 	// decision is unchanged — this is still the same plugin serving the same
 	// path — only the process behind it has been replaced, which is exactly
 	// what a zero-downtime upgrade is supposed to be invisible about.
+	live := false
 	if cur := h.Registry.Current(); cur != nil {
-		if next, ok2 := cur.Pick(key); ok2 && next != inst {
-			if rc.Admit(key, next.BeginRequest) {
-				return h.dispatch(ctx, next, sub, rc)
-			}
+		next, ok2 := cur.Pick(key)
+		live = ok2
+		if ok2 && next != inst && rc.Admit(key, next.BeginRequest) {
+			return h.dispatch(ctx, next, sub, rc)
 		}
 	}
-	return nil, &pluginUnavailableError{key: key, gone: !ok}
+
+	// Gone or merely unavailable is a question about now, not about the
+	// snapshot this request arrived with. Reading it from that snapshot said
+	// 503 — try again shortly — for a plugin an operator had switched off and
+	// which the registry no longer knows about at all, so the retry is against
+	// something that is not coming back until somebody enables it. Disable
+	// removes before it drains for exactly this reason; the answer has to
+	// follow.
+	return nil, &pluginUnavailableError{key: key, gone: !live}
 }
 
 // dispatch performs the backend call against an admitted instance.

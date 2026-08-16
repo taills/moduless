@@ -37,7 +37,6 @@ func configuredManager(t *testing.T, root string) (*Manager, map[string]map[stri
 		Dir:          root,
 		DataDirRoot:  filepath.Join(root, ".data"),
 		DrainTimeout: 2 * time.Second,
-		DevMode:      true,
 		ConfigSource: func(key string) map[string]string { return stored[key] },
 	}, reg, func(pkg *Package) pb.HostServicesServer {
 		return &managerConfigHost{mgr: mgr, key: pkg.Key()}
@@ -316,7 +315,6 @@ func TestStatusReportsQueueDepth(t *testing.T) {
 		Dir:          root,
 		DataDirRoot:  filepath.Join(root, ".data"),
 		DrainTimeout: time.Second,
-		DevMode:      true,
 		QueueDepth: func(key string) int64 {
 			if key == "alpha" {
 				return 4200

@@ -61,7 +61,6 @@ func stackOf(t *testing.T, config map[string]map[string]string, names ...string)
 	mgr = pluginhost.NewManager(pluginhost.ManagerConfig{
 		Dir:         root,
 		DataDirRoot: filepath.Join(root, "data"),
-		DevMode:     true,
 		Supervisor:  pluginhost.SupervisorConfig{PollInterval: 20 * time.Millisecond},
 		ConfigSource: func(key string) map[string]string {
 			out, _ := cfg.Get(context.Background(), key)

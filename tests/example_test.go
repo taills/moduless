@@ -97,7 +97,6 @@ func exampleStack(t *testing.T, config map[string]string) (url string, mgr *plug
 	mgr = pluginhost.NewManager(pluginhost.ManagerConfig{
 		Dir:         root,
 		DataDirRoot: filepath.Join(root, "data"),
-		DevMode:     true,
 		ConfigSource: func(key string) map[string]string {
 			out, _ := cfg.Get(context.Background(), key)
 			return out
@@ -375,7 +374,6 @@ func TestExamplesStart(t *testing.T) {
 			mgr := pluginhost.NewManager(pluginhost.ManagerConfig{
 				Dir:         root,
 				DataDirRoot: filepath.Join(root, "data"),
-				DevMode:     true,
 			}, reg, func(pkg *pluginhost.Package) pb.HostServicesServer {
 				return hostsvc.New(pkg.Key(), pkg.Manifest.Permissions, hostsvc.Deps{
 					Config: cfg,

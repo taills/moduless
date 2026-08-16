@@ -53,7 +53,6 @@ func barePlugin(t *testing.T, key string) *pluginhost.Instance {
 		GrantedPermissions: granted,
 		Env:                []string{"PATH=/usr/bin:/bin"},
 		Stderr:             nil,
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch %s: %v", key, err)
@@ -243,7 +242,6 @@ func TestPluginSurvivesDatabaseOutage(t *testing.T) {
 		GrantedPermissions: []string{"db"},
 		Env:                []string{"PATH=/usr/bin:/bin"},
 		Stderr:             os.Stderr,
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)

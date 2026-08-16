@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"errors"
 	"fmt"
 	"github.com/taills/moduless/core/hostsvc"
 	"go/ast"
@@ -217,11 +218,27 @@ func TestBuildOutputNamesAreIgnored(t *testing.T) {
 		"notes", "ratelimit", "audit", "inventory", "apikey", "echoplugin",
 	} {
 		t.Run(name, func(t *testing.T) {
-			out, err := exec.Command("git", "check-ignore", "-q", filepath.Join("..", name)).CombinedOutput()
-			if err != nil {
-				t.Errorf("./%s is not ignored, so `go build ./extension-example/%s` "+
-					"leaves something a `git add -A` will commit: %s", name, name, out)
+			// Three outcomes, not two. git check-ignore exits 0 for ignored and
+			// 1 for not — but it also exits 127 when git is missing and 128
+			// outside a repository, and reading either of those as "not
+			// ignored" reports the thing being checked as broken when the
+			// check simply could not run. That is what happened in the Linux
+			// container: golang:alpine ships no git, and this test failed
+			// there claiming the build outputs were unignored.
+			cmd := exec.Command("git", "check-ignore", "-q", filepath.Join("..", name))
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				return // ignored, which is what we want
 			}
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) {
+				t.Skipf("cannot run git here (%v), so this cannot be checked", err)
+			}
+			if exit.ExitCode() != 1 {
+				t.Skipf("git could not answer (exit %d): %s", exit.ExitCode(), out)
+			}
+			t.Errorf("./%s is not ignored, so `go build ./extension-example/%s` "+
+				"leaves something a `git add -A` will commit: %s", name, name, out)
 		})
 	}
 }

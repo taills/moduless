@@ -67,7 +67,6 @@ func depthLimitedSyncer(t *testing.T, maxDepth int64, sample time.Duration, repl
 			GrantedPermissions: []string{"lock", "queue"},
 			Config:             cfg,
 			Env:                []string{"PATH=/usr/bin:/bin"},
-			DevMode:            true,
 		})
 		if err != nil {
 			t.Fatalf("launching replica %d: %v", i, err)

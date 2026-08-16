@@ -62,10 +62,6 @@ type ManagerConfig struct {
 	// within a window put a plugin into quarantine. The zero value uses
 	// DefaultSupervisorConfig.
 	Supervisor SupervisorConfig
-
-	// DevMode relaxes process isolation for local development. Never in
-	// production: see the sandbox notes.
-	DevMode bool
 }
 
 // Status is one plugin's state, for the admin console.
@@ -494,7 +490,6 @@ func (m *Manager) launchOne(ctx context.Context, pkg *Package, index int) (*Inst
 		Env:                m.envFor(pkg, dataDir),
 		Stdout:             os.Stderr,
 		Stderr:             os.Stderr,
-		DevMode:            m.cfg.DevMode,
 	})
 }
 

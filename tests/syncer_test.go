@@ -67,10 +67,9 @@ func syncerReplicas(t *testing.T, handle *sql.DB, n int) {
 			// from LaunchSpec.Config and GetConfig from Deps.Config, and a
 			// plugin configured through only one of them behaves as if it were
 			// not configured at all.
-			Config:  cfg,
-			Env:     []string{"PATH=/usr/bin:/bin"},
-			Stderr:  os.Stderr,
-			DevMode: true,
+			Config: cfg,
+			Env:    []string{"PATH=/usr/bin:/bin"},
+			Stderr: os.Stderr,
 		})
 		if err != nil {
 			t.Fatalf("launching replica %d: %v", i, err)

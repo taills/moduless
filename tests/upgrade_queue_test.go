@@ -83,7 +83,6 @@ func launchSyncer(t *testing.T, deps hostsvc.Deps, binary, instanceID, version s
 		GrantedPermissions: []string{"lock", "queue"},
 		Config:             map[string]string{"lock_wait_seconds": "30", "work_seconds": "2"},
 		Env:                []string{"PATH=/usr/bin:/bin"},
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launching %s: %v", instanceID, err)

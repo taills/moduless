@@ -72,7 +72,6 @@ func queueStack(t *testing.T, key string, granted []string, config map[string]st
 		Config:             config,
 		Env:                []string{"PATH=/usr/bin:/bin"},
 		Stderr:             os.Stderr,
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch %s: %v", key, err)
@@ -222,7 +221,6 @@ func TestEventsCrossPluginBoundary(t *testing.T) {
 			Config:             config,
 			Env:                []string{"PATH=/usr/bin:/bin"},
 			Stderr:             os.Stderr,
-			DevMode:            true,
 		})
 		if err != nil {
 			t.Fatalf("launch %s: %v", key, err)
@@ -310,7 +308,6 @@ func TestTransactionSurvivesPluginDeath(t *testing.T) {
 		GrantedPermissions: []string{"db", "db:tx"},
 		Env:                []string{"PATH=/usr/bin:/bin"},
 		Stderr:             os.Stderr,
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)
@@ -396,7 +393,6 @@ func TestTransactionSpansMultipleCalls(t *testing.T) {
 		GrantedPermissions: []string{"db", "db:tx"},
 		Env:                []string{"PATH=/usr/bin:/bin"},
 		Stderr:             os.Stderr,
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)

@@ -45,7 +45,6 @@ func launchSharedReplicas(t *testing.T, key string, n int, deps hostsvc.Deps) []
 			GrantedPermissions: []string{"lock"},
 			Env:                []string{"PATH=/usr/bin:/bin"},
 			Stderr:             os.Stderr,
-			DevMode:            true,
 		})
 		if err != nil {
 			t.Fatalf("launching replica %d: %v", i, err)

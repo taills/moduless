@@ -327,7 +327,6 @@ func TestQuarantineIsVisibleInStatus(t *testing.T) {
 	mgr := pluginhost.NewManager(pluginhost.ManagerConfig{
 		Dir:         root,
 		DataDirRoot: filepath.Join(root, "data"),
-		DevMode:     true,
 		Supervisor: pluginhost.SupervisorConfig{
 			PollInterval:   20 * time.Millisecond,
 			InitialBackoff: 10 * time.Millisecond,

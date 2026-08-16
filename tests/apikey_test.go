@@ -66,7 +66,6 @@ func authPlugin(t *testing.T, root string, granted []string) (*pluginhost.Instan
 		}),
 		GrantedPermissions: granted,
 		Env:                []string{"PATH=/usr/bin:/bin"},
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)

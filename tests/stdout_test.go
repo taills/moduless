@@ -39,9 +39,8 @@ func launchWithEnv(t *testing.T, key string, env ...string) (*pluginhost.Instanc
 		HostImpl: hostsvc.New(key, nil, hostsvc.Deps{
 			Config: hostsvc.NewStaticConfig(),
 		}),
-		Env:     append([]string{"PATH=/usr/bin:/bin"}, env...),
-		Stderr:  os.Stderr,
-		DevMode: true,
+		Env:    append([]string{"PATH=/usr/bin:/bin"}, env...),
+		Stderr: os.Stderr,
 	})
 	if err == nil {
 		t.Cleanup(inst.Kill)

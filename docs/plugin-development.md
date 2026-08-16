@@ -1203,7 +1203,7 @@ Core 是插件的父进程，这带来两个必须知道的行为：
 
 ```bash
 # 起 Core（不带数据库也能跑，数据类能力会报 Unavailable）
-PLUGIN_DIR=./plugins PLUGIN_DEV_MODE=1 go run ./core
+PLUGIN_DIR=./plugins go run ./core
 
 # 改完插件后重新构建并在控制台点「重载」
 CGO_ENABLED=0 go build -o plugins/notes/bin/plugin ./myplugin
@@ -1211,7 +1211,14 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   http://localhost/api/system/plugins/notes/upgrade
 ```
 
-`PLUGIN_DEV_MODE=1` 会跳过 `Pdeathsig`，这样 air 重编译 Core 时不会连带冷启动所有插件。生产环境不要开 —— 没有 `Pdeathsig`，Core 崩溃会留下孤儿进程。
+**插件的生命周期绑在 Core 上**：Linux 上通过 `Pdeathsig`，Core 一死内核就杀掉插件。
+
+曾经有个 `PLUGIN_DEV_MODE=1` 可以跳过它，理由是「air 重编译 Core 时不必冷启动所有插件」。两次实测否掉了这个理由，所以它被删掉了：
+
+- **新 Core 不会复用活着的插件。**没有任何地方用 go-plugin 的 `ReattachConfig`，所以新 Core 一定会 exec 一个新进程 —— 实测重启前 1 个插件进程，重启后 2 个。省下的冷启动并不存在。
+- **优雅重启本来就会排空。**air 发的是 SIGINT/SIGTERM，Core 会走 `registry.DrainAll`。所以跳过 `Pdeathsig` 只在 Core **非优雅死亡**时才生效，而那正是留下孤儿的唯一场景。
+
+顺带说明为什么插件自己没法察觉：go-plugin 把**父进程自己的 stdin** 交给子进程（`cmd.Stdin = os.Stdin`），而不是一根管道，所以 Core 死掉时插件不会看到 EOF。除了 `Pdeathsig` 之外没有别的信号。macOS 上根本没有 `Pdeathsig` —— 开发机上 Core 硬退出后留下的插件进程需要手工清理。
 
 ### 环境变量
 
@@ -1220,4 +1227,3 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 | `PLUGIN_DIR` | `./plugins` | 插件包目录 |
 | `PLUGIN_DATA_DIR` | 空 | 每插件私有可写目录的根 |
 | `PLUGIN_LOG_LEVEL` | `warn` | 插件日志级别 |
-| `PLUGIN_DEV_MODE` | 关 | 跳过 Pdeathsig，仅开发用 |

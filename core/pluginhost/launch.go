@@ -69,12 +69,6 @@ type LaunchSpec struct {
 
 	// ConfigureTimeout bounds the initial Configure call.
 	ConfigureTimeout time.Duration
-
-	// DevMode skips Pdeathsig, because air restarts Core on every rebuild and
-	// taking every plugin down with it makes the edit loop painful. Leave it
-	// off in production: without Pdeathsig a crashed Core leaves orphaned
-	// plugin processes behind.
-	DevMode bool
 }
 
 // Instance is defined in instance.go; Launch returns one that is already

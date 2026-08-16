@@ -44,7 +44,6 @@ func egressPlugin(t *testing.T, key string, granted, allow []string) *pluginhost
 		GrantedPermissions: granted,
 		Env:                []string{"PATH=/usr/bin:/bin"},
 		Stderr:             os.Stderr,
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch %s: %v", key, err)

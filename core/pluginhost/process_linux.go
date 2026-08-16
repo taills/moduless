@@ -31,11 +31,24 @@ func applyProcessAttrs(cmd *exec.Cmd, spec LaunchSpec) {
 	// crash leaves orphaned plugin processes holding their sockets and memory,
 	// and the next Core start finds them still running.
 	//
-	// Development skips it: air restarts Core on every rebuild, and taking
-	// every plugin down with it makes the edit loop painful.
-	if !spec.DevMode {
-		attr.Pdeathsig = syscall.SIGKILL
-	}
+	// Unconditional now. It used to be skipped in development, on the argument
+	// that air restarts Core on every rebuild and taking the plugins down each
+	// time makes the edit loop painful. Two measurements say that trade bought
+	// nothing:
+	//
+	//   - A second Core does not reattach to a surviving plugin. Nothing uses
+	//     go-plugin's ReattachConfig, so the new Core execs a fresh process and
+	//     the old one is simply abandoned — measured, one plugin before the
+	//     restart and two after.
+	//   - A graceful restart, which is what air does, already drains every
+	//     plugin through main.go's registry.DrainAll. So the skip only ever
+	//     took effect when Core died *without* draining, which is precisely
+	//     the case where an orphan is pure cost.
+	//
+	// go-plugin offers nothing else here: it hands the child the parent's own
+	// stdin rather than a pipe (client.go: cmd.Stdin = os.Stdin), so a plugin
+	// never sees EOF when Core dies and has no way to notice on its own.
+	attr.Pdeathsig = syscall.SIGKILL
 
 	cmd.SysProcAttr = attr
 }

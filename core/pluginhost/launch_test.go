@@ -78,7 +78,6 @@ func launchEcho(t testing.TB, env ...string) *Instance {
 		GrantedPermissions: []string{"db", "cache"},
 		Stdout:             os.Stderr,
 		Stderr:             os.Stderr,
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)
@@ -171,7 +170,6 @@ func TestLaunchRejectsTamperedBinary(t *testing.T) {
 		HostImpl:   &stubHost{},
 		Env:        []string{"PATH=/usr/bin:/bin"},
 		Stderr:     os.Stderr,
-		DevMode:    true,
 	})
 	if err == nil {
 		inst.Kill()
@@ -195,7 +193,6 @@ func TestConfigureFailureKillsProcess(t *testing.T) {
 		HostImpl:   &stubHost{},
 		Env:        []string{"PATH=/usr/bin:/bin", "ECHO_FAIL_CONFIGURE=1"},
 		Stderr:     os.Stderr,
-		DevMode:    true,
 	})
 	if err == nil {
 		inst.Kill()

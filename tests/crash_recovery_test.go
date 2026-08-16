@@ -66,7 +66,6 @@ func crashableSyncer(t *testing.T, work string, maintenance time.Duration) (*db.
 			GrantedPermissions: []string{"lock", "queue"},
 			Config:             cfg,
 			Env:                []string{"PATH=/usr/bin:/bin"},
-			DevMode:            true,
 		})
 		if err != nil {
 			t.Fatalf("launching: %v", err)

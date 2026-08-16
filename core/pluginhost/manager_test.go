@@ -59,7 +59,6 @@ func newTestManager(t *testing.T, root string) (*Manager, *Registry) {
 		Dir:          root,
 		DataDirRoot:  filepath.Join(root, ".data"),
 		DrainTimeout: 2 * time.Second,
-		DevMode:      true,
 	}, reg, func(*Package) pb.HostServicesServer {
 		return &stubHost{config: map[string]string{"greeting": "hi"}}
 	})
@@ -383,7 +382,7 @@ func TestManagerLaunchesDeclaredReplicas(t *testing.T) {
 // Close deliberately leaves draining to the caller so that shutdown ordering
 // stays explicit — main.go calls registry.DrainAll for exactly this. No test
 // here did, and on darwin the processes outlive the test binary: Pdeathsig is
-// Linux-only, and every test runs in DevMode, which skips it even there. It
+// Linux-only, and these tests ran in DevMode, which skipped it even there. It
 // failed nothing and showed up as thousands of stray plugin processes on the
 // development machine.
 //

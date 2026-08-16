@@ -118,7 +118,6 @@ func TestReverseChannelBreakdown(t *testing.T) {
 		}),
 		GrantedPermissions: []string{"db"},
 		Env:                []string{"PATH=/usr/bin:/bin"},
-		DevMode:            true,
 	})
 	if err != nil {
 		t.Fatalf("launch: %v", err)

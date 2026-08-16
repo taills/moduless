@@ -22,7 +22,6 @@ Core 是**单实例**设计。韧性来自进程守护重启 Core、以及 Core 
 | `PLUGIN_DIR` | `./plugins` | 插件包目录 |
 | `PLUGIN_DATA_DIR` | — | 每插件私有可写目录的根 |
 | `PLUGIN_LOG_LEVEL` | `warn` | 插件日志级别 |
-| `PLUGIN_DEV_MODE` | 关 | 跳过 `Pdeathsig`，**仅开发用** |
 | `HOST_FRONTEND_DIR` | `./core/frontend/dist` | 控制台构建产物 |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `admin123` | 首次启动播种 |
 | `RUSTFS_ENDPOINT` / `RUSTFS_BUCKET` / `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | — | 对象存储，四者齐全才启用 |

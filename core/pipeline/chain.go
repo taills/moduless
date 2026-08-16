@@ -85,6 +85,14 @@ type Chain struct {
 	// entirely when no filter anywhere asked for one.
 	anyNeedsRequestBody bool
 	maxRequestBody      int
+
+	// anyNeedsResponseBody decides whether a response Core serves itself is
+	// captured on its way out. Capturing used to follow "is there a
+	// post_handler filter", which is not the same question: a log filter that
+	// declared needs_response_body was handed a body on plugin routes and an
+	// empty one on Core's own, so an audit plugin had a hole exactly over the
+	// users, files and plugin-management APIs.
+	anyNeedsResponseBody bool
 }
 
 // EmptyChain is the chain used when no plugin declares a filter.
@@ -134,6 +142,9 @@ func BuildChain(plugins []PluginFilters, defaults Defaults) (*Chain, error) {
 					c.maxRequestBody = f.MaxBody
 				}
 			}
+			if cf.Decl.NeedsResponseBody {
+				c.anyNeedsResponseBody = true
+			}
 			c.phases[phase] = append(c.phases[phase], f)
 		}
 	}
@@ -173,6 +184,9 @@ func (c *Chain) Filters(phase pb.Phase) []*Filter {
 // NeedsRequestBody reports whether any filter asked to see request bodies. The
 // gateway uses it to decide whether to buffer at all.
 func (c *Chain) NeedsRequestBody() bool { return c.anyNeedsRequestBody }
+
+// NeedsResponseBody reports whether any filter asked to see response bodies.
+func (c *Chain) NeedsResponseBody() bool { return c.anyNeedsResponseBody }
 
 // MaxRequestBodyBytes is the largest body any filter is willing to receive.
 func (c *Chain) MaxRequestBodyBytes() int { return c.maxRequestBody }

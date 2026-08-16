@@ -175,7 +175,11 @@ func (h *PluginHandler) serve(w http.ResponseWriter, r *http.Request, next http.
 			next.ServeHTTP(w, requestWithContext(r, rc))
 			return
 		}
-		rec := newRecorder(w, chain.HasPhase(pb.Phase_PHASE_POST_HANDLER))
+		// Capture when somebody asked for the body, not when a post_handler
+		// filter happens to exist. Those came apart for the log phase: a filter
+		// declaring needs_response_body got one on plugin routes and an empty
+		// one here, so auditing was blind to the responses of Core's own API.
+		rec := newRecorder(w, chain.NeedsResponseBody())
 		next.ServeHTTP(rec, requestWithContext(r, rc))
 		rc.ResponseStatus = rec.status
 		rc.ResponseHeader = rec.Header()

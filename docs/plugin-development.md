@@ -899,6 +899,12 @@ sdk.PhasePreRoute: func(ctx context.Context, req *sdk.FilterRequest) (*sdk.Filte
 
 **不在响应侧执行这个上限是有意的，不是遗漏。** 如果照请求侧的规则执行，「超限就跳过」在响应侧的含义是：一个大响应会跳过脱敏 filter，**未脱敏地发出去** —— 而调用者只要多要几行就能触发。想控制响应体的开销，办法是把 `match` 收窄到真正返回敏感数据的路由（`extension-example/redact` 就是这么做的），而不是声明一个数字。
 
+**`post_handler` 不会在 Core 自己的路由上运行。**filter 是全局的 —— `pre_route` 和 `log` 对 `/api/system/*` 这类 Core 自己处理的请求同样会跑 —— 但 `post_handler` 只在**插件后端**的响应上运行。
+
+原因是时序而不是遗漏：Core 自己的路由是**边产生边写给客户端**的（必须如此，否则包一层 ResponseWriter 会遮掉 `http.Flusher`，把控制台赖以实时感知插件启停的 SSE 变成卡住的流）。等到 `post_handler` 能运行时，客户端早就收到了，改也改不动。插件后端不一样：Core 在写出任何东西之前就拿到了完整响应，所以那里能改。
+
+**要观察 Core 自己的响应，用 `log` 阶段** —— 它会跑，而且声明 `needs_response_body: true` 就能拿到响应体（这一条曾经不成立：响应捕获跟的是「有没有 post_handler filter」而不是「有没有人要响应体」，所以审计插件在插件路由上拿得到、在 Core 的用户/文件/插件管理 API 上拿到的是空的）。
+
 **改写响应体走的是另一条路，而且不显然。**`Mutate()` 只能改头、路径、身份和 context —— **没有改响应体的方法**。看 mutation 的 API 会以为改不了。
 
 改法是在 `post_handler` 里 **`Stop()`**：这个阶段后端已经答完了，没有东西可以「拒绝」，所以短路的语义变成了**替换那个答案**。

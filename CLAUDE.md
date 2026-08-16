@@ -129,13 +129,18 @@ plugins. Enable, disable, reload and rescan are admin API calls under
 `/api/system/plugins/*`, surfaced in the console under 插件管理.
 
 See [docs/plugin-development.md](docs/plugin-development.md) for the author's
-guide. Three rules matter most, because each fails in a way that does not point
-at its cause:
+guide. Three rules matter most:
 
-1. **A plugin must never write to stdout.** go-plugin reads the startup
-   handshake from the first stdout line.
+1. **A plugin must not write to stdout before `sdk.Serve`.** go-plugin reads
+   the startup handshake from the first stdout line, so anything printed
+   earlier replaces it and the plugin never starts. Measured: the failure does
+   point at its cause — go-plugin quotes the offending line back
+   (`handshake failed: Unrecognized remote plugin message: <your output>`).
+   Writing to stdout after the handshake is survivable, so the rule is about
+   start-up; use stderr anyway, since `sdk.Log` carries the trace id.
 2. **Plugins must be built with `CGO_ENABLED=0`.** A dynamically linked binary
-   fails to exec in the musl-based runtime image.
+   fails to exec in the musl-based runtime image, and that one does not point
+   at its cause.
 3. **Deploying a new version must replace the binary, not overwrite it.** The
    previous version is still serving until the upgrade commits, and writing
    into a file that is executing corrupts that process. Use `mv`, not `cp`.

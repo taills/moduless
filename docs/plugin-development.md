@@ -54,7 +54,17 @@ hello/
 
 **一、绝不向 stdout 写任何东西。**
 
-Core 从插件 stdout 的第一行读取启动握手。一个 `fmt.Println` 就会让插件启动失败，且错误信息不会指向真正的原因。用 `sdk.Log` 或标准库 `log`（默认走 stderr，Core 会捕获）。
+Core 从插件 stdout 的**第一行**读取启动握手，所以 `sdk.Serve` 之前的一个 `fmt.Println` 会顶替掉握手，插件起不来。用 `sdk.Log` 或标准库 `log`（默认走 stderr，Core 会捕获）。
+
+**好消息是这个错误会指着你的鼻子说**：go-plugin 会把它读到的那一行原样放进错误里。实测输出：
+
+```
+plugin noisy: handshake failed: Unrecognized remote plugin message: debugging: about to start
+```
+
+后半句就是插件自己打的那行。看到自己写的调试字符串出现在启动失败信息里，基本不用再查了。
+
+**握手完成之后写 stdout 不致命** —— 实测插件继续正常服务，连续二十个请求无异常（`tests/stdout_test.go`）。所以这条规则实际是关于**启动阶段**的。但仍然不建议：go-plugin 会把子进程 stdout 转发进 Core 的日志，混在结构化日志里，而 `sdk.Log` 带 trace-id、能被过滤、能汇聚。
 
 **二、必须 `CGO_ENABLED=0`。**
 

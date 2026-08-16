@@ -665,7 +665,26 @@ func main() {
 		return
 	}
 
+	// ECHO_STDOUT_BEFORE writes to stdout before the handshake, which is the
+	// mistake the plugin guide calls its first rule: go-plugin reads the
+	// handshake from the child's first stdout line, so a stray fmt.Println
+	// during start-up replaces it. Modelled here so a test can see what Core
+	// reports, which is the part that decides whether an author can find it.
+	if os.Getenv("ECHO_STDOUT_BEFORE") == "1" {
+		fmt.Println("debugging: about to start")
+	}
+
 	impl := &echoImpl{}
+	// ECHO_STDOUT_AFTER writes once the handshake is done. Whether that is
+	// also fatal is a separate question from the one above, and the guide
+	// states the rule without distinguishing them.
+	if os.Getenv("ECHO_STDOUT_AFTER") == "1" {
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			fmt.Println("chatty plugin says hello")
+		}()
+	}
+
 	pluginapi.Serve(pluginapi.ServeConfig{
 		Impl:       impl,
 		HostBinder: impl.bindHost,

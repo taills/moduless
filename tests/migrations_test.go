@@ -223,3 +223,46 @@ func migrationsAfter(t *testing.T, n int) int {
 	}
 	return count
 }
+
+// InitDB migrates the database it opens, always.
+//
+// docs/deployment.md now tells an operator that restoring an older dump is not
+// enough — they have to run a Core whose embedded migrations match, because
+// starting the current one puts the schema straight back. That is only true
+// while InitDB keeps migrating unconditionally, and a skip flag added later
+// would make the documentation quietly wrong at the moment somebody is
+// following it under pressure.
+func TestInitDBMigratesTheDatabase(t *testing.T) {
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+
+	admin, err := sql.Open("postgres", url)
+	if err != nil {
+		t.Fatalf("connecting: %v", err)
+	}
+	defer admin.Close()
+
+	const scratch = "moduless_open_migrates"
+	if _, err := admin.Exec(`DROP DATABASE IF EXISTS ` + scratch); err != nil {
+		t.Skipf("cannot manage databases as this user: %v", err)
+	}
+	if _, err := admin.Exec(`CREATE DATABASE ` + scratch); err != nil {
+		t.Skipf("cannot create a scratch database: %v", err)
+	}
+	t.Cleanup(func() { _, _ = admin.Exec(`DROP DATABASE IF EXISTS ` + scratch) })
+
+	// Empty database, opened the way Core opens it.
+	conn, err := db.InitDB(replaceDatabase(url, scratch))
+	if err != nil {
+		t.Fatalf("InitDB: %v", err)
+	}
+	defer conn.Close()
+
+	if !tableExists(t, conn, "system_users") {
+		t.Error("InitDB left the database unmigrated; if that is now deliberate, the " +
+			"restore procedure in docs/deployment.md needs rewriting, because it " +
+			"tells operators to pin the Core version precisely because this happens")
+	}
+}

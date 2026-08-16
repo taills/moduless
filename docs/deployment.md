@@ -194,6 +194,42 @@ WantedBy=multi-user.target
 
 不需要备份的：Core 自身无状态。
 
+### 怎么备份
+
+```bash
+# 数据库。-Fc 是自定义格式，pg_restore 能选择性恢复单张表
+docker exec <pg-容器> pg_dump -U moduless -d moduless -Fc > moduless-$(date +%F).dump
+
+# 插件包与插件的私有文件
+tar czf plugins-$(date +%F).tgz "$PLUGIN_DIR" "$PLUGIN_DATA_DIR"
+```
+
+对象存储按你的供应商方式备份（MinIO 用 `mc mirror`，S3 用版本控制或跨区复制）。
+
+### 怎么恢复
+
+```bash
+docker exec <pg-容器> psql -U moduless -d postgres -c 'CREATE DATABASE moduless_restored'
+docker exec -i <pg-容器> pg_restore -U moduless -d moduless_restored < moduless-2026-08-16.dump
+```
+
+**恢复到一个更早的 schema 时，必须同时把 Core 版本退回去。**
+
+这一条反直觉，而且很容易在事后才发现：Core 启动时**无条件**执行内嵌的迁移（`db.InitDB` 里直接调 `RunMigrations`，没有跳过的开关）。所以恢复一份旧转储之后启动当前版本的 Core，它会立刻把 schema 迁回最新 —— 你刚刚恢复的那次回退当场被撤销。
+
+正确的顺序是：
+
+1. 停掉 Core
+2. 恢复数据库
+3. **启动与该转储 schema 匹配的那个 Core 镜像**（而不是 `latest`）
+4. 确认无误后，再逐步升到新版本
+
+### 能不能只回滚 schema
+
+部分可以。`000008` 之前的迁移**不可回滚** —— 它删掉了旧的 extension 相关表，重建只会得到空壳而不是数据，所以它会明确拒绝并提示从备份恢复。它之后的迁移可以正常来回滚（`tests/migrations_test.go` 每次都验证这一点）。
+
+也就是说：**回滚 schema 能解决「刚升级完发现新迁移有问题」，解决不了「想回到几个版本之前」** —— 后者只能靠备份。
+
 ## 升级 Core
 
 ```bash

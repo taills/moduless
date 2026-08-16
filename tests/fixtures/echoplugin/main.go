@@ -462,7 +462,23 @@ func (e *echoImpl) Filter(_ context.Context, req *pb.FilterRequest) (*pb.FilterR
 	}
 }
 
-func (e *echoImpl) RunJob(_ context.Context, req *pb.JobRequest) (*pb.JobResponse, error) {
+func (e *echoImpl) RunJob(ctx context.Context, req *pb.JobRequest) (*pb.JobResponse, error) {
+	// ECHO_SLOW_JOB models the thing the notes example warns about: a job that
+	// takes far longer than a drain is willing to wait. Whether the drain
+	// waits for it or cuts it off is the question, and the README asserted an
+	// answer nobody had checked.
+	if d := os.Getenv("ECHO_SLOW_JOB"); d != "" {
+		wait, err := time.ParseDuration(d)
+		if err == nil {
+			select {
+			case <-time.After(wait):
+				log.Printf("echoplugin: slow job %s finished", req.GetJobName())
+			case <-ctx.Done():
+				log.Printf("echoplugin: slow job %s cut off: %v", req.GetJobName(), ctx.Err())
+				return nil, ctx.Err()
+			}
+		}
+	}
 	log.Printf("echoplugin: job %s trace=%s", req.GetJobName(), req.GetTraceId())
 	return &pb.JobResponse{Success: true}, nil
 }

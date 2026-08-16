@@ -33,7 +33,11 @@ _, _, err = sdk.Queue.Publish(ctx, "summaries", summary,
     sdk.WithDedupKey(fmt.Sprintf("summary-%d", job.Scheduled)))
 ```
 
-job 的 handler 在跑的时候占着这个插件的一个请求名额，排空要等它 —— 所以一个跑十分钟的夜间汇总会让那十分钟里的升级卡住。把结果投进队列，job 本身就是毫秒级的。
+job 的 handler 在跑的时候占着这个插件的一个请求名额，排空会等它 —— **但只等排空超时那么久（默认 30 秒），到点就把它砍掉。**
+
+所以一个跑十分钟的夜间汇总，遇到升级不是「让升级等十分钟」，而是**它自己被拦腰砍断**。实测（`tests/job_drain_test.go`）：一个 10 秒的 job 配 400ms 的排空，排空 403ms 就返回，报 `drain timed out after 400ms with 1 request(s) in flight`。
+
+这是正确性问题不是性能问题：一个跑到一半被杀掉的汇总，如果不是幂等的，留下的是半成品。把结果投进队列，job 本身就是毫秒级的 —— 队列有至少一次投递保证，被砍掉的那次会重来。
 
 去重键用的是 `job.Scheduled` 而不是 `time.Now()`：那是这次运行**本该**发生的时刻。Core 忙、插件刚重启、任务排队都会让实际执行晚于计划，而按「本该的时刻」去重，重跑同一个占位的任务不会产生第二份汇总。
 

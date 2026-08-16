@@ -481,6 +481,17 @@ req = req.WithContext(sdk.WithUser(req.Context(), &sdk.UserContext{
 
 **`OnShutdown` 能用多久**：Core 用的是排空超时（`DrainTimeout`，默认 30 秒），`OnShutdown` 在这段预算之内。写一个比它短的内部超时，别让 `wg.Wait()` 无限期挂住。
 
+### 定时任务与排空
+
+job 的 handler 在跑的时候占着这个插件的一个请求名额，所以停用或升级时的排空会等它 —— **但只等排空超时那么久（`DrainTimeout`，默认 30 秒），到点连同进程一起终止。**
+
+也就是说一个长任务遇到升级，结果不是「升级等它」，是**它被砍断**。实测：10 秒的 job 配 400ms 排空，排空 400ms 就放弃并报出还有一个请求在飞。
+
+对写 job 的人有两条推论：
+
+- **别把长活儿放在 job handler 里。**job 负责决定「该做什么」，做本身投进队列 —— 队列是至少一次投递，被砍掉的那次会重来，而 job handler 被砍掉就没了。
+- **无论如何都要幂等。**`job.Scheduled` 是这次运行本该发生的时刻，拿它当去重键：重跑同一个占位的任务不会产生第二份结果。
+
 ### 同一个阶段挂多个 filter
 
 manifest 里 `filters:` 是列表，同一个 phase 可以有多条 —— 不同的 `match`、不同的 `fail_closed`。Go 侧的 `Filters` 是 `map[sdk.Phase]sdk.FilterFunc`，一个 phase 一个函数，所以这几条声明**都会走进同一个函数**。用 `req.Name` 区分：

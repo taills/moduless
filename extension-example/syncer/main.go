@@ -40,9 +40,18 @@ func current() (lockWait, work time.Duration) {
 }
 
 // job is what gets queued: which account to pull.
+//
+// Requeues counts how many times this work has been put back for contention
+// rather than for failing. It has to travel in the payload because the queue's
+// own attempt counter cannot tell the two apart — see handleBusy.
 type job struct {
-	Account string `json:"account"`
+	Account  string `json:"account"`
+	Requeues int    `json:"requeues,omitempty"`
 }
+
+// maxRequeues bounds the shuffling. An account locked this many times running
+// is not busy, it is stuck, and the message should be allowed to fail visibly.
+const maxRequeues = 20
 
 func main() {
 	mux := http.NewServeMux()
@@ -98,7 +107,7 @@ func consume(ctx context.Context) {
 			return nil
 		}
 		sdk.Log.Info(ctx, "received", "id", m.ID, "account", j.Account, "replica", sdk.InstanceID())
-		return syncAccount(ctx, j.Account)
+		return syncAccount(ctx, j)
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		sdk.Log.Error(ctx, "consumer stopped", "err", err)
@@ -111,7 +120,8 @@ func consume(ctx context.Context) {
 // something global: two replicas syncing *different* accounts should both
 // proceed. A single lock named "sync" would be correct and would also make the
 // second replica pointless.
-func syncAccount(ctx context.Context, account string) error {
+func syncAccount(ctx context.Context, j job) error {
+	account := j.Account
 	lockWait, work := current()
 
 	// ttl covers the work with room to spare. If this process dies holding the
@@ -125,11 +135,7 @@ func syncAccount(ctx context.Context, account string) error {
 		return err
 	}
 	if !ok {
-		// Another replica has this account. Returning an error requeues the
-		// message with backoff, which is what you want: the work still needs
-		// doing, just not now and not here.
-		sdk.Log.Info(ctx, "account busy on another replica", "account", account)
-		return errBusy
+		return handleBusy(ctx, j)
 	}
 	defer func() {
 		if err := lease.Release(context.WithoutCancel(ctx)); err != nil {
@@ -170,6 +176,42 @@ func syncAccount(ctx context.Context, account string) error {
 	}
 }
 
+// handleBusy puts contended work back without spending a retry.
+//
+// Returning an error would be the obvious thing and it silently discards work:
+// the queue increments a message's attempt count when it is *claimed*, not
+// when it fails, so a message that keeps being picked up by a replica that
+// cannot get the lock burns its whole budget — five by default — and lands in
+// the dead-letter table having never failed. Measured: six messages for one
+// contended account, four dead within three seconds, each recorded as
+// "account is being synced by another replica", which reads like a diagnosis
+// of the work rather than the accounting artefact it is.
+//
+// So acknowledge this delivery and publish the work afresh. A new message
+// carries a new budget, which is right — being busy is not a failure — and
+// Requeues rides along so that genuinely stuck work still ends up somewhere
+// visible instead of circulating forever.
+func handleBusy(ctx context.Context, j job) error {
+	if j.Requeues >= maxRequeues {
+		sdk.Log.Error(ctx, "giving up on a permanently locked account",
+			"account", j.Account, "requeues", j.Requeues)
+		return errStuck
+	}
+
+	j.Requeues++
+	// context.WithoutCancel: this runs on the way out of a handler whose
+	// context may already be cancelled by a drain, and dropping the republish
+	// there would lose the work entirely.
+	if _, _, err := sdk.Queue.Publish(context.WithoutCancel(ctx), "accounts", j,
+		sdk.WithDelay(time.Second)); err != nil {
+		// Could not republish, so fall back to failing: at least the queue's
+		// own retry will bring it back.
+		return err
+	}
+	sdk.Log.Info(ctx, "account busy, requeued", "account", j.Account, "requeues", j.Requeues)
+	return nil
+}
+
 // doWork stands in for the external call.
 func doWork(ctx context.Context, account string, d time.Duration) error {
 	select {
@@ -181,6 +223,6 @@ func doWork(ctx context.Context, account string, d time.Duration) error {
 }
 
 var (
-	errBusy     = errors.New("account is being synced by another replica")
+	errStuck    = errors.New("account stayed locked across every requeue")
 	errLostLock = errors.New("lost the account lock mid-sync")
 )

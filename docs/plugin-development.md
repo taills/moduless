@@ -885,6 +885,16 @@ sdk.PhasePreRoute: func(ctx context.Context, req *sdk.FilterRequest) (*sdk.Filte
 
 `post_handler` 之后改写路径没有意义（后端已经跑完），Core 会忽略。
 
+### 升级会打断在途的消息，然后立刻重投
+
+插件升级时，正在处理的消息会怎样：Core 让旧进程排空 → `OnReady` 的 ctx 被取消 → handler 收到取消并返回 → SDK 把这条消息 **Nack** 掉 → **新版本立刻接手**。
+
+实测：一条 2 秒的任务在第 1 秒被升级打断，第 2 次投递由新版本在同一秒接手，总计 3.09 秒完成（`tests/upgrade_queue_test.go`）。消息的 `Attempt` 会 +1，所以**这是重复执行的一次** —— 至少一次投递的正常代价，handler 必须幂等。
+
+这条以前不成立，原因很不显眼：SDK 上报 Ack/Nack 用的是 **handler 自己那个已经被取消的 ctx**。而 handler 之所以返回错误，正是因为 ctx 被取消 —— 于是 Nack 在最需要它的时刻必然失败，消息保持 `processing` 状态卡住，只能等后台维护协程回收（Core 默认 30 秒跑一次、可见性超时 30 秒，最坏约一分钟）。现在 Ack/Nack 走一个**不受取消影响**的 ctx，另带 5 秒上限。
+
+**handler 要尊重 ctx。** 一个不看 `ctx.Done()` 的 handler 不会提前返回，会被 Core 在排空超时后直接杀掉 —— 那条消息就退回到「等回收器」的慢路径。
+
 ### `prefetch` 是「未确认的在途数」
 
 消费者一次只握住 `prefetch` 条**尚未确认**的消息（SDK 目前固定为 1：一次一条，处理完再要下一条）。

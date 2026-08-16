@@ -504,12 +504,31 @@ func (q *QueueClient) Consume(ctx context.Context, topic string, handler func(co
 		// The delivery gets its own trace, linked to the request that enqueued
 		// the work, so anything the handler does is attributable to both.
 		msgCtx := withTrace(ctx, msg.GetTraceId())
-		if err := handler(msgCtx, m); err != nil {
-			_, _ = q.c.Nack(outgoing(msgCtx), &pb.NackRequest{MessageId: m.ID, Error: err.Error()})
+		err = handler(msgCtx, m)
+
+		// Report the outcome on a context that outlives this one.
+		//
+		// The usual reason a handler fails is that its context was cancelled —
+		// Core is draining the plugin for an upgrade — and reporting that on
+		// the same cancelled context means the call fails at exactly the
+		// moment it matters. The message then sits claimed until maintenance
+		// reaps it, which is up to a minute in Core's defaults, so every
+		// deploy strands whatever was in flight instead of handing it to the
+		// new version.
+		//
+		// Bounded, because a plugin being drained is on a deadline of its own
+		// and Core kills it when that lapses.
+		outcome, cancelOutcome := context.WithTimeout(
+			withTrace(context.WithoutCancel(ctx), msg.GetTraceId()), 5*time.Second)
+		if err != nil {
+			_, _ = q.c.Nack(outgoing(outcome), &pb.NackRequest{MessageId: m.ID, Error: err.Error()})
+			cancelOutcome()
 			continue
 		}
-		if _, err := q.c.Ack(outgoing(msgCtx), &pb.AckRequest{MessageId: m.ID}); err != nil {
-			return err
+		_, ackErr := q.c.Ack(outgoing(outcome), &pb.AckRequest{MessageId: m.ID})
+		cancelOutcome()
+		if ackErr != nil {
+			return ackErr
 		}
 	}
 }

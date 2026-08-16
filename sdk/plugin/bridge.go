@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	pb "github.com/taills/moduless/proto/plugin"
 )
@@ -22,10 +23,18 @@ type plugin struct {
 	granted  []string
 	instance string
 
-	// readyOnce guards OnReady against a second Configure, and readyStop ends
-	// the context it was given when Core asks the plugin to drain.
+	// readyOnce guards OnReady against a second Configure, readyStop ends the
+	// context it was given when Core asks the plugin to drain, and readyDone
+	// closes once it has actually returned.
+	//
+	// Waiting for it is what makes the wind-down ordered rather than a race.
+	// Core drains by calling Shutdown and then killing the process once its
+	// own in-flight count reaches zero — and that count is HTTP requests, so a
+	// queue consumer is not in it. Returning from Shutdown immediately leaves
+	// the consumer racing the kill to report the message it was holding.
 	readyOnce sync.Once
 	readyStop context.CancelFunc
+	readyDone chan struct{}
 }
 
 func newPlugin(cfg Config) *plugin {
@@ -69,7 +78,11 @@ func (p *plugin) Configure(_ context.Context, req *pb.ConfigureRequest) (*pb.Con
 		p.readyOnce.Do(func() {
 			ctx, cancel := context.WithCancel(context.Background())
 			p.readyStop = cancel
-			go p.cfg.OnReady(ctx)
+			p.readyDone = make(chan struct{})
+			go func() {
+				defer close(p.readyDone)
+				p.cfg.OnReady(ctx)
+			}()
 		})
 	}
 	return &pb.ConfigureResponse{Ready: true}, nil
@@ -297,11 +310,29 @@ func (p *plugin) OnConfigChanged(_ context.Context, req *pb.ConfigChangeEvent) e
 	return nil
 }
 
-func (p *plugin) Shutdown(ctx context.Context, _ *pb.ShutdownRequest) error {
+func (p *plugin) Shutdown(ctx context.Context, req *pb.ShutdownRequest) error {
 	// Cancel OnReady's context first, so a blocking Consume unwinds before
 	// OnShutdown runs and finds the plugin still working.
 	if p.readyStop != nil {
 		p.readyStop()
+	}
+	// Then wait for it, bounded by the deadline Core just told us about. A
+	// queue consumer reports the message it was holding on its way out, and
+	// that report has to reach Core before the process does not exist any
+	// more: Core's own drain counts HTTP requests, so nothing else here makes
+	// it wait. Measured — without this, an upgrade under load leaves the
+	// in-flight message claimed until maintenance reaps it, up to a minute
+	// later, while the same upgrade on an idle machine looks instant.
+	if p.readyDone != nil {
+		budget := time.Duration(req.GetDrainTimeoutSeconds()) * time.Second
+		if budget <= 0 {
+			budget = 10 * time.Second
+		}
+		select {
+		case <-p.readyDone:
+		case <-ctx.Done():
+		case <-time.After(budget):
+		}
 	}
 	if p.cfg.OnShutdown != nil {
 		return p.cfg.OnShutdown(ctx)

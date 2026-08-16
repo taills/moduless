@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -109,25 +110,35 @@ func onConfigChanged(cfg map[string]string) {
 	cfgMu.Unlock()
 }
 
+// expiredQuery is the page of entries old enough to drop.
+//
+// Split out so the cutoff can be checked without a store behind it: the
+// arithmetic is the part worth testing, and getting it wrong deletes either too
+// much of the record or none of it.
+//
+// scheduled is job.Scheduled rather than time.Now(): it is the occurrence this
+// run is for, so a job that ran ten minutes late does not move the retention
+// boundary ten minutes with it.
+//
+// Comparisons are strings, so "at" is stored as RFC3339 rather than unix
+// seconds — lexical order has to equal chronological order for Lt to mean what
+// it says.
+func expiredQuery(scheduled int64, days int) *sdk.Query {
+	cutoff := time.Unix(scheduled, 0).UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	return sdk.DB.Where(collection).Lt("at", cutoff).SortDesc("at").Limit(200)
+}
+
 // purgeExpired 是 manifest 里 jobs: 声明的 "purge-expired" 定时任务的实现。
 func purgeExpired(ctx context.Context, job *sdk.Job) error {
 	cfgMu.RLock()
 	days := retentionDays
 	cfgMu.RUnlock()
 
-	// 用 job.Scheduled 而不是 time.Now()：那是这次运行"本该"发生的时刻。
-	// 任务晚跑了十分钟不该让保留边界跟着挪十分钟。
-	cutoff := time.Unix(job.Scheduled, 0).UTC().AddDate(0, 0, -days).Format(time.RFC3339)
-
 	// 分页查出来再逐条删，而不是塞进一个事务：事务有超时，而要删的行数
-	// 没有上限。至于时间为什么存成 RFC3339 而不是 unix 秒 —— 比较值一律
-	// 是字符串，字典序必须等于时间序才能用 Lt。
+	// 没有上限。
 	for {
 		var stale []AuditEntry
-		_, err := sdk.DB.Where(collection).
-			Lt("at", cutoff).SortDesc("at").
-			Limit(200).
-			All(ctx, &stale)
+		_, err := expiredQuery(job.Scheduled, days).All(ctx, &stale)
 		if err != nil {
 			return err
 		}
@@ -157,29 +168,9 @@ func listEntries(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	q := r.URL.Query()
-
-	limit := 50
-	if v := q.Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
-			limit = n
-		}
-	}
-
-	query := sdk.DB.Where(collection)
-	if user := q.Get("user"); user != "" {
-		query = query.Eq("user", user)
-	}
-	query = query.SortDesc("at").Limit(limit)
-
-	// 这个游标喂回下一次查询——没有 .After()/.Cursor()/.Since() 之类的
-	// 方法出现在任何示例里。这里猜的是 .After(cursor)。
-	if cursor := q.Get("cursor"); cursor != "" {
-		query = query.After(cursor)
-	}
 
 	var entries []AuditEntry
-	next, err := query.All(ctx, &entries)
+	next, err := entriesQuery(r.URL.Query()).All(ctx, &entries)
 	if err != nil {
 		sdk.Log.Error(ctx, "audit: list query failed", "err", err.Error())
 		http.Error(w, "query failed", http.StatusInternalServerError)
@@ -191,4 +182,42 @@ func listEntries(w http.ResponseWriter, r *http.Request) {
 		"entries": entries,
 		"next":    next,
 	})
+}
+
+// pageLimit clamps the caller's page size.
+//
+// Anything unparseable, zero, negative or above the ceiling falls back to the
+// default rather than being taken literally: a limit of 0 would return nothing
+// and read as an empty audit trail, and an unbounded one hands the caller the
+// whole table.
+func pageLimit(raw string) int {
+	if raw == "" {
+		return defaultPageLimit
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 || n > maxPageLimit {
+		return defaultPageLimit
+	}
+	return n
+}
+
+const (
+	defaultPageLimit = 50
+	maxPageLimit     = 200
+)
+
+// entriesQuery builds the operator's view: newest first, optionally one user,
+// one page at a time.
+func entriesQuery(q url.Values) *sdk.Query {
+	query := sdk.DB.Where(collection)
+	if user := q.Get("user"); user != "" {
+		query = query.Eq("user", user)
+	}
+	query = query.SortDesc("at").Limit(pageLimit(q.Get("limit")))
+
+	// The cursor from the previous page's "next" goes back in here.
+	if cursor := q.Get("cursor"); cursor != "" {
+		query = query.After(cursor)
+	}
+	return query
 }

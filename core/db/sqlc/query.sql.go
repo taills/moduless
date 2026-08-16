@@ -130,8 +130,8 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (GetUs
 }
 
 const insertAuditLog = `-- name: InsertAuditLog :exec
-INSERT INTO audit_logs (user_id, action, extension_key, http_path, client_ip)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO audit_logs (user_id, action, extension_key, http_path, client_ip, trace_id)
+VALUES ($1, $2, $3, $4, $5, $6)
 `
 
 type InsertAuditLogParams struct {
@@ -140,6 +140,7 @@ type InsertAuditLogParams struct {
 	ExtensionKey string `json:"extension_key"`
 	HttpPath     string `json:"http_path"`
 	ClientIp     string `json:"client_ip"`
+	TraceID      string `json:"trace_id"`
 }
 
 func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error {
@@ -149,6 +150,7 @@ func (q *Queries) InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) 
 		arg.ExtensionKey,
 		arg.HttpPath,
 		arg.ClientIp,
+		arg.TraceID,
 	)
 	return err
 }
@@ -204,7 +206,7 @@ func (q *Queries) InsertFile(ctx context.Context, arg InsertFileParams) error {
 }
 
 const listAuditLogs = `-- name: ListAuditLogs :many
-SELECT id, user_id, action, extension_key, http_path, client_ip, created_at FROM audit_logs ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, user_id, action, extension_key, http_path, client_ip, created_at, trace_id FROM audit_logs ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListAuditLogsParams struct {
@@ -229,6 +231,7 @@ func (q *Queries) ListAuditLogs(ctx context.Context, arg ListAuditLogsParams) ([
 			&i.HttpPath,
 			&i.ClientIp,
 			&i.CreatedAt,
+			&i.TraceID,
 		); err != nil {
 			return nil, err
 		}

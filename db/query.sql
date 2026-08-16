@@ -17,8 +17,8 @@ SELECT file_id FROM file_download_tokens
 WHERE token = $1 AND expires_at > NOW();
 
 -- name: InsertAuditLog :exec
-INSERT INTO audit_logs (user_id, action, extension_key, http_path, client_ip)
-VALUES ($1, $2, $3, $4, $5);
+INSERT INTO audit_logs (user_id, action, extension_key, http_path, client_ip, trace_id)
+VALUES ($1, $2, $3, $4, $5, $6);
 
 -- name: ListAuditLogs :many
 SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT $1 OFFSET $2;

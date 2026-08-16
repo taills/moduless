@@ -38,6 +38,7 @@ type fakeHost struct {
 	lastDownload  *pb.DownloadTokenRequest
 	lastMetric    *pb.MetricRequest
 	lastConsume   *pb.ConsumeRequest
+	logs          []*pb.LogRecord
 	putErr        error
 
 	queryResp     *pb.QueryResponse
@@ -902,5 +903,93 @@ func TestVisibilityTimeoutReachesTheRequest(t *testing.T) {
 	if got := host2.lastConsume.GetVisibilityTimeoutSeconds(); got != 0 {
 		t.Errorf("visibility_timeout_seconds = %d with no option; Core reads zero as "+
 			"its own default and that is what an unopinionated consumer should get", got)
+	}
+}
+
+// fakeLogStream captures what the logger sends instead of shipping it to Core.
+type fakeLogStream struct {
+	grpc.ClientStream
+	records *[]*pb.LogRecord
+}
+
+func (f *fakeLogStream) Send(r *pb.LogRecord) error {
+	*f.records = append(*f.records, r)
+	return nil
+}
+
+func (f *fakeLogStream) CloseAndRecv() (*emptypb.Empty, error) { return &emptypb.Empty{}, nil }
+
+func (f *fakeHost) Log(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[pb.LogRecord, emptypb.Empty], error) {
+	return &fakeLogStream{records: &f.logs}, nil
+}
+
+// Each level reaches Core as itself, and the trace id rides along unasked.
+//
+// The level mapping is four one-line methods differing by a constant, which is
+// where a copied line hides — Debug was the one with no caller anywhere.
+//
+// The trace id is the more interesting half. Attaching it automatically is
+// what makes a plugin's logs joinable with Core's for one request, and the
+// guide tells authors they do not have to thread it through. Nothing checked
+// that: a logger that quietly dropped it would look exactly like one that
+// worked, right up until somebody tried to follow a request across two
+// processes and found the plugin's lines unattributable.
+func TestLogLevelsAndTraceReachCore(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Logger, context.Context)
+		want pb.LogLevel
+	}{
+		{"debug", func(l *Logger, ctx context.Context) { l.Debug(ctx, "m") }, pb.LogLevel_LOG_DEBUG},
+		{"info", func(l *Logger, ctx context.Context) { l.Info(ctx, "m") }, pb.LogLevel_LOG_INFO},
+		{"warn", func(l *Logger, ctx context.Context) { l.Warn(ctx, "m") }, pb.LogLevel_LOG_WARN},
+		{"error", func(l *Logger, ctx context.Context) { l.Error(ctx, "m") }, pb.LogLevel_LOG_ERROR},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &fakeHost{}
+			ctx := withTrace(t.Context(), "trace-abc")
+			tc.call(&Logger{c: host}, ctx)
+
+			if len(host.logs) != 1 {
+				t.Fatalf("%d records reached the host, want 1", len(host.logs))
+			}
+			rec := host.logs[0]
+			if rec.GetLevel() != tc.want {
+				t.Errorf("level = %v, want %v; a line logged at the wrong level is "+
+					"either noise nobody reads or a warning nobody sees",
+					rec.GetLevel(), tc.want)
+			}
+			if rec.GetTraceId() != "trace-abc" {
+				t.Errorf("trace_id = %q, want the one on the context. Without it a "+
+					"plugin's log lines cannot be joined to the request that caused "+
+					"them, which is the whole point of carrying a trace across the "+
+					"process boundary", rec.GetTraceId())
+			}
+		})
+	}
+}
+
+// Fields arrive as fields, and an odd trailing one is dropped rather than
+// paired with nothing.
+func TestLogFieldsArePairs(t *testing.T) {
+	host := &fakeHost{}
+	(&Logger{c: host}).Info(t.Context(), "syncing", "account", "acct-1", "attempt", 2, "dangling")
+
+	if len(host.logs) != 1 {
+		t.Fatalf("%d records, want 1", len(host.logs))
+	}
+	fields := host.logs[0].GetFields()
+	if fields["account"] != "acct-1" {
+		t.Errorf("account = %q", fields["account"])
+	}
+	if fields["attempt"] != "2" {
+		t.Errorf("attempt = %q; a non-string value has to survive as its own text",
+			fields["attempt"])
+	}
+	if _, ok := fields["dangling"]; ok {
+		t.Errorf("a key with no value was recorded (%v); pairing it with whatever "+
+			"came next would be worse, but it is worth knowing it vanishes", fields)
 	}
 }

@@ -87,6 +87,18 @@ func AuditLogger(recorder AuditRecorder, opts AuditOptions) func(http.Handler) h
 				ExtensionKey: extKey,
 				HttpPath:     r.URL.Path,
 				ClientIp:     clientIP(r),
+				// Read back off the response rather than out of the request
+				// context. The trace is assigned inside the plugin gateway,
+				// which this middleware wraps — so it travels downstream on a
+				// request this code never sees, and the context here is the
+				// outer one. The gateway publishes the same id as X-Request-Id
+				// before anything else runs, and by this point it is on the
+				// response.
+				//
+				// Without it an audit entry joins to nothing: not to the
+				// request that caused it, not to the plugin's own log lines
+				// for that request.
+				TraceID: w.Header().Get("X-Request-Id"),
 			}
 			go func() {
 				if err := recorder.InsertAuditLog(context.Background(), params); err != nil {

@@ -176,3 +176,85 @@ func TestAuditSkipsReadsOnTheRealRoute(t *testing.T) {
 		t.Errorf("a read produced %d audit record(s): %+v", len(got), got)
 	}
 }
+
+// An audit record has to join to the request that produced it.
+//
+// Core assigns a trace to every request and publishes it as X-Request-Id, and
+// the plugin's own log lines carry it. The audit trail was the one place it
+// did not land — so "admin deleted user 5" could not be tied to the request
+// that did it, nor to anything the plugins logged while doing it. Which is
+// what an audit trail is for.
+//
+// The claim is not "the field is populated" but "the three agree", so all
+// three are read: what the caller asked for, what came back, and what was
+// written down.
+func TestAnAuditRecordCarriesTheRequestsTrace(t *testing.T) {
+	inst := launchPlugin(t, "hello", "1.0.0", nil)
+	reg := pluginhost.NewRegistry()
+	reg.InstallPlugin(pluginhost.Registration{
+		Key: "hello", Instances: []*pluginhost.Instance{inst},
+	})
+
+	auditor := &recordingAuditor{}
+	srv := newAuditedServer(t, reg, auditor, func(*http.Request) string { return "7" })
+
+	const trace = "audit-trace-1"
+	req, err := http.NewRequest(http.MethodPost, srv+"/api/plugins/hello/items",
+		strings.NewReader(`{"title":"x"}`))
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	req.Header.Set("X-Request-Id", trace)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+
+	// Core echoes the id it used, which is what a caller keeps in order to ask
+	// about this request later.
+	echoed := resp.Header.Get("X-Request-Id")
+	if echoed != trace {
+		t.Fatalf("X-Request-Id = %q, want the id the caller sent (%q); with a "+
+			"different id on the response there is nothing to correlate against",
+			echoed, trace)
+	}
+
+	got := auditor.waitFor(t, 1)[0]
+	if got.TraceID != echoed {
+		t.Errorf("audit record trace = %q, response said %q. An entry that cannot be "+
+			"joined to its request records that something happened without recording "+
+			"which something", got.TraceID, echoed)
+	}
+}
+
+// A request with no trace of its own still gets one, and the record carries
+// it. Otherwise every unattributed request shares the empty string and the
+// column is worse than absent — it looks like a join key and is not one.
+func TestAnAuditRecordHasATraceEvenWhenTheCallerSendsNone(t *testing.T) {
+	inst := launchPlugin(t, "hello", "1.0.0", nil)
+	reg := pluginhost.NewRegistry()
+	reg.InstallPlugin(pluginhost.Registration{
+		Key: "hello", Instances: []*pluginhost.Instance{inst},
+	})
+
+	auditor := &recordingAuditor{}
+	srv := newAuditedServer(t, reg, auditor, func(*http.Request) string { return "7" })
+
+	resp, err := http.Post(srv+"/api/plugins/hello/items", "application/json",
+		strings.NewReader(`{"title":"x"}`))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp.Body.Close()
+
+	got := auditor.waitFor(t, 1)[0]
+	if got.TraceID == "" {
+		t.Error("the audit record has no trace at all; Core generates one for every " +
+			"request precisely so that this never has to be empty")
+	}
+	if got.TraceID != resp.Header.Get("X-Request-Id") {
+		t.Errorf("record says %q, response said %q", got.TraceID, resp.Header.Get("X-Request-Id"))
+	}
+}

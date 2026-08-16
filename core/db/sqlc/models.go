@@ -17,6 +17,7 @@ type AuditLog struct {
 	HttpPath     string       `json:"http_path"`
 	ClientIp     string       `json:"client_ip"`
 	CreatedAt    sql.NullTime `json:"created_at"`
+	TraceID      string       `json:"trace_id"`
 }
 
 type FileDownloadToken struct {
@@ -24,6 +25,13 @@ type FileDownloadToken struct {
 	FileID    string    `json:"file_id"`
 	UserID    string    `json:"user_id"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type PluginConfig struct {
+	PluginKey string    `json:"plugin_key"`
+	ConfigKey string    `json:"config_key"`
+	Value     string    `json:"value"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type PluginQueue struct {

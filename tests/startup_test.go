@@ -48,7 +48,7 @@ func newManagerOver(t *testing.T, root string, cfg map[string]string) (*pluginho
 			Locks:  hostsvc.NewMemoryLocks(),
 		})
 	})
-	t.Cleanup(mgr.Close)
+	drainOnCleanup(t, reg, mgr)
 	return mgr, reg
 }
 
@@ -230,7 +230,7 @@ func TestFailedConfigureIsNotPublished(t *testing.T) {
 	}, reg, func(pkg *pluginhost.Package) pb.HostServicesServer {
 		return hostsvc.New(pkg.Key(), pkg.Manifest.Permissions, hostsvc.Deps{Config: store})
 	})
-	defer mgr.Close()
+	drainOnCleanup(t, reg, mgr)
 
 	mgr.Scan()
 	err := mgr.Enable(context.Background(), "echo")

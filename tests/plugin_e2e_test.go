@@ -481,3 +481,24 @@ func TestE2EZeroPermissionPluginServes(t *testing.T) {
 		t.Fatalf("status = %d", resp.GetStatusCode())
 	}
 }
+
+// drainOnCleanup makes a test's plugin processes go away with the test.
+//
+// Manager.Close stops supervision and deliberately leaves draining to the
+// caller, so that shutdown ordering stays explicit — main.go calls
+// registry.DrainAll for exactly this. No test did, and the processes outlive
+// the test binary: Pdeathsig is Linux-only and every test here runs in
+// DevMode, which skips it even there.
+//
+// Nothing failed as a result, which is why it went unnoticed. It showed up as
+// 5192 stray plugin processes on the development machine, each holding the
+// ~19MB a plugin costs, accumulated over one session's test runs.
+func drainOnCleanup(t testing.TB, reg *pluginhost.Registry, mgr *pluginhost.Manager) {
+	t.Helper()
+	t.Cleanup(func() {
+		mgr.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		reg.DrainAll(ctx, 2*time.Second)
+	})
+}

@@ -88,7 +88,7 @@ func stackOf(t *testing.T, config map[string]map[string]string, names ...string)
 			Locks:  hostsvc.NewMemoryLocks(),
 		})
 	})
-	t.Cleanup(mgr.Close)
+	drainOnCleanup(t, reg, mgr)
 
 	mgr.Scan()
 	if err := mgr.EnableAll(context.Background()); err != nil {

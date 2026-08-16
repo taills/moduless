@@ -124,9 +124,9 @@ func exampleStack(t *testing.T, config map[string]string) (url string, mgr *plug
 	})
 
 	srv := newGateway(reg)
+	drainOnCleanup(t, reg, mgr)
 	return srv.URL, mgr, func() {
 		srv.Close()
-		mgr.Close()
 		_ = mgr.Disable(context.Background(), "ratelimit")
 	}
 }
@@ -383,7 +383,7 @@ func TestExamplesStart(t *testing.T) {
 					Locks:  hostsvc.NewMemoryLocks(),
 				})
 			})
-			defer mgr.Close()
+			drainOnCleanup(t, reg, mgr)
 
 			mgr.Scan()
 			if err := mgr.Enable(context.Background(), ex.key); err != nil {

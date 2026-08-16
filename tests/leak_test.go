@@ -159,7 +159,7 @@ func TestDisabledPluginProcessesExit(t *testing.T) {
 	}, reg, func(pkg *pluginhost.Package) pb.HostServicesServer {
 		return hostsvc.New(pkg.Key(), pkg.Manifest.Permissions, hostsvc.Deps{})
 	})
-	defer mgr.Close()
+	drainOnCleanup(t, reg, mgr)
 	mgr.Scan()
 
 	ctx := context.Background()

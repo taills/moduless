@@ -42,7 +42,7 @@ func configuredManager(t *testing.T, root string) (*Manager, map[string]map[stri
 	}, reg, func(pkg *Package) pb.HostServicesServer {
 		return &managerConfigHost{mgr: mgr, key: pkg.Key()}
 	})
-	t.Cleanup(mgr.Close)
+	drainOnCleanup(t, reg, mgr)
 	return mgr, stored
 }
 
@@ -324,7 +324,7 @@ func TestStatusReportsQueueDepth(t *testing.T) {
 			return 0
 		},
 	}, reg, func(*Package) pb.HostServicesServer { return &stubHost{} })
-	t.Cleanup(mgr.Close)
+	drainOnCleanup(t, reg, mgr)
 	mgr.Scan()
 
 	if got := statusFor(t, mgr, "alpha").QueueDepth; got != 4200 {

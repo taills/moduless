@@ -63,7 +63,7 @@ func newTestManager(t *testing.T, root string) (*Manager, *Registry) {
 	}, reg, func(*Package) pb.HostServicesServer {
 		return &stubHost{config: map[string]string{"greeting": "hi"}}
 	})
-	t.Cleanup(mgr.Close)
+	drainOnCleanup(t, reg, mgr)
 	return mgr, reg
 }
 
@@ -376,4 +376,25 @@ func TestManagerLaunchesDeclaredReplicas(t *testing.T) {
 	if got := len(reg.Current().Replicas("alpha")); got != 3 {
 		t.Errorf("launched %d replicas, want 3", got)
 	}
+}
+
+// drainOnCleanup stops supervision and then kills what the manager started.
+//
+// Close deliberately leaves draining to the caller so that shutdown ordering
+// stays explicit — main.go calls registry.DrainAll for exactly this. No test
+// here did, and on darwin the processes outlive the test binary: Pdeathsig is
+// Linux-only, and every test runs in DevMode, which skips it even there. It
+// failed nothing and showed up as thousands of stray plugin processes on the
+// development machine.
+//
+// Close first: a supervisor still running would relaunch what is being
+// drained.
+func drainOnCleanup(t testing.TB, reg *Registry, mgr *Manager) {
+	t.Helper()
+	t.Cleanup(func() {
+		mgr.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		reg.DrainAll(ctx, 2*time.Second)
+	})
 }

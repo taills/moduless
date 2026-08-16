@@ -101,6 +101,14 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
 #     -e POSTGRES_DB=moduless_test postgres:18-alpine
 TEST_DATABASE_URL='postgres://moduless:moduless@localhost:15433/moduless_test?sslmode=disable' go test ./...
 
+# The suite takes the database exclusively while it runs. Fixtures address rows
+# by the plugin key from their own manifest ('syncer', 'crasher') and clear them
+# with unqualified DELETEs and TRUNCATEs, so two suites sharing one database
+# delete each other's rows — measured, that produced 19 failures across the pair,
+# every one reading like a queue bug rather than what it was. TestMain now holds
+# a pg_advisory_lock: a second suite waits and says so. Give each CI job its own
+# database container if you want them to actually run in parallel.
+
 # File tests additionally need S3-compatible storage. MinIO works; the bucket is
 # created by the test if missing:
 #   docker run -d --name moduless-test-s3 -p 19000:9000 \

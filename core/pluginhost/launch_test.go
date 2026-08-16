@@ -20,11 +20,20 @@ import (
 // echoBinary is built once by TestMain and reused by every test here.
 var echoBinary string
 
+// The work lives in run so the cleanup actually happens: os.Exit does not run
+// deferred functions, so the `defer os.RemoveAll(dir)` that used to sit above
+// `os.Exit(m.Run())` never fired once. Measured before the fix: 185 abandoned
+// directories, 3.2GB. tests/plugin_e2e_test.go had the same bug and the same
+// cause; between them they had leaked 12.2GB on this machine.
 func TestMain(m *testing.M) {
+	os.Exit(run(m))
+}
+
+func run(m *testing.M) int {
 	dir, err := os.MkdirTemp("", "moduless-plugin-test-*")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "tempdir: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer os.RemoveAll(dir)
 
@@ -41,10 +50,10 @@ func TestMain(m *testing.M) {
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "building echoplugin fixture: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 // stubHost is a minimal HostServices implementation. Everything it does not

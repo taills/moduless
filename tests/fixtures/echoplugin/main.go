@@ -400,7 +400,7 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 		}, nil
 	}
 
-	return &pb.HttpResponse{
+	resp := &pb.HttpResponse{
 		StatusCode: 200,
 		Headers: map[string]*pb.HeaderValues{
 			"Content-Type": {Values: []string{"text/plain"}},
@@ -420,14 +420,28 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 			// Two values on one header, to prove repeated headers survive the
 			// round trip. The legacy tunnel dropped all but the first.
 			"X-Multi": {Values: []string{"a", "b"}},
-			// What this handler was actually handed, so a filter's header
-			// mutation can be checked against what the backend received rather
-			// than against the filter having claimed to make it.
-			"X-Saw-Probe":   {Values: []string{firstHeader(req.GetHeaders(), "X-Probe")}},
-			"X-Saw-Removed": {Values: []string{firstHeader(req.GetHeaders(), "X-Remove-Me")}},
 		},
 		Body: body,
-	}, nil
+	}
+
+	// What this handler was actually handed, so a filter's header mutation can
+	// be checked against what the backend received rather than against the
+	// filter having claimed to make it.
+	//
+	// Only when the probe headers are actually in play. These were
+	// unconditional, which meant every request — including every benchmark
+	// iteration — carried two empty headers across the wire for the benefit of
+	// two tests. This fixture is the load the benchmarks run against, so an
+	// affordance added here is a tax on every number they produce: measured,
+	// the fixture's growth this session accounted for 50 of the 55 extra
+	// allocations per request that looked like a Core regression.
+	if v := firstHeader(req.GetHeaders(), "X-Probe"); v != "" {
+		resp.Headers["X-Saw-Probe"] = &pb.HeaderValues{Values: []string{v}}
+	}
+	if v := firstHeader(req.GetHeaders(), "X-Remove-Me"); v != "" {
+		resp.Headers["X-Saw-Removed"] = &pb.HeaderValues{Values: []string{v}}
+	}
+	return resp, nil
 }
 
 // phaseLog records every phase this plugin was called in, per trace.

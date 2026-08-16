@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"testing"
 	"time"
 
@@ -390,5 +391,46 @@ func BenchmarkE2EFilterDepthWithHeaders(b *testing.B) {
 				do()
 			}
 		})
+	}
+}
+
+// The fixture is part of the instrument.
+//
+// Every benchmark above sends its load to echoplugin, so anything added to that
+// plugin's default response is charged to every number they produce — and the
+// benchmarks say nothing about it. This round that cost most of an
+// investigation: BenchmarkE2EPluginRequest had gone from 272 to 327 allocs/op
+// against an older commit, the gateway hot path had been rewritten several
+// times in between, and the obvious reading was that the correctness fixes had
+// cost 10%. Isolating it (this Core, the older fixture) put 50 of the 55 extra
+// allocations in the fixture, which had grown two unconditional headers for the
+// benefit of two tests.
+//
+// So the default response's shape is pinned. A new affordance goes behind a
+// condition — a request header, a query parameter, a path suffix — the way
+// /phases and /bodysizes already do, and this test does not need touching. It
+// only fails when the load every benchmark runs against silently grew.
+func TestTheBenchmarkFixtureStaysLean(t *testing.T) {
+	inst := launchPlugin(t, "hello", "1.0.0", nil)
+
+	resp, err := inst.Client.HandleHTTP(context.Background(), &pb.HttpRequest{
+		Method: http.MethodGet, Path: "/items",
+	})
+	if err != nil {
+		t.Fatalf("HandleHTTP: %v", err)
+	}
+
+	const want = 8 // Content-Type, X-Echo-Path, X-Instance, X-Host-Config,
+	//               X-Caller, X-Caller-Roles, X-Launch-Config, X-Multi
+	if got := len(resp.GetHeaders()); got != want {
+		names := make([]string, 0, got)
+		for k := range resp.GetHeaders() {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		t.Errorf("the default response carries %d headers, want %d: %v\n"+
+			"Every benchmark pays for these on every iteration, and a comparison "+
+			"across commits silently stops measuring Core. Put the new one behind "+
+			"a condition, or change this number deliberately and say so.", got, want, names)
 	}
 }

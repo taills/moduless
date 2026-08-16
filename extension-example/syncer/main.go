@@ -135,7 +135,10 @@ func syncAccount(ctx context.Context, j job) error {
 		return err
 	}
 	if !ok {
-		return handleBusy(ctx, j)
+		lease, ok, err = handleBusy(ctx, j, ttl)
+		if err != nil || !ok {
+			return err
+		}
 	}
 	defer func() {
 		if err := lease.Release(context.WithoutCancel(ctx)); err != nil {
@@ -176,41 +179,60 @@ func syncAccount(ctx context.Context, j job) error {
 	}
 }
 
-// handleBusy puts contended work back without spending a retry.
+// handleBusy deals with an account another replica is holding.
 //
-// Returning an error would be the obvious thing and it silently discards work:
-// the queue increments a message's attempt count when it is *claimed*, not
-// when it fails, so a message that keeps being picked up by a replica that
-// cannot get the lock burns its whole budget — five by default — and lands in
-// the dead-letter table having never failed. Measured: six messages for one
-// contended account, four dead within three seconds, each recorded as
-// "account is being synced by another replica", which reads like a diagnosis
-// of the work rather than the accounting artefact it is.
+// Two ways out, and which one is right depends on whether the queue has room.
 //
-// So acknowledge this delivery and publish the work afresh. A new message
-// carries a new budget, which is right — being busy is not a failure — and
-// Requeues rides along so that genuinely stuck work still ends up somewhere
-// visible instead of circulating forever.
-func handleBusy(ctx context.Context, j job) error {
-	if j.Requeues >= maxRequeues {
-		sdk.Log.Error(ctx, "giving up on a permanently locked account",
-			"account", j.Account, "requeues", j.Requeues)
-		return errStuck
+// Putting the work back is the first choice, because returning an error is not
+// free: the queue increments a message's attempt count when it is *claimed*,
+// not when it fails, so a message bounced between contending replicas burns
+// its whole budget — five by default — and lands in the dead-letter table
+// having never failed. Measured: six messages for one hot account, four dead
+// within three seconds, each recorded as "another replica is syncing this",
+// which reads like a diagnosis of the work rather than the accounting artefact
+// it is. Republishing gives the work a fresh budget, which is right, because
+// being busy is not a failure.
+//
+// But a republish is an enqueue, and Core refuses those once the plugin's
+// backlog is at its limit — one shared table, so a pile-up is everyone's. That
+// turned the safe path back into the unsafe one exactly under pressure:
+// measured again with a limit of three, four of six dead. And it should:
+// adding to a backlog that is already over its limit is the wrong move, and
+// the message is *already* in the queue.
+//
+// So when there is nowhere to put it, hold on and wait for the lock instead.
+// Blocking here is backpressure — it costs neither a retry nor a slot in the
+// backlog, and it is what a full queue is asking for.
+func handleBusy(ctx context.Context, j job, ttl time.Duration) (*sdk.Lease, bool, error) {
+	if j.Requeues < maxRequeues {
+		j.Requeues++
+		// context.WithoutCancel: this runs on the way out of a handler whose
+		// context may already be cancelled by a drain, and dropping the
+		// republish there would lose the work entirely.
+		if _, _, err := sdk.Queue.Publish(context.WithoutCancel(ctx), "accounts", j,
+			sdk.WithDelay(time.Second)); err == nil {
+			sdk.Log.Info(ctx, "account busy, requeued",
+				"account", j.Account, "requeues", j.Requeues)
+			return nil, false, nil
+		}
 	}
 
-	j.Requeues++
-	// context.WithoutCancel: this runs on the way out of a handler whose
-	// context may already be cancelled by a drain, and dropping the republish
-	// there would lose the work entirely.
-	if _, _, err := sdk.Queue.Publish(context.WithoutCancel(ctx), "accounts", j,
-		sdk.WithDelay(time.Second)); err != nil {
-		// Could not republish, so fall back to failing: at least the queue's
-		// own retry will bring it back.
-		return err
+	sdk.Log.Info(ctx, "account busy and nowhere to requeue; waiting for the lock",
+		"account", j.Account, "requeues", j.Requeues)
+	lease, ok, err := sdk.Locks.Acquire(ctx, "account:"+j.Account, ttl, busyHoldWait)
+	if err != nil {
+		return nil, false, err
 	}
-	sdk.Log.Info(ctx, "account busy, requeued", "account", j.Account, "requeues", j.Requeues)
-	return nil
+	if !ok {
+		return nil, false, errStuck
+	}
+	return lease, true, nil
 }
+
+// busyHoldWait bounds the fallback wait. Long enough that an ordinary sync
+// finishes inside it, short enough that a wedged account still surfaces as a
+// failure rather than pinning a consumer for good.
+const busyHoldWait = 30 * time.Second
 
 // doWork stands in for the external call.
 func doWork(ctx context.Context, account string, d time.Duration) error {

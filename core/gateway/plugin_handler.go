@@ -250,18 +250,38 @@ func (h *PluginHandler) servePlugin(w http.ResponseWriter, r *http.Request, snap
 // go-plugin each call is an independent unary RPC over an HTTP/2 connection,
 // so concurrent requests need neither stream ids nor a send mutex.
 func (h *PluginHandler) callBackend(ctx context.Context, snap *pluginhost.Snapshot, key, sub string, rc *pipeline.RequestContext) (*pb.HttpResponse, error) {
-	inst, ok := snap.Pick(key)
-	if !ok {
-		return nil, &pluginUnavailableError{key: key, gone: true}
-	}
 	// Through the request's own admission rather than a fresh one: a filter on
 	// this plugin has usually already reserved capacity, and asking again would
 	// fail if the instance began draining in between — refusing a request that
 	// the system had already accepted and run.
-	if !rc.Admit(key, inst.BeginRequest) {
-		return nil, &pluginUnavailableError{key: key}
+	inst, ok := snap.Pick(key)
+	if ok && rc.Admit(key, inst.BeginRequest) {
+		return h.dispatch(ctx, inst, sub, rc)
 	}
 
+	// The snapshot this request has been carrying can no longer serve the
+	// plugin: an upgrade committed while the request was in flight, and the
+	// instance it was routed to is draining or already gone. That reservation
+	// only carries through for a plugin that ran a filter on this path; a
+	// plugin reached by a plain route arrives here holding nothing, which is
+	// the ordinary case and the one that used to answer 404 mid-upgrade.
+	//
+	// So resolve the instance once more against the live registry. The routing
+	// decision is unchanged — this is still the same plugin serving the same
+	// path — only the process behind it has been replaced, which is exactly
+	// what a zero-downtime upgrade is supposed to be invisible about.
+	if cur := h.Registry.Current(); cur != nil {
+		if next, ok2 := cur.Pick(key); ok2 && next != inst {
+			if rc.Admit(key, next.BeginRequest) {
+				return h.dispatch(ctx, next, sub, rc)
+			}
+		}
+	}
+	return nil, &pluginUnavailableError{key: key, gone: !ok}
+}
+
+// dispatch performs the backend call against an admitted instance.
+func (h *PluginHandler) dispatch(ctx context.Context, inst *pluginhost.Instance, sub string, rc *pipeline.RequestContext) (*pb.HttpResponse, error) {
 	callCtx, cancel := context.WithTimeout(ctx, h.backendTimeout())
 	defer cancel()
 

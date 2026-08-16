@@ -214,9 +214,13 @@ func TestNoBuildOutputIsTracked(t *testing.T) {
 // tracked; this one catches the gap that let it happen.
 func TestBuildOutputNamesAreIgnored(t *testing.T) {
 	// Every package that produces a binary, and the file name it lands on.
-	for _, name := range []string{
-		"notes", "ratelimit", "audit", "inventory", "apikey", "echoplugin",
-	} {
+	//
+	// Discovered rather than listed: this had six names when there were seven
+	// examples, so `go build ./extension-example/syncer` was leaving something
+	// in the working tree that nothing here objected to. echoplugin is added
+	// on top because it is a fixture rather than an example.
+	names := append(shippedExamples(t), "echoplugin")
+	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			// Three outcomes, not two. git check-ignore exits 0 for ignored and
 			// 1 for not — but it also exits 127 when git is missing and 128

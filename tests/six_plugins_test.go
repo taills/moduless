@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// All six examples in one Core.
+// Every shipped example in one Core.
 //
 // This is the product claim stated plainly: plugins written by different teams
 // intervening at different points of one request. Until now the largest
@@ -26,11 +26,15 @@ import (
 // being passed between them never touches the client.
 
 // sixPluginStack installs every shipped example in one Core.
+//
+// The list it used to hold said six when there were seven, so the composition
+// this file exists to exercise quietly stopped being "all of them". Taken from
+// the directory now, so adding an example puts it in the stack rather than
+// leaving the claim in the comment above untrue.
 func sixPluginStack(t *testing.T, config map[string]map[string]string) (string, func()) {
 	t.Helper()
 
-	url, _, _ := stackOf(t, config,
-		"ratelimit", "notes", "audit", "inventory", "apikey", "redact")
+	url, _, _ := stackOf(t, config, shippedExamples(t)...)
 	return url, func() {}
 }
 

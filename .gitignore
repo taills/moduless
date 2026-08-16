@@ -12,11 +12,19 @@ vendor/
 # explicitly rather than by a pattern: the names collide with nothing, and a
 # rule broad enough to catch any extensionless executable would also catch
 # files somebody meant to commit.
+#
+# The cost of naming them is that this list goes stale: redact and syncer were
+# added as examples and not added here, so building either left a binary a
+# `git add -A` would have taken. TestBuildOutputNamesAreIgnored now discovers
+# the examples from the directory and checks each one, so the next omission
+# fails rather than waiting to be committed.
 /notes
 /ratelimit
 /audit
 /inventory
 /apikey
+/redact
+/syncer
 /echoplugin
 /orphanhost
 /moduless

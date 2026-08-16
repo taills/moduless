@@ -205,16 +205,19 @@ Core 重启会冷启动所有插件（几百毫秒到一秒级，取决于插件
 
 ## 排查
 
+下面每一行都实测过，除了明确标注的那一条。这不是客套 —— 本仓库三条「最要紧的规则」的失败描述实测下来全部不准，**关于失败的断言比关于成功的断言更容易长期错着没人发现**。
+
 | 现象 | 多半是 |
 |---|---|
 | 插件不出现在列表 | 目录名与 manifest 的 `key` 不一致，或 manifest 校验失败 —— 控制台会显示原因 |
-| 插件启动失败且日志无信息 | 插件向 stdout 写了东西，破坏了启动握手 |
+| `handshake failed: Unrecognized remote plugin message: <某行文字>` | 插件在 `sdk.Serve` 之前往 stdout 写了东西，顶替了握手。后半句就是它打的那行 |
 | `exec format error` | 架构不符（例如在 arm64 上跑 amd64 二进制） |
 | `no such file or directory`，但文件确实在 | 插件是动态链接的（漏了 `CGO_ENABLED=0`）。缺的是动态链接器不是二进制，内核只能返回 ENOENT。用 `docker run --rm -v "$PWD:/x" alpine ldd /x/bin/plugin` 确认 |
 | 插件调用某能力报 PermissionDenied | manifest 的 `permissions` 里没声明它 |
 | 插件调用某能力报 Unavailable | Core 没配那项能力（比如没有 `DATABASE_URL`） |
-| 升级后插件行为异常 | 用 `cp` 覆盖了正在执行的二进制，见上文 |
-| 控制台菜单不更新 | SSE 流被中间代理缓冲了；确认反向代理没有缓冲 `text/event-stream` |
+| 部署时 `Text file busy` | 用 `cp` 覆盖了正在执行的二进制。Linux 会拒绝这次写入（ETXTBSY），所以是部署失败而不是插件损坏 —— 改用 `mv`，见上文 |
+| 插件不在列表且没有原因 | 不该发生 —— 目录名不符和 manifest 无效都会带原因显示（`tests/deployment_test.go` 断言了这一点）。真遇到就是 bug |
+| 控制台菜单不更新 | 多半是 SSE 流被中间代理缓冲；确认反向代理没有缓冲 `text/event-stream`。（这一条**没有实测过**，是唯一没被验证的一行）|
 
 ## 数据库重启
 

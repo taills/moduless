@@ -266,3 +266,91 @@ func TestCoreBootsWithNoPlugins(t *testing.T) {
 		t.Error("a request for a non-existent plugin succeeded")
 	}
 }
+
+// The troubleshooting table, checked.
+//
+// docs/deployment.md carries a table of "symptom X means cause Y", and this
+// session established that assertions about failure are the ones nobody ever
+// verifies: all three of CLAUDE.md's headline rules described their own
+// failure modes wrongly. The table's rows are the same kind of claim.
+//
+// These cover the rows a test can settle. The rest — a reverse proxy buffering
+// server-sent events, an architecture mismatch — need an environment this
+// suite does not have, and are marked as such in the doc rather than asserted
+// here.
+
+// A package directory whose name does not match the manifest's key is refused,
+// and the console is told why.
+//
+// The table promises "the console shows the reason", which is the difference
+// between an operator fixing it in a minute and hunting for a plugin that
+// silently is not there.
+func TestKeyDirectoryMismatchIsReportedWithAReason(t *testing.T) {
+	root := t.TempDir()
+	installFixturePackage(t, root)
+
+	// Rename the directory so it no longer matches the manifest's key.
+	if err := os.Rename(filepath.Join(root, "echo"), filepath.Join(root, "not-echo")); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	mgr, _ := newManagerOver(t, root, nil)
+	mgr.Scan()
+
+	statuses := mgr.List()
+	if len(statuses) == 0 {
+		t.Fatal("the mismatched package vanished entirely; an operator sees nothing at all " +
+			"and has no reason to look at the directory name")
+	}
+
+	var found bool
+	for _, st := range statuses {
+		if st.LoadError == "" {
+			continue
+		}
+		found = true
+		t.Logf("console would show: %s", st.LoadError)
+		if !strings.Contains(st.LoadError, "directory") {
+			t.Errorf("the reason does not mention the directory name: %q", st.LoadError)
+		}
+	}
+	if !found {
+		t.Errorf("no load error reported for a key/directory mismatch; statuses = %+v", statuses)
+	}
+}
+
+// A manifest that does not validate is reported the same way, rather than the
+// plugin simply being absent.
+func TestBrokenManifestIsReportedWithAReason(t *testing.T) {
+	root := t.TempDir()
+	installFixturePackage(t, root)
+
+	// Remove the version, which the manifest requires.
+	path := filepath.Join(root, "echo", "manifest.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the manifest: %v", err)
+	}
+	broken := strings.ReplaceAll(string(raw), "version:", "# version:")
+	if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
+		t.Fatalf("writing the manifest: %v", err)
+	}
+
+	mgr, _ := newManagerOver(t, root, nil)
+	mgr.Scan()
+
+	var reasons []string
+	for _, st := range mgr.List() {
+		if st.LoadError != "" {
+			reasons = append(reasons, st.LoadError)
+		}
+	}
+	if len(reasons) == 0 {
+		t.Fatal("a plugin with an invalid manifest is simply missing from the list; " +
+			"the console shows nothing to explain it")
+	}
+	t.Logf("console would show: %s", reasons[0])
+	if !strings.Contains(reasons[0], "version") {
+		t.Errorf("the reason does not name the missing field: %q", reasons[0])
+	}
+}

@@ -466,7 +466,29 @@ func (m *QueueMessage) Decode(dest any) error { return json.Unmarshal(m.Payload,
 //
 // A handler returning nil acknowledges the message; returning an error sends
 // it back for retry, and it is dead-lettered once its attempts run out.
-func (q *QueueClient) Consume(ctx context.Context, topic string, handler func(context.Context, *QueueMessage) error) error {
+// ConsumeOption tunes a subscription.
+type ConsumeOption func(*pb.ConsumeRequest)
+
+// WithVisibilityTimeout bounds how long a message stays claimed by a consumer
+// that has stopped responding.
+//
+// It is the crash-recovery latency of this topic. A replica that dies holding
+// a message does not nack — there is no shutdown to trigger one — so the
+// message is invisible to every other replica until this lapses. Core's
+// default is thirty seconds, and measured, that is exactly what a crash costs:
+// 34s to recover with maintenance sampling 150 times faster than production.
+//
+// The pull the other way is what makes this the plugin's decision rather than
+// Core's: the timeout has to exceed the longest a handler can run, or a
+// message is redelivered while it is still being worked on. Only the plugin
+// knows that number — and it can be larger than the default as easily as
+// smaller. A handler that waits on a lock for thirty seconds before doing two
+// seconds of work needs more than thirty, not less.
+func WithVisibilityTimeout(d time.Duration) ConsumeOption {
+	return func(r *pb.ConsumeRequest) { r.VisibilityTimeoutSeconds = wholeSeconds(d) }
+}
+
+func (q *QueueClient) Consume(ctx context.Context, topic string, handler func(context.Context, *QueueMessage) error, opts ...ConsumeOption) error {
 	// Prefetch 1, and deliberately not a knob.
 	//
 	// prefetch is how many *unacknowledged* messages this consumer may hold,
@@ -478,7 +500,11 @@ func (q *QueueClient) Consume(ctx context.Context, topic string, handler func(co
 	//
 	// The way to process more at once is another replica, not a bigger number
 	// here.
-	stream, err := q.c.Consume(outgoing(ctx), &pb.ConsumeRequest{Topic: topic, Prefetch: 1})
+	req := &pb.ConsumeRequest{Topic: topic, Prefetch: 1}
+	for _, opt := range opts {
+		opt(req)
+	}
+	stream, err := q.c.Consume(outgoing(ctx), req)
 	if err != nil {
 		return err
 	}

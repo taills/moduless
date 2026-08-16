@@ -98,6 +98,21 @@ func consume(ctx context.Context) {
 	// with nothing to do, and the difference only shows up as work piling up
 	// on whichever replica did start.
 	sdk.Log.Info(ctx, "consumer starting", "replica", sdk.InstanceID())
+
+	// Longer than the default, not shorter.
+	//
+	// The visibility timeout is how long a message stays claimed by a replica
+	// that has stopped answering, so a short one recovers a crash quickly —
+	// but it must still exceed the longest this handler can run, or a message
+	// is redelivered while somebody is still working on it. Here that worst
+	// case is busyHoldWait spent waiting for a contended account plus the sync
+	// itself, which is already past Core's thirty-second default.
+	//
+	// The cost is stated plainly: a replica that dies mid-sync leaves its
+	// message untouchable for this long. That is the trade, and only a plugin
+	// knows which side of it to be on.
+	visibility := busyHoldWait + maxSync + 5*time.Second
+
 	err := sdk.Queue.Consume(ctx, "accounts", func(ctx context.Context, m *sdk.QueueMessage) error {
 		var j job
 		if err := m.Decode(&j); err != nil {
@@ -108,7 +123,7 @@ func consume(ctx context.Context) {
 		}
 		sdk.Log.Info(ctx, "received", "id", m.ID, "account", j.Account, "replica", sdk.InstanceID())
 		return syncAccount(ctx, j)
-	})
+	}, sdk.WithVisibilityTimeout(visibility))
 	if err != nil && !errors.Is(err, context.Canceled) {
 		sdk.Log.Error(ctx, "consumer stopped", "err", err)
 	}
@@ -229,10 +244,20 @@ func handleBusy(ctx context.Context, j job, ttl time.Duration) (*sdk.Lease, bool
 	return lease, true, nil
 }
 
-// busyHoldWait bounds the fallback wait. Long enough that an ordinary sync
-// finishes inside it, short enough that a wedged account still surfaces as a
-// failure rather than pinning a consumer for good.
-const busyHoldWait = 30 * time.Second
+// maxSync is the longest a single sync is expected to take. The subscription
+// is opened once, so it is sized against this ceiling rather than against
+// whatever work_seconds happens to say at the time.
+const maxSync = 20 * time.Second
+
+// busyHoldWait bounds the fallback wait for a contended account.
+//
+// Kept short on purpose, and the reason is not obvious: this number is part of
+// how long the handler can run, and the handler's worst case is what the
+// visibility timeout has to exceed — which is in turn how long a crashed
+// replica strands its message. Waiting longer here buys smoother behaviour
+// under contention and pays for it in crash-recovery latency. The two cannot
+// both be small.
+const busyHoldWait = 10 * time.Second
 
 // doWork stands in for the external call.
 func doWork(ctx context.Context, account string, d time.Duration) error {

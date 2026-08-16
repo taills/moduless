@@ -37,6 +37,7 @@ type fakeHost struct {
 	lastBeginTx   *pb.BeginTxRequest
 	lastDownload  *pb.DownloadTokenRequest
 	lastMetric    *pb.MetricRequest
+	lastConsume   *pb.ConsumeRequest
 	putErr        error
 
 	queryResp     *pb.QueryResponse
@@ -860,5 +861,46 @@ func TestAnUnmappedCodeKeepsItsOwnError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "database is not configured") {
 		t.Errorf("err = %q, which lost what Core said", err)
+	}
+}
+
+func (f *fakeHost) Consume(_ context.Context, in *pb.ConsumeRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[pb.QueueMessage], error) {
+	f.lastConsume = in
+	return nil, errFakeStream
+}
+
+var errFakeStream = errors.New("fake host: no stream")
+
+// The visibility timeout a consumer asks for reaches Core.
+//
+// It is the crash-recovery latency of a topic: a replica that dies holding a
+// message does not nack, so nothing else can touch that message until the
+// lease lapses. The SDK never sent one, so it was always Core's thirty-second
+// default — measured, a crash cost 34s to recover even with maintenance
+// sampling 150 times faster than production.
+func TestVisibilityTimeoutReachesTheRequest(t *testing.T) {
+	host := &fakeHost{}
+	q := &QueueClient{c: host}
+
+	// The stream fails immediately; the request is what is under test.
+	_ = q.Consume(t.Context(), "jobs", func(context.Context, *QueueMessage) error { return nil },
+		WithVisibilityTimeout(45*time.Second))
+
+	if host.lastConsume == nil {
+		t.Fatal("no subscription reached the host")
+	}
+	if got := host.lastConsume.GetVisibilityTimeoutSeconds(); got != 45 {
+		t.Errorf("visibility_timeout_seconds = %d, want 45; a consumer that cannot say "+
+			"how long its handler runs is stuck with a default that is either too "+
+			"short, redelivering work still in progress, or too long, stranding it "+
+			"after a crash", got)
+	}
+	// Default when nobody asks, so the option is the only thing that changes it.
+	host2 := &fakeHost{}
+	_ = (&QueueClient{c: host2}).Consume(t.Context(), "jobs",
+		func(context.Context, *QueueMessage) error { return nil })
+	if got := host2.lastConsume.GetVisibilityTimeoutSeconds(); got != 0 {
+		t.Errorf("visibility_timeout_seconds = %d with no option; Core reads zero as "+
+			"its own default and that is what an unopinionated consumer should get", got)
 	}
 }

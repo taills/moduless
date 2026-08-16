@@ -18,11 +18,29 @@ const error = ref("");
 let instance = null;
 let mountedKey = "";
 
+// Which run of sync is the current one.
+//
+// sync is asynchronous and its guard is not: the key it compares against was
+// only written after the mount finished, so a second trigger arriving while
+// the first was still unmounting read the old key, passed the guard, and
+// mounted the same app again. The reference to the first was then overwritten
+// and it was never taken down — a micro-app left running in a container
+// nothing points at.
+//
+// Two triggers landing in one tick is the obvious case, but it does not take
+// that: any two within the time an unmount takes will do, which is why
+// navigating and an SSE event a millisecond apart was enough.
+//
+// One guard, not two. An earlier version also claimed the key before yielding,
+// on the theory that it stopped a same-target trigger from racing. Removing it
+// failed nothing, and the scenarios where it could differ end in the same
+// state — so it was doing no work while reading as though it were.
+let generation = 0;
+
 async function unmountCurrent() {
-  if (!instance) return;
   const dying = instance;
   instance = null;
-  mountedKey = "";
+  if (!dying) return;
   try {
     await dying.unmount();
   } catch {
@@ -39,7 +57,14 @@ async function sync() {
   const key = target ? target.name + "|" + target.entry : "";
   if (key === mountedKey) return;
 
+  const gen = ++generation;
+
   await unmountCurrent();
+
+  // Superseded while unmounting: the later run owns the container now, and
+  // carrying on here would mount underneath it.
+  if (gen !== generation) return;
+
   error.value = "";
 
   if (!target || !container.value) {

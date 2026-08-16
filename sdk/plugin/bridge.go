@@ -21,6 +21,11 @@ type plugin struct {
 	dataDir  string
 	granted  []string
 	instance string
+
+	// readyOnce guards OnReady against a second Configure, and readyStop ends
+	// the context it was given when Core asks the plugin to drain.
+	readyOnce sync.Once
+	readyStop context.CancelFunc
 }
 
 func newPlugin(cfg Config) *plugin {
@@ -49,11 +54,41 @@ func (p *plugin) Configure(_ context.Context, req *pb.ConfigureRequest) (*pb.Con
 	if p.cfg.OnConfigChanged != nil {
 		p.cfg.OnConfigChanged(GetConfig())
 	}
+
+	// Background work starts here, for the same reason the initial config is
+	// delivered through the callback above: the host clients do not exist
+	// until Core hands over the reverse connection, which is after main() has
+	// called Serve. An author who starts a queue consumer in main() is holding
+	// a nil client — so there has to be somewhere else to start it, and it
+	// cannot be OnConfigChanged, which fires again on every later change and
+	// would leave one consumer running per edit.
+	//
+	// After OnConfigChanged, so that work starting here sees the settings an
+	// admin configured rather than the compiled-in defaults.
+	if p.cfg.OnReady != nil {
+		p.readyOnce.Do(func() {
+			ctx, cancel := context.WithCancel(context.Background())
+			p.readyStop = cancel
+			go p.cfg.OnReady(ctx)
+		})
+	}
 	return &pb.ConfigureResponse{Ready: true}, nil
 }
 
 // Key is the plugin's identifier, as declared in its manifest.
 func Key() string { return current.get().key }
+
+// InstanceID identifies which replica this process is.
+//
+// Worth putting in a log line whenever a plugin runs more than one: with only
+// the key, two replicas' logs are indistinguishable, and "did both replicas
+// pick up work or did one take it all" cannot be answered from them at all.
+func InstanceID() string {
+	p := current.get()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.instance
+}
 
 // DataDir is a plugin-private writable directory. Everything else in the
 // filesystem should be treated as read-only.
@@ -263,6 +298,11 @@ func (p *plugin) OnConfigChanged(_ context.Context, req *pb.ConfigChangeEvent) e
 }
 
 func (p *plugin) Shutdown(ctx context.Context, _ *pb.ShutdownRequest) error {
+	// Cancel OnReady's context first, so a blocking Consume unwinds before
+	// OnShutdown runs and finds the plugin still working.
+	if p.readyStop != nil {
+		p.readyStop()
+	}
 	if p.cfg.OnShutdown != nil {
 		return p.cfg.OnShutdown(ctx)
 	}

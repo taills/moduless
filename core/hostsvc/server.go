@@ -11,6 +11,7 @@ package hostsvc
 
 import (
 	"context"
+	"sync"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -66,6 +67,25 @@ type Server struct {
 	key   string
 	perms permSet
 	deps  Deps
+
+	// inflight counts messages delivered to this consumer and not yet
+	// acknowledged, and bounds it to the prefetch it asked for.
+	//
+	// Without a bound, prefetch limits only the size of one claim batch and not
+	// the work in hand: the consume loop claims, streams and loops again
+	// without waiting, so one consumer drains the whole backlog in
+	// milliseconds. Measured — one replica took every message while its
+	// sibling sat idle, and the visibility clock was running on messages that
+	// had not been started.
+	//
+	// Counted on delivery rather than reserved before the claim. Reserving
+	// first leaks: a claim that finds nothing never delivers and never gets
+	// acknowledged, so the reservation is never returned and the consumer
+	// blocks for good on its next poll. That is not hypothetical — it is what
+	// the first version of this did, and it looked exactly like the bug it was
+	// meant to fix.
+	inflightMu sync.Mutex
+	inflight   int
 }
 
 // New builds the host-side service for a plugin instance.

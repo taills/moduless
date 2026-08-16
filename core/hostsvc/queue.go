@@ -87,7 +87,7 @@ func (p *PGQueue) Enqueue(ctx context.Context, pluginKey, topic string, payload 
 // separate call from the plugin. That means a plugin that dies mid-handler
 // simply lets the visibility timeout lapse and the message is redelivered,
 // rather than the delivery being lost with the connection.
-func (p *PGQueue) Consume(ctx context.Context, pluginKey, topic string, prefetch int, visibility time.Duration, deliver func(Message) error) error {
+func (p *PGQueue) Consume(ctx context.Context, pluginKey, topic string, prefetch int, visibility time.Duration, awaitRoom func(context.Context) error, deliver func(Message) error) error {
 	if prefetch <= 0 {
 		prefetch = 1
 	}
@@ -102,6 +102,15 @@ func (p *PGQueue) Consume(ctx context.Context, pluginKey, topic string, prefetch
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil // the consumer went away; not an error
+		}
+
+		// Before the claim, not after: a claimed message is already out of
+		// every other consumer's reach and its visibility clock is already
+		// running.
+		if awaitRoom != nil {
+			if err := awaitRoom(ctx); err != nil {
+				return nil
+			}
 		}
 
 		msgs, err := p.q.Claim(ctx, pluginKey, topic, prefetch, visibility)

@@ -91,6 +91,29 @@ type Config struct {
 	// request scope and must be safe against concurrent requests.
 	OnConfigChanged func(config map[string]string)
 
+	// OnReady runs once, on its own goroutine, after Core has connected and
+	// the initial configuration has been applied. It is where background work
+	// belongs — a queue consumer, a poller, anything that runs outside a
+	// request.
+	//
+	// It cannot be main(): sdk.Queue and the other host clients are nil until
+	// Core hands over the reverse connection, which happens after Serve. And it
+	// cannot be OnConfigChanged, which fires again on every later change and
+	// would start a second consumer each time.
+	//
+	// The context is cancelled when Core asks the plugin to drain, so a
+	// blocking call like Queue.Consume returns instead of being killed.
+	//
+	//	sdk.Serve(sdk.Config{
+	//		OnReady: func(ctx context.Context) {
+	//			err := sdk.Queue.Consume(ctx, "accounts", handle)
+	//			if err != nil && !errors.Is(err, context.Canceled) {
+	//				sdk.Log.Error(ctx, "consumer stopped", "err", err)
+	//			}
+	//		},
+	//	})
+	OnReady func(ctx context.Context)
+
 	// OnShutdown runs when Core asks the plugin to drain. In-flight requests
 	// are already finishing; use this to close what the plugin itself opened.
 	// Core kills the process once the drain deadline elapses regardless.

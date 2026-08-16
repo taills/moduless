@@ -885,6 +885,38 @@ sdk.PhasePreRoute: func(ctx context.Context, req *sdk.FilterRequest) (*sdk.Filte
 
 `post_handler` 之后改写路径没有意义（后端已经跑完），Core 会忽略。
 
+### `prefetch` 是「未确认的在途数」
+
+消费者一次只握住 `prefetch` 条**尚未确认**的消息（SDK 目前固定为 1：一次一条，处理完再要下一条）。
+
+这一条以前不成立，而它的两个后果都不显眼：
+
+- **副本之间不分担工作。** 服务端发出消息就继续认领下一条，不等确认，所以一个消费者能在毫秒内吸走整个积压，其余副本空转。实测修复前后：1 副本 2.05s、2 副本 **2.03s → 1.11s**。
+- **可见性超时会在消息还没被处理时走完。** 被认领的消息就已经离开了其他消费者的视野、超时时钟也已经开始走。积压够大时，消息会在插件还没开始处理前就被判超时并**重投** —— 表现为重复执行，看起来像插件不幂等。
+
+所以要提高队列吞吐，加 `replicas`，而不是指望单个进程内部并发。
+
+### 后台工作：`OnReady`
+
+队列消费者、轮询器 —— 任何在请求之外跑的东西 —— 放在 `OnReady`：
+
+```go
+sdk.Serve(sdk.Config{
+    OnReady: func(ctx context.Context) {
+        err := sdk.Queue.Consume(ctx, "accounts", handle)
+        if err != nil && !errors.Is(err, context.Canceled) {
+            sdk.Log.Error(ctx, "consumer stopped", "err", err)
+        }
+    },
+})
+```
+
+**不能放在 `main()`**：`sdk.Queue` 和其余宿主客户端要等 Core 递过反向连接才有值，而那发生在 `sdk.Serve` 之后 —— 在 `main()` 里拿到的是 nil，启动时直接 panic。这和「在 `main()` 里读配置会拿到空 map」是同一个时序问题。
+
+**也不能放在 `OnConfigChanged`**：它每次配置变更都会再触发一次，管理员每改一次设置就会多出一个消费者。这个失败是安静的 —— 表现为工作被重复处理，而不是报错。
+
+`OnReady` 只跑一次，在初始配置应用**之后**（所以能读到管理员配的值），单独一个 goroutine。它拿到的 ctx 会在 Core 要求排空时取消，所以阻塞中的 `Consume` 是自己返回，而不是等着被杀。
+
 ### Body
 
 默认不把 body 跨进程传给 filter。实测一个 64KB 的 body 会让调用成本变成空 body 的四倍，而多数 filter 只看方法、路径、头和身份。

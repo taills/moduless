@@ -71,6 +71,14 @@ func launchPlugin(t testing.TB, key, version string, granted []string) *pluginho
 
 // launchReplica is launchPlugin with an explicit instance id and load-balancing
 // weight, for tests that run several replicas of the same plugin.
+//
+// Each instance gets its own cache and lock table here, which is NOT what Core
+// does — main.go builds one set of capabilities and hands the same Deps to
+// every plugin, so replicas share them. That is fine for what this helper is
+// used for (routing and load balancing, where the state does not matter) and
+// wrong for anything about shared state: two replicas would each hold the same
+// lock and the fault would be in this function. Use launchSharedReplicas for
+// those; see tests/lock_replica_test.go.
 func launchReplica(t testing.TB, key, instanceID, version string, weight int, granted []string) *pluginhost.Instance {
 	t.Helper()
 

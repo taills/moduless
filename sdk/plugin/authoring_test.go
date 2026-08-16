@@ -3,9 +3,12 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	pb "github.com/taills/moduless/proto/plugin"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 )
 
 // What a plugin author can test without a live Core.
@@ -129,5 +132,108 @@ func TestContinueIsDistinctFromNothing(t *testing.T) {
 	if got := none.Inspect().Action; got != ActionUnrecognised {
 		t.Errorf("a nil result reads as %s; a filter that returned nothing is not "+
 			"the same as one that let the request through", got)
+	}
+}
+
+// OnReady is where background work starts, and both halves of that matter.
+//
+// It exists because there is nowhere else. main() runs before Core hands over
+// the reverse connection, so sdk.Queue is nil there; OnConfigChanged fires
+// again on every later change, so starting a consumer in it leaves one running
+// per edit. Neither failure is loud — the first is a nil dereference at
+// startup, the second is silent duplicate consumption.
+func TestOnReadyRunsOnceAfterConfiguration(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		calls    int
+		sawValue string
+	)
+	p := newPlugin(Config{
+		OnConfigChanged: func(cfg map[string]string) {
+			mu.Lock()
+			defer mu.Unlock()
+			sawValue = cfg["greeting"]
+		},
+		OnReady: func(context.Context) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			// The settings must already be applied: work starting here reads
+			// configuration, and reading it before OnConfigChanged has run
+			// would silently use the compiled-in defaults.
+			if sawValue == "" {
+				t.Error("OnReady ran before the configuration was applied")
+			}
+		},
+	})
+	current.set(p)
+
+	req := &pb.ConfigureRequest{
+		PluginKey: "syncer",
+		Config:    map[string]string{"greeting": "configured"},
+	}
+	if _, err := p.Configure(t.Context(), req); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	// A second Configure is what a reconfiguration looks like from here.
+	if _, err := p.Configure(t.Context(), req); err != nil {
+		t.Fatalf("second Configure: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := calls
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Give a second call a chance to arrive, or "ran once" would only mean
+	// "the second one had not landed yet".
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("OnReady ran %d times; twice means a second consumer for every "+
+			"configuration change, which shows up as duplicated work rather than "+
+			"as an error", calls)
+	}
+}
+
+// The context OnReady is given ends when Core asks the plugin to drain, so a
+// blocking Consume returns instead of being killed with the process.
+func TestOnReadyContextIsCancelledOnShutdown(t *testing.T) {
+	stopped := make(chan struct{})
+	p := newPlugin(Config{
+		OnReady: func(ctx context.Context) {
+			<-ctx.Done()
+			close(stopped)
+		},
+	})
+	current.set(p)
+
+	if _, err := p.Configure(t.Context(), &pb.ConfigureRequest{PluginKey: "syncer"}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+
+	select {
+	case <-stopped:
+		t.Fatal("the context was already cancelled before Shutdown was called")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := p.Shutdown(t.Context(), &pb.ShutdownRequest{}); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Error("OnReady's context was not cancelled by Shutdown; a blocking consumer " +
+			"would sit there until Core killed the process, which is what the drain " +
+			"deadline exists to avoid")
 	}
 }

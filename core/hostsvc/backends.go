@@ -101,9 +101,16 @@ type Message struct {
 
 // QueueBackend is a durable, at-least-once queue. Consume blocks, delivering
 // messages until the context is cancelled.
+//
+// awaitRoom is called before each claim and must block while the consumer
+// already holds all the work it asked for. Claiming is what starts a message's
+// visibility clock and takes it out of everyone else's reach, so a consumer
+// that claims faster than it works both starves its replicas and lets the
+// clock run on messages it has not begun. Gating after the claim — inside
+// deliver — is too late by exactly one message.
 type QueueBackend interface {
 	Enqueue(ctx context.Context, pluginKey, topic string, payload []byte, opts EnqueueOptions) (id int64, deduplicated bool, err error)
-	Consume(ctx context.Context, pluginKey, topic string, prefetch int, visibility time.Duration, deliver func(Message) error) error
+	Consume(ctx context.Context, pluginKey, topic string, prefetch int, visibility time.Duration, awaitRoom func(context.Context) error, deliver func(Message) error) error
 	Ack(ctx context.Context, pluginKey string, id int64) error
 	Nack(ctx context.Context, pluginKey string, id int64, reason string, retryAfter time.Duration) error
 }

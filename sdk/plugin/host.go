@@ -467,6 +467,17 @@ func (m *QueueMessage) Decode(dest any) error { return json.Unmarshal(m.Payload,
 // A handler returning nil acknowledges the message; returning an error sends
 // it back for retry, and it is dead-lettered once its attempts run out.
 func (q *QueueClient) Consume(ctx context.Context, topic string, handler func(context.Context, *QueueMessage) error) error {
+	// Prefetch 1, and deliberately not a knob.
+	//
+	// prefetch is how many *unacknowledged* messages this consumer may hold,
+	// and the loop below calls the handler synchronously — one message at a
+	// time, per process. Asking for more would hold messages this process is
+	// not working on, and a claimed message is already out of every other
+	// replica's reach with its visibility clock running, so the surplus would
+	// starve the siblings and get redelivered as if the handler had failed.
+	//
+	// The way to process more at once is another replica, not a bigger number
+	// here.
 	stream, err := q.c.Consume(outgoing(ctx), &pb.ConsumeRequest{Topic: topic, Prefetch: 1})
 	if err != nil {
 		return err

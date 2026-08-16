@@ -135,6 +135,41 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 			return &pb.HttpResponse{StatusCode: 400, Body: []byte("bad size")}, nil
 		}
 		body = bytes.Repeat([]byte("x"), n)
+	case "/lock":
+		// Takes the named lock, holds it briefly, and says whether it got it.
+		// Holding for a moment is the point: an exclusion test needs the two
+		// attempts to overlap, and a lock released before the second call
+		// arrives proves nothing.
+		host := e.hostClient()
+		got, err := host.AcquireLock(context.Background(), &pb.AcquireLockRequest{
+			Name: req.GetQuery(), TtlSeconds: 5,
+		})
+		if err != nil {
+			return &pb.HttpResponse{StatusCode: 500, Body: []byte(err.Error())}, nil
+		}
+		if !got.GetAcquired() {
+			return &pb.HttpResponse{
+				StatusCode: 200,
+				Headers: map[string]*pb.HeaderValues{
+					"X-Lock":     {Values: []string{"busy"}},
+					"X-Instance": {Values: []string{instance}},
+				},
+				Body: []byte("busy"),
+			}, nil
+		}
+		time.Sleep(150 * time.Millisecond)
+		_, _ = host.ReleaseLock(context.Background(), &pb.LeaseRequest{
+			Name: req.GetQuery(), LeaseId: got.GetLeaseId(),
+		})
+		return &pb.HttpResponse{
+			StatusCode: 200,
+			Headers: map[string]*pb.HeaderValues{
+				"X-Lock":     {Values: []string{"held"}},
+				"X-Instance": {Values: []string{instance}},
+			},
+			Body: []byte("held"),
+		}, nil
+
 	case "/env":
 		// Reports what the child process can actually see, so Core's tests can
 		// prove SkipHostEnv really withheld its own environment rather than

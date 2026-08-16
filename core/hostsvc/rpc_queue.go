@@ -53,14 +53,19 @@ func (s *Server) Consume(req *pb.ConsumeRequest, stream pb.HostServices_ConsumeS
 		return status.Error(codes.InvalidArgument, "topic is required")
 	}
 
+	visibility := time.Duration(req.GetVisibilityTimeoutSeconds()) * time.Second
+
 	return s.deps.Queue.Consume(
 		stream.Context(),
 		s.key,
 		req.GetTopic(),
 		int(req.GetPrefetch()),
-		time.Duration(req.GetVisibilityTimeoutSeconds())*time.Second,
+		visibility,
+		func(ctx context.Context) error {
+			return s.awaitRoom(ctx, int(req.GetPrefetch()), visibility)
+		},
 		func(m Message) error {
-			return stream.Send(&pb.QueueMessage{
+			if err := stream.Send(&pb.QueueMessage{
 				MessageId:     m.ID,
 				Topic:         m.Topic,
 				Payload:       m.Payload,
@@ -70,9 +75,63 @@ func (s *Server) Consume(req *pb.ConsumeRequest, stream pb.HostServices_ConsumeS
 				// A fresh id for this delivery attempt, linked to the request
 				// that enqueued the work through ParentTraceId.
 				TraceId: newDeliveryTraceID(m.ID, m.Attempt),
-			})
+			}); err != nil {
+				return err
+			}
+			s.enteredFlight()
+			return nil
 		},
 	)
+}
+
+// awaitRoom blocks while this consumer already holds its prefetch in
+// unacknowledged messages. Called before each claim.
+//
+// It waits without reserving anything: the count rises when a message is
+// actually delivered, so a claim that finds an empty queue costs nothing.
+//
+// Bounded by the visibility timeout rather than waiting forever. A plugin that
+// dies holding a message never acknowledges it, and the message becomes
+// claimable again when its visibility lapses; blocking past that point would
+// leave this consumer idle while its work is redelivered to somebody else.
+func (s *Server) awaitRoom(ctx context.Context, prefetch int, visibility time.Duration) error {
+	if prefetch <= 0 {
+		prefetch = 1
+	}
+	if visibility <= 0 {
+		visibility = 30 * time.Second
+	}
+	deadline := time.Now().Add(visibility)
+
+	for {
+		s.inflightMu.Lock()
+		n := s.inflight
+		s.inflightMu.Unlock()
+		if n < prefetch || time.Now().After(deadline) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+// enteredFlight records a message handed to the plugin.
+func (s *Server) enteredFlight() {
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	s.inflight++
+}
+
+// leftFlight records one acknowledged, however it ended.
+func (s *Server) leftFlight() {
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	if s.inflight > 0 {
+		s.inflight--
+	}
 }
 
 func (s *Server) Ack(ctx context.Context, req *pb.AckRequest) (*emptypb.Empty, error) {
@@ -85,6 +144,7 @@ func (s *Server) Ack(ctx context.Context, req *pb.AckRequest) (*emptypb.Empty, e
 	if err := s.deps.Queue.Ack(ctx, s.key, req.GetMessageId()); err != nil {
 		return nil, status.Errorf(codes.Internal, "ack: %v", err)
 	}
+	s.leftFlight()
 	return &emptypb.Empty{}, nil
 }
 
@@ -99,6 +159,7 @@ func (s *Server) Nack(ctx context.Context, req *pb.NackRequest) (*emptypb.Empty,
 		time.Duration(req.GetRetryAfterSeconds())*time.Second); err != nil {
 		return nil, status.Errorf(codes.Internal, "nack: %v", err)
 	}
+	s.leftFlight()
 	return &emptypb.Empty{}, nil
 }
 

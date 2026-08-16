@@ -1,0 +1,44 @@
+# A plugin that serialises work across its own replicas.
+#
+# The lock is the one host capability with no other example, and it exists for
+# exactly one situation: this plugin runs more than one process, and two of
+# them can independently pick up work touching the same thing.
+#
+# Note what does NOT need a lock, because reaching for one there is the common
+# mistake:
+#
+#   - Cron jobs. Core picks a single replica per scheduled run, so a job
+#     already runs once no matter how many replicas exist.
+#   - State inside one process. A sync.Mutex is free and correct.
+#   - Two different plugins coordinating. Lock names are namespaced per plugin
+#     key, so "sync" here and "sync" in another plugin are different locks —
+#     deliberately, or one plugin choosing an obvious word would stall
+#     everybody else.
+#
+# What is left is this: replicas of one plugin, reaching the same external
+# account.
+
+key: syncer
+display_name: 账户同步
+version: 1.0.0
+
+runtime:
+  entrypoint: bin/syncer
+  # Two replicas is the entire reason this example exists. With one, every
+  # lock in here would succeed on the first try and the code would look like
+  # ceremony.
+  replicas: 2
+
+# lock to serialise, queue to receive the work. No db: this example writes
+# nowhere, so that the lock is the only thing under discussion.
+permissions: [lock, queue]
+
+config:
+  - key: lock_wait_seconds
+    label: 抢锁等待
+    description: 拿不到锁时等多久再放弃。0 表示不等，立刻退回队列。
+    default: "5"
+  - key: work_seconds
+    label: 单次同步耗时
+    description: 演示用，模拟一次外部调用的耗时。
+    default: "2"

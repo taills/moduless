@@ -885,6 +885,21 @@ sdk.PhasePreRoute: func(ctx context.Context, req *sdk.FilterRequest) (*sdk.Filte
 
 `post_handler` 之后改写路径没有意义（后端已经跑完），Core 会忽略。
 
+### 进了死信之后
+
+消息用尽重试次数后进入死信，控制台会显示「已放弃 N 条」。**光有这个数字是没法处理的** —— 它说丢了 4 件事，但不说是哪 4 件、为什么、要不要紧。
+
+管理端点（需要 admin）：
+
+```
+GET  /api/system/plugins/<key>/dead?limit=50   列出：id、topic、payload、attempts、last_error、失败时间
+POST /api/system/plugins/<key>/dead/<id>/retry 放回待处理队列
+```
+
+重放会把 `attempts` **归零**。这是有意的：会去重放，说明有人看过它、判断失败的原因已经消除；带着已经耗尽的预算放回去，第一次抖动就会再死一遍 —— 而从外面看，那和「重放根本没生效」分不清。
+
+`payload` 是插件自己的数据，所以这两条路由和插件管理的其余部分一样是 **admin only**。
+
 ### 崩溃恢复的时间 = 可见性超时
 
 升级是有礼貌的：Core 让插件排空，handler 收到取消，SDK 顺手把消息 Nack 掉，新版本同一秒接手。**崩溃没有这些** —— 没有 `Shutdown`，就没有 Nack，消息保持「已认领」状态，直到后台维护发现它的租约过期。

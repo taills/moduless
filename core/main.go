@@ -75,6 +75,9 @@ func main() {
 	// PostgreSQL; they then report Unavailable rather than failing obscurely.
 	var pluginConfig *hostsvc.DBConfig
 	var pluginQueue *hostsvc.PGQueue
+	// deadLetters backs the admin endpoint that lists and retries what the
+	// queue gave up on. Nil without a database, and the endpoint says so.
+	var deadLetters *db.Queue
 	if databaseURL != "" {
 		var err error
 		conn, err = db.InitDB(databaseURL)
@@ -107,6 +110,7 @@ func main() {
 		queue.StartMaintenance(context.Background(), 30*time.Second, 24*time.Hour)
 		hostDeps.Queue = queue
 		pluginQueue = queue
+		deadLetters = rawQueue
 
 		log.Println("[core] document store and durable queue enabled")
 	} else {
@@ -280,6 +284,9 @@ func main() {
 	pluginsHandler := gateway.NewPluginsHandler(adminAuth, pluginManager)
 	if pluginConfig != nil {
 		pluginsHandler.Config = pluginConfig
+	}
+	if deadLetters != nil {
+		pluginsHandler.DeadLetters = deadLetters
 	}
 	gw.RegisterSystemRoute(func(p string) bool {
 		return p == gateway.PluginsAPIPrefix || hasPrefix(p, gateway.PluginsAPIPrefix+"/")

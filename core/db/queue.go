@@ -343,6 +343,81 @@ func (q *Queue) Stats(ctx context.Context, ownerKey, topic string) (QueueStats, 
 	return s, rows.Err()
 }
 
+// DeadMessage is a message the queue gave up on, as an operator needs to see
+// it: enough to judge whether it should be retried, and enough to retry it.
+type DeadMessage struct {
+	ID        int64     `json:"id"`
+	Topic     string    `json:"topic"`
+	Payload   []byte    `json:"payload"`
+	Attempts  int       `json:"attempts"`
+	LastError string    `json:"last_error"`
+	FailedAt  time.Time `json:"failed_at"`
+}
+
+// Dead lists what a plugin has given up on, newest first.
+//
+// The count alone was all anyone could see, and a count is not actionable: it
+// says four things were lost without saying which, why, or whether they
+// mattered. Working that out meant querying this table by hand — which is what
+// an operator would have to do too, and they may not have the access.
+func (q *Queue) Dead(ctx context.Context, ownerKey string, limit int) ([]DeadMessage, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	const query = `
+		SELECT id, topic, payload, attempts, COALESCE(last_error, ''), updated_at
+		FROM plugin_queue
+		WHERE owner_key = $1 AND status = 'dead'
+		ORDER BY updated_at DESC, id DESC
+		LIMIT $2;`
+
+	rows, err := q.db.QueryContext(ctx, query, ownerKey, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list dead: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DeadMessage
+	for rows.Next() {
+		var m DeadMessage
+		if err := rows.Scan(&m.ID, &m.Topic, &m.Payload, &m.Attempts, &m.LastError, &m.FailedAt); err != nil {
+			return nil, fmt.Errorf("scan dead message: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// RetryDead returns one dead message to the pending pool.
+//
+// The attempt counter goes back to zero, which is the point: the message is
+// being retried because somebody looked at it and decided the reason it failed
+// is gone. Returning it with its budget already spent would let it die again
+// on the first hiccup, and from the outside that is indistinguishable from the
+// retry having done nothing.
+//
+// The owner key is part of the predicate, so one plugin cannot revive
+// another's work by id.
+func (q *Queue) RetryDead(ctx context.Context, ownerKey string, id int64) error {
+	const query = `
+		UPDATE plugin_queue
+		SET status = 'pending',
+		    attempts = 0,
+		    available_at = $3,
+		    locked_until = NULL,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND owner_key = $2 AND status = 'dead';`
+
+	res, err := q.db.ExecContext(ctx, query, id, ownerKey, q.now())
+	if err != nil {
+		return fmt.Errorf("retry dead: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("no dead message %d for plugin %s", id, ownerKey)
+	}
+	return nil
+}
+
 // PurgeDone deletes completed messages older than the cutoff, so the table does
 // not grow without bound.
 func (q *Queue) PurgeDone(ctx context.Context, olderThan time.Duration) (int64, error) {

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/taills/moduless/core/db"
 	"github.com/taills/moduless/core/pluginhost"
 	"github.com/taills/moduless/manifest"
 )
@@ -35,6 +37,17 @@ type ConfigStore interface {
 	Set(ctx context.Context, pluginKey string, values map[string]string) error
 }
 
+// DeadLetterStore is the queue's failure sink, for the two things an operator
+// needs from it: seeing what was given up on, and putting one back.
+//
+// Optional for the same reason as ConfigStore — Core runs without a database —
+// and the endpoint says so rather than reporting an empty list, which would
+// read as "nothing has failed".
+type DeadLetterStore interface {
+	Dead(ctx context.Context, pluginKey string, limit int) ([]db.DeadMessage, error)
+	RetryDead(ctx context.Context, pluginKey string, id int64) error
+}
+
 // SecretPlaceholder is what the console sees in place of a secret's value.
 //
 // Submitting it back is understood as "leave this one alone". Without that,
@@ -55,6 +68,9 @@ type PluginsHandler struct {
 	// cannot be stored. The endpoint says so rather than accepting a value
 	// and losing it at the next restart.
 	Config ConfigStore
+
+	// DeadLetters is optional for the same reason.
+	DeadLetters DeadLetterStore
 }
 
 func NewPluginsHandler(resolver UserResolver, mgr PluginManager) *PluginsHandler {
@@ -97,6 +113,12 @@ func (h *PluginsHandler) Serve(w http.ResponseWriter, r *http.Request) {
 	// so it is dispatched before the action-only routes below.
 	if len(segments) == 2 && segments[1] == "config" {
 		h.serveConfig(w, r, key)
+		return
+	}
+
+	// The dead-letter queue: list, and retry one by id.
+	if len(segments) >= 2 && segments[1] == "dead" {
+		h.serveDeadLetters(w, r, key, segments[2:])
 		return
 	}
 
@@ -257,4 +279,52 @@ func maskSecrets(decls []manifest.ConfigDecl, values map[string]string) map[stri
 		}
 	}
 	return out
+}
+
+// serveDeadLetters lists a plugin's dead letters, and retries one by id.
+//
+// Until this existed the console showed a count and nothing else, which is not
+// something an operator can act on: it says four things were lost without
+// saying which, why, or whether they mattered. Finding out meant reading the
+// queue table directly.
+func (h *PluginsHandler) serveDeadLetters(w http.ResponseWriter, r *http.Request, key string, rest []string) {
+	if h.DeadLetters == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "the queue needs a database; Core is running without one",
+		})
+		return
+	}
+
+	switch {
+	case len(rest) == 0 && r.Method == http.MethodGet:
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		messages, err := h.DeadLetters.Dead(r.Context(), key, limit)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		// An explicit empty list rather than null, so a console rendering the
+		// response does not have to tell the two apart.
+		if messages == nil {
+			messages = []db.DeadMessage{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"messages": messages})
+
+	case len(rest) == 2 && rest[1] == "retry" && r.Method == http.MethodPost:
+		id, err := strconv.ParseInt(rest[0], 10, 64)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "message id must be a number"})
+			return
+		}
+		if err := h.DeadLetters.RetryDead(r.Context(), key, id); err != nil {
+			// Not found rather than a server error: the id is the caller's, and
+			// the usual reason is that somebody already retried it.
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"retried": id})
+
+	default:
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+	}
 }

@@ -135,6 +135,16 @@ func consume(ctx context.Context) {
 // something global: two replicas syncing *different* accounts should both
 // proceed. A single lock named "sync" would be correct and would also make the
 // second replica pointless.
+// leaseMargin is how much longer than the work itself the lease runs for, and
+// therefore — at a third of it — how often the lease is renewed.
+//
+// A var rather than a constant only so a test can shrink it. Renewal is the
+// part of this plugin most worth testing and the least observable in
+// production: it is what stops a replica finishing work on a lock it no longer
+// holds. At the production value a test would have to sit for ten seconds to
+// see one renewal, which means in practice nobody would test it.
+var leaseMargin = 30 * time.Second
+
 func syncAccount(ctx context.Context, j job) error {
 	account := j.Account
 	lockWait, work := current()
@@ -143,9 +153,9 @@ func syncAccount(ctx context.Context, j job) error {
 	// lock, the lease is what lets another replica take over — too short and
 	// somebody steals it from a live holder, too long and a crash blocks the
 	// account until it expires.
-	ttl := work + 30*time.Second
+	ttl := work + leaseMargin
 
-	lease, ok, err := sdk.Locks.Acquire(ctx, "account:"+account, ttl, lockWait)
+	lease, ok, err := acquire(ctx, "account:"+account, ttl, lockWait)
 	if err != nil {
 		return err
 	}
@@ -218,14 +228,55 @@ func syncAccount(ctx context.Context, j job) error {
 // So when there is nowhere to put it, hold on and wait for the lock instead.
 // Blocking here is backpressure — it costs neither a retry nor a slot in the
 // backlog, and it is what a full queue is asking for.
-func handleBusy(ctx context.Context, j job, ttl time.Duration) (*sdk.Lease, bool, error) {
+// lease is what this plugin needs from a held lock.
+//
+// Worth understanding why this can be an interface the plugin declares, when
+// the transaction body in extension-example/inventory needed the SDK to change.
+// Both *sdk.Lease and *sdk.TxClient hold an unexported gRPC client, so neither
+// can be built by a test — but a Lease is *returned* to the author, who is free
+// to widen it on the way past, while a TxClient is *handed to* the author's
+// callback, whose parameter type is not theirs to pick. The shapes look
+// identical and the answers are opposite.
+//
+// Renew and Release are methods rather than fields, which is what makes this
+// work. Lease.Expires is a field, and a field cannot be widened this way — code
+// needing it has to keep the concrete type.
+type lease interface {
+	Renew(ctx context.Context, ttl time.Duration) (bool, error)
+	Release(ctx context.Context) error
+}
+
+// acquire and republish are the seams over the two host capabilities.
+//
+// Functions rather than method values: sdk.Locks and sdk.Queue are nil until
+// Core hands over the reverse connection, so `var acquire = sdk.Locks.Acquire`
+// would bind a nil receiver at package initialisation and panic on the first
+// message — while reading as though it were correct.
+var acquire = func(ctx context.Context, name string, ttl, wait time.Duration) (lease, bool, error) {
+	l, ok, err := sdk.Locks.Acquire(ctx, name, ttl, wait)
+	if l == nil {
+		// Returning a nil *sdk.Lease directly would produce a non-nil interface
+		// holding a nil pointer, so a later `if l == nil` on the caller's side
+		// would be false and the nil would only surface as a panic. Nothing in
+		// this plugin checks that — it checks ok — but a seam that hands back a
+		// typed nil is a trap laid for whoever edits it next.
+		return nil, ok, err
+	}
+	return l, ok, err
+}
+
+var republish = func(ctx context.Context, j job) error {
+	_, _, err := sdk.Queue.Publish(ctx, "accounts", j, sdk.WithDelay(time.Second))
+	return err
+}
+
+func handleBusy(ctx context.Context, j job, ttl time.Duration) (lease, bool, error) {
 	if j.Requeues < maxRequeues {
 		j.Requeues++
 		// context.WithoutCancel: this runs on the way out of a handler whose
 		// context may already be cancelled by a drain, and dropping the
 		// republish there would lose the work entirely.
-		if _, _, err := sdk.Queue.Publish(context.WithoutCancel(ctx), "accounts", j,
-			sdk.WithDelay(time.Second)); err == nil {
+		if err := republish(context.WithoutCancel(ctx), j); err == nil {
 			sdk.Log.Info(ctx, "account busy, requeued",
 				"account", j.Account, "requeues", j.Requeues)
 			return nil, false, nil
@@ -234,14 +285,14 @@ func handleBusy(ctx context.Context, j job, ttl time.Duration) (*sdk.Lease, bool
 
 	sdk.Log.Info(ctx, "account busy and nowhere to requeue; waiting for the lock",
 		"account", j.Account, "requeues", j.Requeues)
-	lease, ok, err := sdk.Locks.Acquire(ctx, "account:"+j.Account, ttl, busyHoldWait)
+	l, ok, err := acquire(ctx, "account:"+j.Account, ttl, busyHoldWait)
 	if err != nil {
 		return nil, false, err
 	}
 	if !ok {
 		return nil, false, errStuck
 	}
-	return lease, true, nil
+	return l, true, nil
 }
 
 // maxSync is the longest a single sync is expected to take. The subscription

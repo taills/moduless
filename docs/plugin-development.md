@@ -535,6 +535,34 @@ var runTx = func(ctx context.Context, timeout time.Duration, fn func(sdk.TxOps) 
 
 `sdk.DB` 在 Core 递过反向连接之前是 nil，**包初始化时取方法值会把那个 nil 接收者永久绑住** —— 代码看起来完全正常，生产里第一次下单就 panic。这和「在 `main()` 里读配置拿到空 map」是同一个时序陷阱。
 
+**「返回给你的」和「传给你的」不一样，这决定了要不要改 SDK。**
+
+`sdk.Lease` 和 `sdk.TxClient` 形状相同：都持有不导出的 gRPC 客户端，测试都造不出来。但 `Lease` 是 `Acquire` **返回**的，作者可以在接过来的路上把它收窄成自己的接口；`TxClient` 是 SDK **传给**回调的，参数类型不由作者决定 —— 所以前者不需要动 SDK，后者需要。
+
+```go
+// 自己声明就够了，*sdk.Lease 天然满足它
+type lease interface {
+    Renew(ctx context.Context, ttl time.Duration) (bool, error)
+    Release(ctx context.Context) error
+}
+```
+
+**前提是那些操作是方法而不是字段。**`Lease.Expires` 是字段，接口收不进去 —— 需要它的代码只能继续用具体类型。
+
+这类接缝有个 Go 自带的坑：
+
+```go
+var acquire = func(...) (lease, bool, error) {
+    l, ok, err := sdk.Locks.Acquire(...)
+    if l == nil {
+        return nil, ok, err   // 少了这一步，返回的是「非 nil 接口装着 nil 指针」
+    }
+    return l, ok, err
+}
+```
+
+把一个 nil 的 `*sdk.Lease` 直接当接口返回，调用方 `if l == nil` 会是 **false**，nil 只会在后面某次调用时以 panic 现身。`extension-example/syncer` 里注明了这一点。
+
 这个空缺有多大，量过一次：`extension-example/apikey` 是最依赖数据库的示例，14 个函数里 **8 个不需要任何接缝**（含 `authorize` —— 决定谁能访问什么的那个，签名是 `_ context.Context`，压根不碰宿主能力），**5 个**用 Get/Put/Delete 层面的接缝就够，**只有 1 个**（列表接口）撞上 `Where`。所以在动手造内存替身之前值得先量一遍自己的插件：多数逻辑并不在那 1/14 里。
 
 **接缝有两种写法，各有适用**：

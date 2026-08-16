@@ -533,9 +533,13 @@ got := notesQuery(req).Describe()
 
 **它报告的是请求，不是结果。**要断言「查出来的是哪几行」，仍然只能走 `tests/` 那套端到端路径。
 
-**`sdk.DB` 在没有 Core 时返回错误，不再是段错误。**未绑定时 `Put`/`Get`/`Delete`/`PutIfVersion`/`Tx` 返回 `sdk.ErrHostUnavailable`，`Where` 返回一个能构造、一执行就报同样错误的查询。于是「校验挡在存储之前」这类逻辑测得了，越过它的测试拿到的也是一句话而不是一个崩掉的进程。
+**没有 Core 时，每个能力都会报告自己，而不是崩溃。**`sdk.DB` / `Queue` / `Cache` / `Locks` / `Files` / `Events` / `HTTP` 以及 `Lease` 在未绑定时一律返回 `sdk.ErrHostUnavailable`。`Where` 是唯一的例外，而且是有意的：它返回一个**能构造、能被 `Describe()` 检查、一执行就报同样错误**的查询 —— 因为查询构造正是要在没有 Core 时测的东西。
 
-> **其余能力还没有这个待遇。**`sdk.Queue` / `Cache` / `Locks` / `Files` / `Events` / `HTTP` 在未绑定时仍然会 panic。通用的修法是给 `pb.HostServicesClient` 写一个统一返回错误的桩 —— 编译器会强制它完整，将来新增方法也漏不掉 —— 但那需要伪造 `Consume`/`Subscribe`/`Log` 三个流式方法。这里写出来，是因为**一个只做了一半的保护比没做更容易让人误以为全都安全了**。
+于是「校验挡在存储之前」这类逻辑测得了，越过去的测试拿到的也是一句话而不是一个崩掉的进程。
+
+> 上一版这里写的是「其余能力仍会 panic，因为通用修法需要伪造 `Consume`/`Subscribe`/`Log` 三个流式方法」。**那个理由是错的** —— 它描述的是「桩客户端」方案的障碍，而实际用的是逐方法早返回，在碰到流之前就返回了。把一个方案的困难当成另一个方案的困难，是这份文档里记下来的一次判断失误。
+>
+> 逐方法保护的弱点是会被遗忘。`TestEveryCapabilityReportsItselfWithoutACore` 用反射枚举所有导出方法逐个调用，所以新增方法漏加保护会立刻失败 —— 不依赖谁记得去扩清单。
 
 这个空缺到底挡住多少，量过两个样本：`apikey`（最依赖数据库）14 个函数里 1 个，`notes`（能力面最广）11 个里 3 个。但函数计数高估了它 —— `notes` 那三个里两个只是「调一次 `Count` 再格式化」，唯一带判断的 `listNotes` 现在被 `Describe()` 覆盖了。
 

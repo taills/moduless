@@ -447,6 +447,9 @@ func (t *TxClient) PutIfVersion(ctx context.Context, collection, id string, valu
 }
 
 func (t *TxClient) put(ctx context.Context, collection, id string, value any, expected int64) (int64, error) {
+	if t == nil || t.c == nil {
+		return 0, ErrHostUnavailable
+	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		return 0, fmt.Errorf("encode document: %w", err)
@@ -470,6 +473,9 @@ func (t *TxClient) put(ctx context.Context, collection, id string, value any, ex
 // dropped the version quietly made optimistic locking unavailable to exactly
 // the code most likely to want it.
 func (t *TxClient) Get(ctx context.Context, collection, id string, dest any) (found bool, version int64, err error) {
+	if t == nil || t.c == nil {
+		return false, 0, ErrHostUnavailable
+	}
 	resp, err := t.c.Get(outgoing(ctx), &pb.GetRequest{Collection: collection, DocId: id, TxId: t.id})
 	if err != nil {
 		return false, 0, hostErr(err)
@@ -486,6 +492,9 @@ func (t *TxClient) Get(ctx context.Context, collection, id string, dest any) (fo
 }
 
 func (t *TxClient) Delete(ctx context.Context, collection, id string) error {
+	if t == nil || t.c == nil {
+		return ErrHostUnavailable
+	}
 	_, err := t.c.Delete(outgoing(ctx), &pb.DeleteRequest{Collection: collection, DocId: id, TxId: t.id})
 	return err
 }
@@ -570,6 +579,9 @@ func WithMaxAttempts(n int) EnqueueOption {
 
 // Publish adds a message, encoding payload as JSON.
 func (q *QueueClient) Publish(ctx context.Context, topic string, payload any, opts ...EnqueueOption) (id int64, deduplicated bool, err error) {
+	if q == nil || q.c == nil {
+		return 0, false, ErrHostUnavailable
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return 0, false, fmt.Errorf("encode payload: %w", err)
@@ -627,6 +639,9 @@ func WithVisibilityTimeout(d time.Duration) ConsumeOption {
 }
 
 func (q *QueueClient) Consume(ctx context.Context, topic string, handler func(context.Context, *QueueMessage) error, opts ...ConsumeOption) error {
+	if q == nil || q.c == nil {
+		return ErrHostUnavailable
+	}
 	// Prefetch 1, and deliberately not a knob.
 	//
 	// prefetch is how many *unacknowledged* messages this consumer may hold,
@@ -702,6 +717,9 @@ func (q *QueueClient) Consume(ctx context.Context, topic string, handler func(co
 type CacheClient struct{ c pb.HostServicesClient }
 
 func (c *CacheClient) Get(ctx context.Context, key string, dest any) (bool, error) {
+	if c == nil || c.c == nil {
+		return false, ErrHostUnavailable
+	}
 	resp, err := c.c.CacheGet(outgoing(ctx), &pb.CacheGetRequest{Key: key})
 	if err != nil || !resp.GetFound() {
 		return false, err
@@ -713,6 +731,9 @@ func (c *CacheClient) Get(ctx context.Context, key string, dest any) (bool, erro
 }
 
 func (c *CacheClient) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
+	if c == nil || c.c == nil {
+		return ErrHostUnavailable
+	}
 	data, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("encode value: %w", err)
@@ -724,6 +745,9 @@ func (c *CacheClient) Set(ctx context.Context, key string, value any, ttl time.D
 }
 
 func (c *CacheClient) Delete(ctx context.Context, key string) error {
+	if c == nil || c.c == nil {
+		return ErrHostUnavailable
+	}
 	_, err := c.c.CacheDelete(outgoing(ctx), &pb.CacheDeleteRequest{Key: key})
 	return err
 }
@@ -743,6 +767,9 @@ type Lease struct {
 // Acquire takes a lock, waiting up to wait for it to become free. It reports
 // false when the lock is held by someone else.
 func (l *LockClient) Acquire(ctx context.Context, name string, ttl, wait time.Duration) (*Lease, bool, error) {
+	if l == nil || l.c == nil {
+		return nil, false, ErrHostUnavailable
+	}
 	resp, err := l.c.AcquireLock(outgoing(ctx), &pb.AcquireLockRequest{
 		Name:        name,
 		TtlSeconds:  wholeSeconds(ttl),
@@ -761,6 +788,9 @@ func (l *LockClient) Acquire(ctx context.Context, name string, ttl, wait time.Du
 // means another holder may already be doing this work — stop rather than
 // continue.
 func (le *Lease) Renew(ctx context.Context, ttl time.Duration) (bool, error) {
+	if le == nil || le.c == nil {
+		return false, ErrHostUnavailable
+	}
 	resp, err := le.c.RenewLock(outgoing(ctx), &pb.LeaseRequest{
 		Name: le.name, LeaseId: le.id, TtlSeconds: wholeSeconds(ttl),
 	})
@@ -773,6 +803,9 @@ func (le *Lease) Renew(ctx context.Context, ttl time.Duration) (bool, error) {
 
 // Release frees the lock.
 func (le *Lease) Release(ctx context.Context) error {
+	if le == nil || le.c == nil {
+		return ErrHostUnavailable
+	}
 	_, err := le.c.ReleaseLock(outgoing(ctx), &pb.LeaseRequest{Name: le.name, LeaseId: le.id})
 	return err
 }
@@ -783,6 +816,9 @@ type FilesClient struct{ c pb.HostServicesClient }
 
 // Put stores a file and returns its id.
 func (f *FilesClient) Put(ctx context.Context, filename, mimeType string, r io.Reader) (string, int64, error) {
+	if f == nil || f.c == nil {
+		return "", 0, ErrHostUnavailable
+	}
 	stream, err := f.c.PutFile(outgoing(ctx))
 	if err != nil {
 		return "", 0, err
@@ -827,6 +863,9 @@ func (f *FilesClient) Put(ctx context.Context, filename, mimeType string, r io.R
 // DownloadURL mints a short-lived URL the browser can fetch directly, so file
 // bytes never pass back through the plugin.
 func (f *FilesClient) DownloadURL(ctx context.Context, fileID, userID string, expiry time.Duration) (string, time.Time, error) {
+	if f == nil || f.c == nil {
+		return "", time.Time{}, ErrHostUnavailable
+	}
 	resp, err := f.c.GenerateDownloadToken(outgoing(ctx), &pb.DownloadTokenRequest{
 		FileId: fileID, UserId: userID, ExpirySeconds: wholeSeconds(expiry),
 	})
@@ -838,6 +877,9 @@ func (f *FilesClient) DownloadURL(ctx context.Context, fileID, userID string, ex
 
 // Delete removes a file this plugin created.
 func (f *FilesClient) Delete(ctx context.Context, fileID string) error {
+	if f == nil || f.c == nil {
+		return ErrHostUnavailable
+	}
 	_, err := f.c.DeleteFile(outgoing(ctx), &pb.FileRequest{FileId: fileID})
 	return err
 }
@@ -849,6 +891,9 @@ func (f *FilesClient) Delete(ctx context.Context, fileID string) error {
 type EventClient struct{ c pb.HostServicesClient }
 
 func (e *EventClient) Publish(ctx context.Context, name string, payload any) error {
+	if e == nil || e.c == nil {
+		return ErrHostUnavailable
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("encode event: %w", err)
@@ -873,6 +918,9 @@ func (e *EventClient) Publish(ctx context.Context, name string, payload any) err
 // Use "otherplugin:event" to hear from another plugin, or a bare name for this
 // plugin's own events.
 func (e *EventClient) Subscribe(ctx context.Context, name string, handler func(context.Context, []byte)) error {
+	if e == nil || e.c == nil {
+		return ErrHostUnavailable
+	}
 	stream, err := e.c.Subscribe(outgoing(ctx), &pb.SubscribeRequest{EventName: name})
 	if err != nil {
 		return err
@@ -897,6 +945,9 @@ type HTTPClient struct{ c pb.HostServicesClient }
 
 // Do performs a request. The body of the response is fully read.
 func (h *HTTPClient) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
+	if h == nil || h.c == nil {
+		return nil, ErrHostUnavailable
+	}
 	var body []byte
 	if req.Body != nil {
 		var err error

@@ -424,6 +424,16 @@ req = req.WithContext(sdk.WithUser(req.Context(), &sdk.UserContext{
 
 **还没有的**：一个能替 `sdk.DB` / `sdk.Queue` / `sdk.Cache` 的内存实现。碰到这些能力的代码，目前只能靠把它和纯逻辑分开来测，或者照本仓库 `tests/` 的做法 —— 现场编译插件、由 Core 启动、发真实请求。这是一个已知的空缺。
 
+### 一次响应能有多大
+
+插件和 Core 之间是 gRPC，单条消息上限 **16 MiB**（gRPC 自己的默认是 4 MiB，两端都显式抬高了，并在 `Configure` 时协商）。
+
+超了会怎样：插件的 `HandleHTTP` 返回一个 `ResourceExhausted` 错误，错误里带着两个数字（实际大小 vs 上限）；调用者拿到 **502**，正文里就是这句话。**插件进程不会因此死掉**，下一个请求照常。
+
+不是 413 —— 413 说的是「你发来的请求体太大」，而这是响应太大，调用者改什么都没用。
+
+真正的大块内容不要塞进响应体，走文件能力：插件用 `sdk.Files.Put` 写入，再给一个 `DownloadURL`，浏览器直接从 Core 取。二进制内容本来就不该穿过插件传输层。
+
 ### 几件文档以前没说的小事
 
 **路由是相对的。**Core 会剥掉 `/api/plugins/<key>` 前缀再交给你的 `http.Handler`，所以 `mux.HandleFunc("GET /orders", ...)` 对应外部的 `/api/plugins/orders/orders`。而 filter 的 `match.paths` 是在 Core 那一层匹配的，要写**完整路径**。

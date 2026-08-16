@@ -11,11 +11,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -122,6 +124,17 @@ func (e *echoImpl) HandleHTTP(ctx context.Context, req *pb.HttpRequest) (*pb.Htt
 
 	body := req.GetBody()
 	switch req.GetPath() {
+	case "/large":
+		// A response of a size the caller chooses, so a test can drive the
+		// message-size ceiling from both sides of it. gRPC's own default is
+		// 4 MiB and this framework raises it to 16 MiB on both ends; nothing
+		// had ever sent anything big enough to find out whether the raise
+		// actually took effect.
+		n, err := strconv.Atoi(req.GetQuery())
+		if err != nil || n < 0 {
+			return &pb.HttpResponse{StatusCode: 400, Body: []byte("bad size")}, nil
+		}
+		body = bytes.Repeat([]byte("x"), n)
 	case "/env":
 		// Reports what the child process can actually see, so Core's tests can
 		// prove SkipHostEnv really withheld its own environment rather than

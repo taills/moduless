@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	pb "github.com/taills/moduless/proto/plugin"
 )
@@ -26,6 +27,11 @@ type fakeHost struct {
 	lastAggregate *pb.AggregateRequest
 	lastPut       *pb.PutRequest
 	lastEnqueue   *pb.EnqueueRequest
+	lastAcquire   *pb.AcquireLockRequest
+	lastRenew     *pb.LeaseRequest
+	lastCacheSet  *pb.CacheSetRequest
+	lastBeginTx   *pb.BeginTxRequest
+	lastDownload  *pb.DownloadTokenRequest
 
 	queryResp     *pb.QueryResponse
 	aggregateResp *pb.AggregateResponse
@@ -496,4 +502,196 @@ func TestASubSecondDelayIsNotDiscarded(t *testing.T) {
 				"rounded away", d, onWire)
 		}
 	}
+}
+
+func (f *fakeHost) AcquireLock(_ context.Context, in *pb.AcquireLockRequest, _ ...grpc.CallOption) (*pb.AcquireLockResponse, error) {
+	f.lastAcquire = in
+	return &pb.AcquireLockResponse{Acquired: true, LeaseId: "lease-1"}, nil
+}
+
+func (f *fakeHost) RenewLock(_ context.Context, in *pb.LeaseRequest, _ ...grpc.CallOption) (*pb.AcquireLockResponse, error) {
+	f.lastRenew = in
+	return &pb.AcquireLockResponse{Acquired: true}, nil
+}
+
+func newTestLocks() (*LockClient, *fakeHost) {
+	host := &fakeHost{}
+	return &LockClient{c: host}, host
+}
+
+// The lock durations, as they reach the host.
+//
+// The lock backend and its RPC layer have four tests between them. The SDK
+// wrapper — the part a plugin author actually calls — had none, and it is
+// where the durations are converted.
+func TestLockDurationsReachTheRequest(t *testing.T) {
+	locks, host := newTestLocks()
+
+	lease, ok, err := locks.Acquire(t.Context(), "nightly", 30*time.Second, 5*time.Second)
+	if err != nil || !ok {
+		t.Fatalf("Acquire: ok=%v err=%v", ok, err)
+	}
+	if got := host.lastAcquire.GetTtlSeconds(); got != 30 {
+		t.Errorf("ttl_seconds = %d, want 30", got)
+	}
+	if got := host.lastAcquire.GetWaitSeconds(); got != 5 {
+		t.Errorf("wait_seconds = %d, want 5", got)
+	}
+
+	if _, err := lease.Renew(t.Context(), 45*time.Second); err != nil {
+		t.Fatalf("Renew: %v", err)
+	}
+	if got := host.lastRenew.GetTtlSeconds(); got != 45 {
+		t.Errorf("renew ttl_seconds = %d, want 45", got)
+	}
+	if got := host.lastRenew.GetLeaseId(); got != "lease-1" {
+		t.Errorf("renew carried lease id %q, want the one Acquire returned", got)
+	}
+}
+
+// A sub-second TTL is not the same as no TTL.
+//
+// Same truncation as WithDelay had, and it lands somewhere counter-intuitive:
+// a zero ttl_seconds is not a lock that expires at once, it is the host's
+// DefaultLockTTL of thirty seconds. So an author asking for a half-second
+// lease — short on purpose, so that a crashed holder frees it quickly — gets
+// one sixty times longer, and nothing says so.
+func TestASubSecondLockTTLIsNotSilentlyChanged(t *testing.T) {
+	for _, ttl := range []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 1500 * time.Millisecond} {
+		locks, host := newTestLocks()
+		if _, _, err := locks.Acquire(t.Context(), "job", ttl, 0); err != nil {
+			t.Fatalf("Acquire: %v", err)
+		}
+		onWire := time.Duration(host.lastAcquire.GetTtlSeconds()) * time.Second
+		t.Logf("Acquire ttl=%s → ttl_seconds=%d (%s)", ttl, host.lastAcquire.GetTtlSeconds(), onWire)
+
+		if onWire < ttl {
+			t.Errorf("ttl %s reached the host as %s: shorter than asked means the lease "+
+				"can expire while its holder believes it still owns the lock, and zero "+
+				"does not mean zero — the host reads it as its own default", ttl, onWire)
+		}
+	}
+}
+
+// A sub-second wait is not the same as not waiting.
+//
+// wait_seconds of zero makes the host return immediately rather than poll, so
+// Acquire(…, 500*time.Millisecond) does not wait at all — it reports the lock
+// as taken the instant it finds it held. A caller that wrote a short wait
+// deliberately, to smooth over a contended moment, gets none of it.
+func TestASubSecondLockWaitStillWaits(t *testing.T) {
+	locks, host := newTestLocks()
+	if _, _, err := locks.Acquire(t.Context(), "job", time.Minute, 500*time.Millisecond); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	got := host.lastAcquire.GetWaitSeconds()
+	t.Logf("Acquire wait=500ms → wait_seconds=%d", got)
+	if got < 1 {
+		t.Errorf("a 500ms wait reached the host as %d seconds; the host treats zero as "+
+			"do-not-wait, so the caller's wait was discarded rather than rounded", got)
+	}
+}
+
+func (f *fakeHost) CacheSet(_ context.Context, in *pb.CacheSetRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	f.lastCacheSet = in
+	return &emptypb.Empty{}, nil
+}
+
+func (f *fakeHost) BeginTx(_ context.Context, in *pb.BeginTxRequest, _ ...grpc.CallOption) (*pb.BeginTxResponse, error) {
+	f.lastBeginTx = in
+	return &pb.BeginTxResponse{TxId: "tx-1"}, nil
+}
+
+func (f *fakeHost) GenerateDownloadToken(_ context.Context, in *pb.DownloadTokenRequest, _ ...grpc.CallOption) (*pb.DownloadTokenResponse, error) {
+	f.lastDownload = in
+	return &pb.DownloadTokenResponse{Url: "/download/x"}, nil
+}
+
+// No positive duration may reach the wire as zero.
+//
+// Every duration this SDK sends crosses as whole seconds, and every conversion
+// truncated. Zero is not "a very short time" to any of the readers — each one
+// treats it as "use my own default" or "no limit", so asking for a small bound
+// selected the unbounded case:
+//
+//	cache ttl 500ms      → an entry that never expires
+//	lock ttl 500ms       → the host's thirty-second default
+//	lock wait 500ms      → do not wait at all
+//	tx timeout 500ms     → the thirty-second default
+//	download expiry 500ms→ the five-minute default
+//	publish delay 600ms  → deliverable immediately
+//
+// This walks every entry point rather than testing the conversion helper,
+// because the helper being right is not the property that matters — a seventh
+// call site that forgets to use it is the failure this has to catch.
+func TestNoPositiveDurationBecomesZeroOnTheWire(t *testing.T) {
+	const tiny = time.Millisecond
+
+	t.Run("cache ttl", func(t *testing.T) {
+		host := &fakeHost{}
+		cache := &CacheClient{c: host}
+		if err := cache.Set(t.Context(), "k", []byte("v"), tiny); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+		if got := host.lastCacheSet.GetTtlSeconds(); got < 1 {
+			t.Errorf("ttl_seconds = %d; a cache entry the caller wanted to expire is "+
+				"stored with no expiry at all", got)
+		}
+	})
+
+	t.Run("transaction timeout", func(t *testing.T) {
+		host := &fakeHost{}
+		db := &DBClient{c: host}
+		if err := db.Tx(t.Context(), tiny, func(*TxClient) error { return nil }); err != nil {
+			t.Fatalf("Tx: %v", err)
+		}
+		if got := host.lastBeginTx.GetTimeoutSeconds(); got < 1 {
+			t.Errorf("timeout_seconds = %d; the transaction gets the host's default "+
+				"instead of the short bound the caller asked for, and holds a pooled "+
+				"connection for it", got)
+		}
+	})
+
+	t.Run("download expiry", func(t *testing.T) {
+		host := &fakeHost{}
+		files := &FilesClient{c: host}
+		if _, _, err := files.DownloadURL(t.Context(), "file-1", "user-1", tiny); err != nil {
+			t.Fatalf("DownloadURL: %v", err)
+		}
+		if got := host.lastDownload.GetExpirySeconds(); got < 1 {
+			t.Errorf("expiry_seconds = %d; a deliberately short-lived download link "+
+				"gets the five-minute default", got)
+		}
+	})
+
+	t.Run("publish delay", func(t *testing.T) {
+		q, host := newTestQueue()
+		if _, _, err := q.Publish(t.Context(), "jobs", nil, WithDelay(tiny)); err != nil {
+			t.Fatalf("Publish: %v", err)
+		}
+		if got := host.lastEnqueue.GetDelaySeconds(); got < 1 {
+			t.Errorf("delay_seconds = %d; the message is deliverable at once", got)
+		}
+	})
+
+	t.Run("lock ttl and wait", func(t *testing.T) {
+		locks, host := newTestLocks()
+		if _, _, err := locks.Acquire(t.Context(), "job", tiny, tiny); err != nil {
+			t.Fatalf("Acquire: %v", err)
+		}
+		if got := host.lastAcquire.GetTtlSeconds(); got < 1 {
+			t.Errorf("ttl_seconds = %d; the lease gets the host's default", got)
+		}
+		if got := host.lastAcquire.GetWaitSeconds(); got < 1 {
+			t.Errorf("wait_seconds = %d; the caller's wait is discarded", got)
+		}
+	})
+}
+
+func (f *fakeHost) CommitTx(_ context.Context, _ *pb.TxRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
+}
+
+func (f *fakeHost) RollbackTx(_ context.Context, _ *pb.TxRequest, _ ...grpc.CallOption) (*emptypb.Empty, error) {
+	return &emptypb.Empty{}, nil
 }

@@ -251,7 +251,7 @@ func decodeDocuments(docs [][]byte, dest any) error {
 // Core rolls it back once its timeout passes, so keep the work inside short.
 func (d *DBClient) Tx(ctx context.Context, timeout time.Duration, fn func(tx *TxClient) error) error {
 	resp, err := d.c.BeginTx(outgoing(ctx), &pb.BeginTxRequest{
-		TimeoutSeconds: int32(timeout / time.Second),
+		TimeoutSeconds: wholeSeconds(timeout),
 	})
 	if err != nil {
 		return hostErr(err)
@@ -345,6 +345,42 @@ type QueueClient struct{ c pb.HostServicesClient }
 // EnqueueOption tunes a publish.
 type EnqueueOption func(*pb.EnqueueRequest)
 
+// wholeSeconds converts a duration to the whole seconds the wire carries,
+// rounding up.
+//
+// Every duration this SDK sends crosses as an int32 of seconds, and every one
+// of them used to truncate. That is the wrong direction for all three of them
+// and for different reasons, which is why they now share this:
+//
+//   - a delay is "not before", so flooring publishes early — 600ms became no
+//     delay at all;
+//   - a lock ttl is "held at least this long", so flooring can expire a lease
+//     while its owner still believes it holds the lock. And zero does not mean
+//     zero: the host reads it as DefaultLockTTL, so a deliberately short lease
+//     silently became a thirty-second one;
+//   - a wait is "try for this long", and the host treats zero as do-not-wait,
+//     so any sub-second wait was discarded rather than shortened.
+//
+// The same truncation is in the cache ttl, the download-token expiry and the
+// transaction timeout, and there the shared rule is clearer than "round up":
+// **a positive duration must never reach the wire as zero**, because every
+// reader treats zero as "use my own default" or "no limit at all". A 500ms
+// cache entry became one that never expires; a 500ms download link became the
+// five-minute default; a 500ms transaction timeout became thirty seconds. In
+// each case the caller picked a small number precisely to bound something, and
+// got the unbounded case instead.
+//
+// Rounding up costs at most a second, and never turns a duration the caller
+// chose into a different behaviour. Sub-second precision is simply not
+// expressible here; what matters is that asking for it does not silently
+// select the opposite.
+func wholeSeconds(d time.Duration) int32 {
+	if d <= 0 {
+		return 0
+	}
+	return int32((d + time.Second - 1) / time.Second)
+}
+
 // WithDelay holds a message back before it becomes deliverable.
 //
 // The wire carries whole seconds, so a duration that is not a whole number of
@@ -357,13 +393,7 @@ type EnqueueOption func(*pb.EnqueueRequest)
 // A delay is a floor, never a schedule. The message becomes *eligible* after
 // it, and is delivered whenever a consumer next asks.
 func WithDelay(d time.Duration) EnqueueOption {
-	return func(r *pb.EnqueueRequest) {
-		if d <= 0 {
-			r.DelaySeconds = 0
-			return
-		}
-		r.DelaySeconds = int32((d + time.Second - 1) / time.Second)
-	}
+	return func(r *pb.EnqueueRequest) { r.DelaySeconds = wholeSeconds(d) }
 }
 
 // WithDedupKey suppresses a duplicate while an identical message is still in
@@ -477,7 +507,7 @@ func (c *CacheClient) Set(ctx context.Context, key string, value any, ttl time.D
 		return fmt.Errorf("encode value: %w", err)
 	}
 	_, err = c.c.CacheSet(outgoing(ctx), &pb.CacheSetRequest{
-		Key: key, Value: data, TtlSeconds: int32(ttl / time.Second),
+		Key: key, Value: data, TtlSeconds: wholeSeconds(ttl),
 	})
 	return err
 }
@@ -504,8 +534,8 @@ type Lease struct {
 func (l *LockClient) Acquire(ctx context.Context, name string, ttl, wait time.Duration) (*Lease, bool, error) {
 	resp, err := l.c.AcquireLock(outgoing(ctx), &pb.AcquireLockRequest{
 		Name:        name,
-		TtlSeconds:  int32(ttl / time.Second),
-		WaitSeconds: int32(wait / time.Second),
+		TtlSeconds:  wholeSeconds(ttl),
+		WaitSeconds: wholeSeconds(wait),
 	})
 	if err != nil || !resp.GetAcquired() {
 		return nil, false, err
@@ -521,7 +551,7 @@ func (l *LockClient) Acquire(ctx context.Context, name string, ttl, wait time.Du
 // continue.
 func (le *Lease) Renew(ctx context.Context, ttl time.Duration) (bool, error) {
 	resp, err := le.c.RenewLock(outgoing(ctx), &pb.LeaseRequest{
-		Name: le.name, LeaseId: le.id, TtlSeconds: int32(ttl / time.Second),
+		Name: le.name, LeaseId: le.id, TtlSeconds: wholeSeconds(ttl),
 	})
 	if err != nil {
 		return false, hostErr(err)
@@ -587,7 +617,7 @@ func (f *FilesClient) Put(ctx context.Context, filename, mimeType string, r io.R
 // bytes never pass back through the plugin.
 func (f *FilesClient) DownloadURL(ctx context.Context, fileID, userID string, expiry time.Duration) (string, time.Time, error) {
 	resp, err := f.c.GenerateDownloadToken(outgoing(ctx), &pb.DownloadTokenRequest{
-		FileId: fileID, UserId: userID, ExpirySeconds: int32(expiry / time.Second),
+		FileId: fileID, UserId: userID, ExpirySeconds: wholeSeconds(expiry),
 	})
 	if err != nil {
 		return "", time.Time{}, hostErr(err)

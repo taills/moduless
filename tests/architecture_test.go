@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/taills/moduless/core/hostsvc"
+	"github.com/taills/moduless/manifest"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -244,5 +245,61 @@ func TestBuildOutputNamesAreIgnored(t *testing.T) {
 			t.Errorf("./%s is not ignored, so `go build ./extension-example/%s` "+
 				"leaves something a `git add -A` will commit: %s", name, name, out)
 		})
+	}
+}
+
+// An example that puts itself in the menu has to ship the page that menu leads
+// to. Core enforces this at runtime — apps_handler drops the entry when the
+// package has no frontend directory — but by then the mistake is already
+// packaged, and the person who notices is whoever clicked.
+//
+// Six of the eight examples were in exactly that state: menus declared, no
+// frontend anywhere, so every extension in the console led to a page reading
+// "404 page not found". The author's guide said not to do it and the examples
+// did it anyway, which is the combination worth a test rather than a sentence.
+//
+// Reads the manifest through the real loader rather than grepping, so a menu
+// declared in some other shape still counts.
+func TestExamplesWithMenusShipAFrontend(t *testing.T) {
+	entries, err := os.ReadDir("../extension-example")
+	if err != nil {
+		t.Fatalf("reading the examples: %v", err)
+	}
+
+	checked := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join("..", "extension-example", e.Name())
+		if _, err := os.Stat(filepath.Join(dir, "manifest.yaml")); err != nil {
+			continue
+		}
+
+		t.Run(e.Name(), func(t *testing.T) {
+			m, err := manifest.Load(filepath.Join(dir, "manifest.yaml"))
+			if err != nil {
+				t.Fatalf("loading the manifest: %v", err)
+			}
+			if len(m.Menus) == 0 {
+				return // backend-only, which is a fine thing to be
+			}
+			checked++
+
+			// The source of a page, not the built output: dist/ is gitignored,
+			// so requiring it here would fail on a clean checkout.
+			if _, err := os.Stat(filepath.Join(dir, "frontend", "package.json")); err != nil {
+				t.Errorf("%s declares %d menu(s) but has no frontend/ to serve; "+
+					"Core will drop the menu entry, and a plugin package built from "+
+					"this directory would show nothing where the menu points",
+					e.Name(), len(m.Menus))
+			}
+		})
+	}
+
+	// If every example became backend-only this test would pass while checking
+	// nothing, and the case it exists for would be unguarded again.
+	if checked == 0 {
+		t.Error("no example declares a menu, so this test verified nothing")
 	}
 }

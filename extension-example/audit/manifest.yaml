@@ -23,7 +23,15 @@ database:
 
 # 猜测点：叶子节点只声明 entry: ""，但本插件没有提供 frontend/ 目录。
 # 指南没说这种情况下控制台会怎么处理（空白页？报错？回退成占位符？）。
-# 没有 menus：纯后端插件，不带 frontend/。见 apikey/manifest.yaml 的说明。
+menus:
+  - path: /audit
+    title: 审计日志
+    icon: file-text
+    order: 50
+    # roles 不是鉴权 —— 真正的 admin 检查在 handler 里（见 main.go）。写在这里只是
+    # 不让非管理员看到一个点进去只有 forbidden 的菜单项。apikey/README.md 记着这个
+    # 区别被混淆时的代价。
+    roles: [admin]
 
 # phase 用的是文档表格里的名字 "log"；对应的 Go 常量名字（下方 main.go 里
 # 用的 sdk.PhaseLog）是猜的 —— 指南只给出过 sdk.PhasePreRoute 和

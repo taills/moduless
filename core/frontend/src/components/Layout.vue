@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { api, auth } from "../api";
-import { registry, refresh, subscribe } from "../pluginRegistry";
+import { registry, refresh, subscribe, resolveTitle } from "../pluginRegistry";
 import MenuTree from "./MenuTree.vue";
 
 const router = useRouter();
@@ -15,6 +15,14 @@ const isAdmin = computed(() => user.value && user.value.role === "admin");
 // role-filtered by Core, so it re-renders on its own when a plugin is enabled
 // or disabled.
 const menu = computed(() => registry.menu);
+
+// The breadcrumb names the page from the menu, so it reads "API 密钥" rather
+// than the route's raw parameter. Reading that parameter directly is what put
+// `[ "apikey" ]` in the topbar: it is repeatable, so it is an array.
+//
+// Depends on registry.menu, so it follows a plugin being enabled or disabled
+// without any extra wiring.
+const crumb = computed(() => (route.path === "/" ? "概览" : resolveTitle(route.path)));
 
 let unsubscribe = null;
 
@@ -66,7 +74,7 @@ async function logout() {
 
     <div class="body">
       <header class="topbar">
-        <div class="crumb">{{ route.path === "/" ? "概览" : (route.params.pathMatch || route.params.key || "") }}</div>
+        <div class="crumb">{{ crumb }}</div>
         <div class="user">
           <span>{{ user ? user.username : "" }}</span>
           <button @click="logout">退出</button>

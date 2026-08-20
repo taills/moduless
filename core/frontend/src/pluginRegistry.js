@@ -51,6 +51,42 @@ export function resolveEntry(routePath) {
   return best;
 }
 
+/**
+ * The title the menu gives a plugin route, for the breadcrumb.
+ *
+ * Unlike resolveEntry this matches group nodes too, which have no entry but do
+ * have a title worth showing.
+ *
+ * Only /apps routes have a title to look up. The console's own pages carry
+ * their own heading, so naming them here would print it twice.
+ *
+ * The breadcrumb used to read route.params.pathMatch directly. That param
+ * comes from `apps/:pathMatch(.*)*`, and the trailing `*` makes it repeatable,
+ * so it is an array — Vue interpolated it as `[ "apikey" ]`.
+ *
+ * @param {string} routePath a console path such as "/apps/reports/daily"
+ * @returns {string} the menu title, the path segment when the menu no longer
+ *   covers it, or "" for a route that is not a plugin's
+ */
+export function resolveTitle(routePath) {
+  if (!routePath.startsWith("/apps")) return "";
+  const target = routePath.slice("/apps".length) || "/";
+
+  let best = null;
+  const walk = (nodes) => {
+    for (const node of nodes || []) {
+      if (target === node.path || target.startsWith(node.path + "/")) {
+        if (!best || node.path.length > best.path.length) best = node;
+      }
+      walk(node.children);
+    }
+  };
+  walk(registry.menu);
+  // The fallback keeps this a string for a plugin that was just disabled —
+  // which is the case that produced the array in the first place.
+  return best ? best.title : target.replace(/^\//, "");
+}
+
 // qiankun keys sandboxes by app name, so the name must be stable for a given
 // mount point and distinct between them.
 function appNameFor(node) {

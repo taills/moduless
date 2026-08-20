@@ -1,7 +1,9 @@
 package pluginhost
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"testing"
@@ -281,11 +283,39 @@ func TestStatusReportsWhenAReplicaStarted(t *testing.T) {
 	}
 
 	got := statusFor(t, mgr, "alpha")
-	if got.OldestStartedAt.IsZero() {
+	if got.OldestStartedAt == nil {
 		t.Fatal("no start time reported for a running plugin")
 	}
 	if got.OldestStartedAt.Before(before.Add(-time.Minute)) {
 		t.Errorf("start time %s is not from this run", got.OldestStartedAt)
+	}
+}
+
+// A plugin that never started has no times to report, and the JSON has to say
+// so by leaving the fields out. This is asserted on the encoded bytes rather
+// than the struct because that is where it went wrong: the fields were
+// time.Time with omitempty, which does not apply to structs, so Core shipped
+// "0001-01-01T00:00:00Z" and the console rendered it as 739847 days of uptime.
+func TestStatusOmitsTimesForAPluginThatNeverStarted(t *testing.T) {
+	root := t.TempDir()
+	writePackage(t, root, "alpha", "1.0.0", 0, "")
+
+	mgr, _ := configuredManager(t, root)
+	mgr.Scan()
+
+	got := statusFor(t, mgr, "alpha")
+	if got.Replicas != 0 {
+		t.Fatalf("replicas = %d, want 0; this test needs a plugin that never started", got.Replicas)
+	}
+
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, field := range []string{"oldest_started_at", "quarantined_at"} {
+		if bytes.Contains(encoded, []byte(field)) {
+			t.Errorf("%s is present for a plugin that never started: %s", field, encoded)
+		}
 	}
 }
 

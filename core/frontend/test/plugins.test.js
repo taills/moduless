@@ -89,6 +89,13 @@ describe("Plugins list", () => {
     expect(wrapper.text()).not.toContain("已运行");
   });
 
+  it("says nothing about uptime when Core reports a zero timestamp", async () => {
+    // What a zero time.Time serialises to. Core no longer sends it, but this
+    // is what turned a plugin that had never started into "已运行 739847 天".
+    const wrapper = await list(plugin({ oldest_started_at: "0001-01-01T00:00:00Z" }));
+    expect(wrapper.text()).not.toContain("已运行");
+  });
+
   it("shows a queue backlog and, separately, what the queue gave up on", async () => {
     // Separately on purpose: a backlog drains and a graveyard does not, and
     // one number for both would make them indistinguishable.

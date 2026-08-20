@@ -383,7 +383,7 @@ func TestQuarantineIsVisibleInStatus(t *testing.T) {
 	if !st.Quarantined {
 		t.Fatal("the plugin was never reported as quarantined, so an operator cannot tell it apart from one that is restarting")
 	}
-	if st.QuarantinedAt.IsZero() {
+	if st.QuarantinedAt == nil {
 		t.Error("quarantine has no timestamp, so there is no way to tell how long it has been isolated")
 	}
 	if st.Replicas != 0 {

@@ -46,4 +46,7 @@ database:
   collections:
     - name: snapshots
 
-# 没有 menus：纯后端插件，不带 frontend/。见 apikey/manifest.yaml 的说明。
+menus:
+  - path: /digest
+    title: 外部快照
+    icon: archive

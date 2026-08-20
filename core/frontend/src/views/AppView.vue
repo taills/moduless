@@ -16,7 +16,13 @@ const container = ref(null);
 const error = ref("");
 
 let instance = null;
-let mountedKey = "";
+// null rather than "": it means "sync has not run yet", which a key cannot
+// otherwise express. A route with nothing to mount has the empty key, so
+// starting this at "" made the very first sync mistake "nothing to mount" for
+// "already showing nothing" and return before saying anything. Opening a
+// plugin URL your role cannot see landed on exactly that path and rendered a
+// blank page.
+let mountedKey = null;
 
 // Which run of sync is the current one.
 //
@@ -68,11 +74,15 @@ async function sync() {
   error.value = "";
 
   if (!target || !container.value) {
-    // No entry for this route: the plugin was disabled or uninstalled while
-    // its page was open.
+    // No entry for this route. Two ways to get here and the console cannot tell
+    // them apart: the plugin was disabled or uninstalled while its page was
+    // open, or it declares roles this user does not have — Core filters those
+    // out of the menu tree, so the entry never arrives either way. The wording
+    // covers both rather than asserting the one that is easier to phrase.
     if (route.path.startsWith("/apps")) {
-      error.value = "该插件已被禁用或卸载。";
+      error.value = "这个页面不可用：插件可能已停用或卸载，也可能是当前账号的角色看不到它。";
     }
+    mountedKey = key;
     return;
   }
 

@@ -89,7 +89,30 @@ describe("AppView", () => {
     await flushPromises();
 
     expect(unmounted).toHaveLength(1);
-    expect(wrapper.text()).toContain("已被禁用");
+    expect(wrapper.text()).toContain("不可用");
+    wrapper.unmount();
+  });
+
+  // The same empty state, arrived at from the other direction: the page is
+  // opened directly rather than losing its plugin while watching.
+  //
+  // This rendered nothing at all. sync() compares the target's key against
+  // mountedKey to avoid pointless re-mounts, and both are "" on the first run
+  // for a route with no entry — so it returned before setting the message. The
+  // case was unreachable while no plugin declared roles, since every menu entry
+  // reached every user. It stopped being unreachable the moment three of them
+  // became admin-only.
+  it("explains itself when the route is opened directly with no entry", async () => {
+    route.path = "/apps/redact";
+    // What a non-admin gets from Core: the tree is filtered by role, so the
+    // node simply is not in it.
+    setMenu([]);
+
+    const wrapper = mount(AppView);
+    await flushPromises();
+
+    expect(mounted).toHaveLength(0);
+    expect(wrapper.text()).toContain("不可用");
     wrapper.unmount();
   });
 

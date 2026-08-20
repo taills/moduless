@@ -345,3 +345,45 @@ func TestMenuRequiresASessionWhenAuthIsOn(t *testing.T) {
 		t.Errorf("status = %d for a request with no session, want 401", resp.StatusCode)
 	}
 }
+
+// A plugin that declares menus but ships no frontend gets no menu entry.
+//
+// This is the state every shipped example was in: eight backend-only plugins,
+// six of them declaring menus. Each got an entry pointing at /plugins/<key>/,
+// the asset handler answered 404, and qiankun mounted that response body — so
+// the page read "404 page not found" under a working sidebar.
+//
+// The unit test in core/gateway covers the handler's decision. This one covers
+// the path that decides the input to it: Core reads FrontendDir off the
+// package directory, so whether the entry appears depends on a directory
+// existing on disk, which only an end-to-end test exercises.
+func TestBackendOnlyPluginGetsNoMenuEntry(t *testing.T) {
+	root := t.TempDir()
+	installFixturePackage(t, root)
+
+	// Same package, minus the UI: backend-only, exactly like the examples.
+	if err := os.RemoveAll(filepath.Join(root, "echo", "frontend")); err != nil {
+		t.Fatalf("removing the fixture frontend: %v", err)
+	}
+
+	mgr, _ := newManagerOver(t, root, nil)
+	mgr.Scan()
+
+	h := &gateway.GatewayHandler{Plugins: mgr}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/system/ui/apps", h.AppsHandler)
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	if err := mgr.Enable(context.Background(), "echo"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+
+	got := fetchApps(t, srv.URL)
+	if _, found := findMenu(got.Menu, "/echo"); found {
+		t.Error("a backend-only plugin was given a menu entry, which resolves to a 404 page")
+	}
+	if len(got.Apps) != 0 {
+		t.Errorf("%d app(s) listed for a plugin with no UI to mount", len(got.Apps))
+	}
+}

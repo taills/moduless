@@ -83,8 +83,12 @@ type Status struct {
 	// repeatedly. Without it, a quarantined plugin looks identical in the
 	// console to one that is merely between restarts: enabled, zero replicas.
 	// One of those resolves itself and the other never will.
-	Quarantined   bool      `json:"quarantined,omitempty"`
-	QuarantinedAt time.Time `json:"quarantined_at,omitempty"`
+	// Pointers, not time.Time: omitempty does not recognise a zero struct, so
+	// a plain time.Time field ships "0001-01-01T00:00:00Z" to every client
+	// that has no time to report. The console turned that into "已运行 739847
+	// 天" next to a plugin that had never started.
+	Quarantined   bool       `json:"quarantined,omitempty"`
+	QuarantinedAt *time.Time `json:"quarantined_at,omitempty"`
 
 	// Config is what the plugin declares it can be configured with, so the
 	// console can render a form instead of a free-text key/value editor where
@@ -100,8 +104,8 @@ type Status struct {
 	// one is Core deliberately not calling a plugin that has been failing, and
 	// it clears itself; the other does not. The start time is what tells an
 	// operator whether a plugin has been quietly restarting all morning.
-	Tripped         int       `json:"tripped,omitempty"`
-	OldestStartedAt time.Time `json:"oldest_started_at,omitempty"`
+	Tripped         int        `json:"tripped,omitempty"`
+	OldestStartedAt *time.Time `json:"oldest_started_at,omitempty"`
 
 	// QueueDepth is how many messages this plugin has waiting.
 	QueueDepth int64 `json:"queue_depth,omitempty"`
@@ -344,12 +348,12 @@ func (m *Manager) List() []Status {
 				st.Tripped++
 			}
 			if at := inst.StartedAt(); !at.IsZero() &&
-				(st.OldestStartedAt.IsZero() || at.Before(st.OldestStartedAt)) {
-				st.OldestStartedAt = at
+				(st.OldestStartedAt == nil || at.Before(*st.OldestStartedAt)) {
+				st.OldestStartedAt = &at
 			}
 		}
 		if at, isolated := m.sup.QuarantinedSince(key); isolated {
-			st.Quarantined, st.QuarantinedAt = true, at
+			st.Quarantined, st.QuarantinedAt = true, &at
 		}
 		if m.cfg.QueueDepth != nil {
 			st.QueueDepth = m.cfg.QueueDepth(key)

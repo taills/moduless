@@ -383,7 +383,7 @@ func TestQuarantineIsVisibleInStatus(t *testing.T) {
 	if !st.Quarantined {
 		t.Fatal("the plugin was never reported as quarantined, so an operator cannot tell it apart from one that is restarting")
 	}
-	if st.QuarantinedAt.IsZero() {
+	if st.QuarantinedAt == nil {
 		t.Error("quarantine has no timestamp, so there is no way to tell how long it has been isolated")
 	}
 	if st.Replicas != 0 {
@@ -424,6 +424,18 @@ func installFixturePackage(t *testing.T, root string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), manifestSrc, 0o644); err != nil {
 		t.Fatalf("writing the fixture manifest: %v", err)
+	}
+
+	// The fixture declares menus, and Core only puts a plugin in the menu when
+	// it has a frontend to mount — otherwise the entry would resolve to
+	// /plugins/echo/, which the asset handler answers with 404. A package
+	// without this directory is backend-only; see installBackendOnlyPackage.
+	if err := os.MkdirAll(filepath.Join(dir, "frontend"), 0o755); err != nil {
+		t.Fatalf("mkdir frontend: %v", err)
+	}
+	index := filepath.Join(dir, "frontend", "index.html")
+	if err := os.WriteFile(index, []byte("<!doctype html><title>echo</title>"), 0o644); err != nil {
+		t.Fatalf("writing the fixture frontend: %v", err)
 	}
 }
 

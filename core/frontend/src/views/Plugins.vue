@@ -75,6 +75,10 @@ function uptime(p) {
   if (!p.oldest_started_at) return "";
   const started = new Date(p.oldest_started_at).getTime();
   if (Number.isNaN(started)) return "";
+  // A zero time.Time serialises to 0001-01-01, which is negative here. Core no
+  // longer sends it, but a plugin cannot have started before 1970 either way,
+  // and rendering it read as "已运行 739847 天".
+  if (started <= 0) return "";
   const secs = Math.max(0, Math.floor((Date.now() - started) / 1000));
   if (secs < 60) return `${secs} 秒`;
   if (secs < 3600) return `${Math.floor(secs / 60)} 分钟`;

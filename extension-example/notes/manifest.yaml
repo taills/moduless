@@ -35,11 +35,7 @@ database:
 
 # Menu entries appear in the console when the plugin is enabled and disappear
 # when it is disabled — no reload needed.
-menus:
-  - path: /notes
-    title: 笔记
-    icon: file-text
-    order: 20
+# 没有 menus：纯后端插件，不带 frontend/。见 apikey/manifest.yaml 的说明。
 
 filters:
   # pre_route sees every request, including ones Core serves itself. That reach

@@ -61,8 +61,6 @@ config:
     type: string
     default: /api/plugins/notes/
 
-menus:
-  - path: /apikey
-    title: API 密钥
-    icon: key
-    roles: [admin]
+# 没有 menus：这个插件不带 frontend/，能力全在后端和 filter 上。声明了 menus
+# 的纯后端插件在控制台里会得到一个指向不存在资源的菜单项，Core 现在直接不下发
+# 它 —— 见 docs/plugin-development.md 的 menus 说明。

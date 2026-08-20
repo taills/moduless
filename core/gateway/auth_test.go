@@ -32,7 +32,18 @@ func (f fakePlugins) Package(key string) (*pluginhost.Package, bool) {
 	return pkg, ok
 }
 
+// pluginsWith builds a plugin that ships a micro-frontend, which is what the
+// menu tests are about. FrontendDir has to be set for that: a package without
+// one is backend-only and is deliberately kept out of the menu, covered by
+// TestAppsHandlerOmitsPluginsWithNoFrontend.
 func pluginsWith(key, displayName string, menus []manifest.MenuItem, ready int) fakePlugins {
+	p := pluginsWithout(key, displayName, menus, ready)
+	p.packages[key].FrontendDir = "/tmp/" + key + "/frontend"
+	return p
+}
+
+// pluginsWithout builds the same plugin with no micro-frontend on disk.
+func pluginsWithout(key, displayName string, menus []manifest.MenuItem, ready int) fakePlugins {
 	return fakePlugins{
 		statuses: []pluginhost.Status{{
 			Key: key, DisplayName: displayName, Version: "1.0.0",
@@ -114,6 +125,35 @@ func TestAppsHandlerOmitsPluginsWithNoReadyReplica(t *testing.T) {
 	}
 	if len(resp.Apps) != 0 || len(resp.Menu) != 0 {
 		t.Errorf("a plugin with no ready replica was listed: %+v", resp)
+	}
+}
+
+// The same reasoning for a plugin that ships no micro-frontend at all: its menu
+// entry would resolve to /plugins/<key>/, which the asset handler answers with
+// 404, and qiankun mounts that response body — so the page reads "404 page not
+// found" rather than anything about the plugin.
+//
+// Declaring menus without a frontend is a packaging mistake, and the author's
+// guide says as much. It is caught here anyway because the console is what an
+// operator sees, and the menus of the eight shipped examples all did it.
+func TestAppsHandlerOmitsPluginsWithNoFrontend(t *testing.T) {
+	gw := NewGatewayHandler()
+	gw.Auth = stubResolver{}
+	gw.Plugins = pluginsWithout("apikey", "API 密钥", []manifest.MenuItem{
+		{Path: "/apikey", Title: "API 密钥", Icon: "key"},
+	}, 1)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/system/ui/apps", nil)
+	req.Header.Set("Authorization", "Bearer good")
+	w := httptest.NewRecorder()
+	gw.AppsHandler(w, req)
+
+	var resp AppsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Apps) != 0 || len(resp.Menu) != 0 {
+		t.Errorf("a backend-only plugin was given a menu entry that 404s: %+v", resp)
 	}
 }
 

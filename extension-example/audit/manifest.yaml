@@ -23,12 +23,7 @@ database:
 
 # 猜测点：叶子节点只声明 entry: ""，但本插件没有提供 frontend/ 目录。
 # 指南没说这种情况下控制台会怎么处理（空白页？报错？回退成占位符？）。
-menus:
-  - path: /audit
-    title: 审计日志
-    icon: file-text
-    order: 50
-    entry: ""
+# 没有 menus：纯后端插件，不带 frontend/。见 apikey/manifest.yaml 的说明。
 
 # phase 用的是文档表格里的名字 "log"；对应的 Go 常量名字（下方 main.go 里
 # 用的 sdk.PhaseLog）是猜的 —— 指南只给出过 sdk.PhasePreRoute 和

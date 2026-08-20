@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import { registry, resolveEntry, refresh } from "../src/pluginRegistry";
+import { registry, resolveEntry, resolveTitle, refresh } from "../src/pluginRegistry";
 
 // The console's routing table, which decides which micro-frontend a URL mounts.
 //
@@ -106,6 +106,54 @@ describe("resolveEntry", () => {
     // navigation.
     expect(a.name).not.toBe(b.name);
     expect(resolveEntry("/apps/a").name).toBe(a.name);
+  });
+});
+
+// What the breadcrumb shows.
+//
+// The topbar used to interpolate route.params.pathMatch straight from the
+// router. That param comes from `apps/:pathMatch(.*)*` and the trailing `*`
+// makes it repeatable, so it is an array, and the topbar read `[ "apikey" ]`.
+describe("resolveTitle", () => {
+  it("names a route from its menu entry", () => {
+    setMenu([{ path: "/apikey", title: "API 密钥", entry: "/plugins/apikey/" }]);
+
+    expect(resolveTitle("/apps/apikey")).toBe("API 密钥");
+  });
+
+  it("prefers the deepest matching node", () => {
+    setMenu([
+      {
+        path: "/reports",
+        title: "报表",
+        children: [{ path: "/reports/daily", title: "日报", entry: "/plugins/reports/" }],
+      },
+    ]);
+
+    expect(resolveTitle("/apps/reports/daily")).toBe("日报");
+  });
+
+  it("names a group node, which has a title but no entry", () => {
+    setMenu([{ path: "/reports", title: "报表", children: [] }]);
+
+    expect(resolveTitle("/apps/reports")).toBe("报表");
+  });
+
+  it("returns a string, never an array, for a route the menu does not cover", () => {
+    setMenu([]);
+
+    const got = resolveTitle("/apps/apikey");
+    expect(typeof got).toBe("string");
+    expect(got).not.toContain("[");
+  });
+
+  it("says nothing for the console's own pages, which carry their own heading", () => {
+    setMenu([{ path: "/apikey", title: "API 密钥", entry: "/plugins/apikey/" }]);
+
+    // Naming these here would print the heading twice — the topbar showed
+    // "/system/plugins" above a page whose own <h2> already read 插件管理.
+    expect(resolveTitle("/system/plugins")).toBe("");
+    expect(resolveTitle("/system/users")).toBe("");
   });
 });
 

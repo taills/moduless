@@ -54,11 +54,18 @@ func (h *GatewayHandler) AppsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// appsFromPlugins lists plugins that are enabled and actually serving.
+// appsFromPlugins lists plugins that are enabled and actually serving a UI.
 //
 // A plugin with no ready replica is omitted rather than shown as offline: its
 // micro-frontend would fail to load, so a menu entry pointing at it would be a
-// broken link.
+// broken link. A plugin with no frontend at all is omitted for the same
+// reason — the menu entry would resolve to /plugins/<key>/, which the asset
+// handler answers with 404, and qiankun mounts that response body as the page.
+//
+// Declaring menus without shipping a frontend is a packaging mistake — the
+// author's guide says a backend-only plugin should not declare menus — but the
+// console is what an operator sees, so the mistake shows up as an absent menu
+// entry rather than a page reading "404 page not found".
 func (h *GatewayHandler) appsFromPlugins(userRole string) []AppInfo {
 	if h.Plugins == nil {
 		return []AppInfo{}
@@ -70,13 +77,13 @@ func (h *GatewayHandler) appsFromPlugins(userRole string) []AppInfo {
 			continue
 		}
 		pkg, ok := h.Plugins.Package(st.Key)
-		if !ok {
+		if !ok || pkg.FrontendDir == "" {
 			continue
 		}
 
 		entry := PluginAssetPrefix + st.Key + "/"
 		menus := menuNodesFrom(pkg.Manifest.Menus, entry)
-		if len(menus) == 0 && pkg.FrontendDir != "" {
+		if len(menus) == 0 {
 			// A plugin shipping a UI but declaring no menu still needs
 			// somewhere to be reachable from.
 			menus = []MenuNode{{

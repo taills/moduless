@@ -22,6 +22,7 @@ vi.mock("../src/pluginRegistry", () => ({
   registry: { menu: [], apps: [], version: 0 },
   refresh: () => Promise.resolve(),
   resolveEntry: () => null,
+  resolveTitle: () => "",
   subscribe: () => () => {},
 }));
 

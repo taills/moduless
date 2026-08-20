@@ -37,7 +37,4 @@ config:
     type: string
     secret: true
 
-menus:
-  - path: /inventory
-    title: 库存
-    icon: box
+# 没有 menus：纯后端插件，不带 frontend/。见 apikey/manifest.yaml 的说明。
